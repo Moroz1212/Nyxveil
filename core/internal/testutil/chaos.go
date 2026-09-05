@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nyxveil/nvp/transport"
+	"github.com/nyxveil/nvp/core/transport"
 )
 
 // ChaosConn wraps a transport connection with network impairment.
@@ -20,7 +20,6 @@ type ChaosConn struct {
 	delay       time.Duration
 	jitter      time.Duration
 	reorderRate float64
-	closed      bool
 	pending     [][]byte
 }
 
@@ -62,14 +61,18 @@ func (c *ChaosConn) Read(ctx context.Context) ([]byte, error) {
 	}
 
 	c.applyDelay()
-	if rand.Float64() < c.lossRate {
+	c.mu.Lock()
+	loss := c.lossRate
+	dup := c.dupRate
+	c.mu.Unlock()
+	if rand.Float64() < loss {
 		return c.Read(ctx)
 	}
-	if rand.Float64() < c.dupRate {
+	if rand.Float64() < dup {
 		c.mu.Lock()
-		dup := make([]byte, len(data))
-		copy(dup, data)
-		c.pending = append(c.pending, dup)
+		dupData := make([]byte, len(data))
+		copy(dupData, data)
+		c.pending = append(c.pending, dupData)
 		c.mu.Unlock()
 	}
 	return data, nil
@@ -77,20 +80,45 @@ func (c *ChaosConn) Read(ctx context.Context) ([]byte, error) {
 
 func (c *ChaosConn) Write(ctx context.Context, data []byte) error {
 	c.applyDelay()
-	if rand.Float64() < c.lossRate {
+	c.mu.Lock()
+	loss := c.lossRate
+	dup := c.dupRate
+	c.mu.Unlock()
+	if rand.Float64() < loss {
 		return nil
 	}
 	err := c.inner.Write(ctx, data)
-	if rand.Float64() < c.dupRate {
+	if rand.Float64() < dup {
 		_ = c.inner.Write(ctx, data)
 	}
 	return err
+}
+
+// SetLossRate updates packet loss rate (0..1). Safe for tests after handshake.
+func (c *ChaosConn) SetLossRate(rate float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lossRate = rate
+}
+
+// AsChaos returns the concrete ChaosConn when wrapped via WrapChaos.
+func AsChaos(conn transport.Conn) *ChaosConn {
+	if c, ok := conn.(*ChaosConn); ok {
+		return c
+	}
+	return nil
 }
 
 func (c *ChaosConn) Close() error               { return c.inner.Close() }
 func (c *ChaosConn) LocalAddr() net.Addr        { return c.inner.LocalAddr() }
 func (c *ChaosConn) RemoteAddr() net.Addr       { return c.inner.RemoteAddr() }
 func (c *ChaosConn) Profile() transport.Profile { return c.profile }
+func (c *ChaosConn) SetReadDeadline(t time.Time) error {
+	return c.inner.SetReadDeadline(t)
+}
+func (c *ChaosConn) SetWriteDeadline(t time.Time) error {
+	return c.inner.SetWriteDeadline(t)
+}
 
 type rwConn interface {
 	Read(ctx context.Context) ([]byte, error)

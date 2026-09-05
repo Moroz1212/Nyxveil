@@ -4,8 +4,9 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"sync"
 
-	"github.com/nyxveil/nvp/transport"
+	"github.com/nyxveil/nvp/core/transport"
 )
 
 var (
@@ -14,6 +15,7 @@ var (
 )
 
 // ApplyClientConfig configures TLS for ECH per policy.
+// ECHRequired with an empty config list fails before dial.
 func ApplyClientConfig(cfg *tls.Config, policy transport.ECHPolicy, echConfigList []byte) error {
 	if policy == "" {
 		policy = transport.ECHPreferred
@@ -65,4 +67,45 @@ func PolicyHint(policy transport.ECHPolicy, hasConfig bool) string {
 	default:
 		return fmt.Sprintf("ECH policy %s", policy)
 	}
+}
+
+// ApplyServerKeys installs Encrypted ClientHello private keys on a server tls.Config.
+func ApplyServerKeys(cfg *tls.Config, keys []tls.EncryptedClientHelloKey) {
+	if cfg == nil {
+		return
+	}
+	cfg.EncryptedClientHelloKeys = append([]tls.EncryptedClientHelloKey(nil), keys...)
+}
+
+// KeySet holds a rotatable list of server ECH keys for Listen configs.
+type KeySet struct {
+	mu   sync.RWMutex
+	keys []tls.EncryptedClientHelloKey
+}
+
+// NewKeySet creates a KeySet with the given initial keys.
+func NewKeySet(keys []tls.EncryptedClientHelloKey) *KeySet {
+	return &KeySet{keys: append([]tls.EncryptedClientHelloKey(nil), keys...)}
+}
+
+// Rotate replaces the active key list (callers should overlap old+new during DNS transition).
+func (k *KeySet) Rotate(keys []tls.EncryptedClientHelloKey) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.keys = append([]tls.EncryptedClientHelloKey(nil), keys...)
+}
+
+// Keys returns a copy of the current key list.
+func (k *KeySet) Keys() []tls.EncryptedClientHelloKey {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	return append([]tls.EncryptedClientHelloKey(nil), k.keys...)
+}
+
+// ApplyTo copies the current keys into cfg.EncryptedClientHelloKeys.
+func (k *KeySet) ApplyTo(cfg *tls.Config) {
+	if cfg == nil {
+		return
+	}
+	ApplyServerKeys(cfg, k.Keys())
 }

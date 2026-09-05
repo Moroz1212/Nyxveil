@@ -1,0 +1,82 @@
+@page "/admin/signing-keys"
+@attribute [Authorize(Policy = AuthPolicies.SuperAdminOnly)]
+@rendermode InteractiveServer
+@inject ISigningKeyService SigningKeyService
+@inject AuthenticationStateProvider AuthState
+@inject IAuditService Audit
+
+<div class="page-header">
+    <div>
+        <h1>Signing keys</h1>
+        <div class="sub">Ed25519 catalog / ticket signing material. SuperAdmin only.</div>
+    </div>
+    <button class="btn btn-danger" @onclick="() => _confirm = true">Rotate key</button>
+</div>
+
+@if (_current is not null)
+{
+    <div class="panel">
+        <p><strong>Active key id:</strong> <span class="mono">@_current.KeyId</span></p>
+        <p class="muted">Public key (hex)</p>
+        <div class="mono">@Convert.ToHexString(_current.PublicKey)</div>
+    </div>
+}
+
+<div class="table-wrap">
+    <table class="data">
+        <thead><tr><th>Key id</th><th>Status</th><th>Public key</th></tr></thead>
+        <tbody>
+        @foreach (var k in _keys)
+        {
+            <tr>
+                <td class="mono">@k.KeyId</td>
+                <td><StatusBadge Status="@k.Status" /></td>
+                <td class="mono">@Convert.ToHexString(k.PublicKey)</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+</div>
+
+<ConfirmDialog @bind-Visible="_confirm"
+               Title="Rotate signing key"
+               Message="Rotate the active Ed25519 signing key? Previous key remains for verification until retired."
+               ConfirmText="Rotate"
+               OnConfirm="RotateAsync" />
+
+@code {
+    private SigningMaterialDto? _current;
+    private List<VerificationKeyDto> _keys = new();
+    private bool _confirm;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            _current = await SigningKeyService.GetCurrentSigningMaterialAsync();
+        }
+        catch
+        {
+            _current = null;
+        }
+
+        _keys = (await SigningKeyService.GetVerificationKeysAsync()).ToList();
+    }
+
+    private async Task RotateAsync()
+    {
+        var result = await SigningKeyService.RotateAsync();
+        var state = await AuthState.GetAuthenticationStateAsync();
+        await Audit.WriteAsync(new AuditWriteRequest
+        {
+            Actor = state.User.Identity?.Name ?? "admin",
+            Action = "signing_key.rotated",
+            EntityType = "SigningKey",
+            EntityId = result.NewKeyId,
+            Detail = $"previous={result.PreviousKeyId}"
+        });
+        await LoadAsync();
+    }
+}

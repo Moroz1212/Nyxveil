@@ -3,7 +3,7 @@ package packet_test
 import (
 	"testing"
 
-	"github.com/nyxveil/nvp/packet"
+	"github.com/nyxveil/nvp/core/packet"
 )
 
 func FuzzDecodeRekeyInit(f *testing.F) {

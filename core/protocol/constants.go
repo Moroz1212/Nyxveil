@@ -27,8 +27,23 @@ const (
 	// DefaultTicketTTL is the default access ticket lifetime.
 	DefaultTicketTTL = 15 * time.Minute
 
+	// DefaultAuthTimeout is how long OpenSession waits for AUTH_OK after SendAuth.
+	DefaultAuthTimeout = 15 * time.Second
+
+	// RekeyOverlapWindow is how long previous-epoch recv keys stay valid after rekey.
+	RekeyOverlapWindow = 60 * time.Second
+
+	// RekeyTimeout limits how long a rekey control send may take before the session fails closed.
+	RekeyTimeout = 30 * time.Second
+
 	// HandshakeTimeout limits incomplete handshake duration.
 	HandshakeTimeout = 30 * time.Second
+
+	// DefaultKeepaliveInterval is the base PING interval when keepalive is enabled.
+	DefaultKeepaliveInterval = 25 * time.Second
+
+	// DefaultKeepaliveJitter is the maximum additive jitter applied to keepalive delays.
+	DefaultKeepaliveJitter = 5 * time.Second
 
 	// MaxPendingHandshakes limits concurrent unauthenticated handshakes per node.
 	MaxPendingHandshakes = 256

@@ -1,0 +1,50 @@
+@page "/admin/metrics"
+@attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
+@rendermode InteractiveServer
+@inject ControlPlaneDbContext Db
+
+<div class="page-header">
+    <div>
+        <h1>Metrics</h1>
+        <div class="sub">Recent node metric snapshots (UTC).</div>
+    </div>
+</div>
+
+<div class="toolbar">
+    <input placeholder="Filter by node id" @bind="_filter" @bind:event="oninput" />
+</div>
+
+<div class="table-wrap">
+    <table class="data">
+        <thead><tr><th>Time</th><th>Node</th><th>CPU</th><th>RAM</th><th>Sessions</th><th>Rx</th><th>Tx</th></tr></thead>
+        <tbody>
+        @foreach (var m in Filtered())
+        {
+            <tr>
+                <td>@m.Timestamp.ToString("u")</td>
+                <td class="mono">@m.NodeId</td>
+                <td>@m.CpuPercent.ToString("0.0")%</td>
+                <td>@m.MemoryPercent.ToString("0.0")%</td>
+                <td>@m.ActiveSessions</td>
+                <td>@(m.NetworkRxRate?.ToString("0.0") ?? "—")</td>
+                <td>@(m.NetworkTxRate?.ToString("0.0") ?? "—")</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    private List<NodeMetric> _metrics = new();
+    private string _filter = "";
+
+    protected override async Task OnInitializedAsync() =>
+        _metrics = await Db.NodeMetrics.OrderByDescending(m => m.Timestamp).Take(300).ToListAsync();
+
+    private IEnumerable<NodeMetric> Filtered()
+    {
+        if (string.IsNullOrWhiteSpace(_filter)) return _metrics;
+        var f = _filter.Trim();
+        return _metrics.Where(m => m.NodeId.Contains(f, StringComparison.OrdinalIgnoreCase));
+    }
+}

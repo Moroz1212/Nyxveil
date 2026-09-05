@@ -1,0 +1,89 @@
+@page "/admin/settings"
+@attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
+@rendermode InteractiveServer
+@inject ControlPlaneDbContext Db
+@inject IClock Clock
+@inject AuthenticationStateProvider AuthState
+@inject IAuditService Audit
+
+<div class="page-header">
+    <div>
+        <h1>System settings</h1>
+        <div class="sub">Key/value operational settings (no secrets).</div>
+    </div>
+    <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
+        <button class="btn" @onclick="() => _showCreate = !_showCreate">@(_showCreate ? "Close" : "Add setting")</button>
+    </AuthorizeView>
+</div>
+
+@if (_showCreate)
+{
+    <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
+        <div class="panel form-grid">
+            <label>Key<input @bind="_key" /></label>
+            <label>Value<input @bind="_value" /></label>
+            <div class="actions" style="align-self:end"><button class="btn" @onclick="SaveAsync">Save</button></div>
+        </div>
+    </AuthorizeView>
+}
+
+<div class="table-wrap">
+    <table class="data">
+        <thead><tr><th>Key</th><th>Value</th><th>Updated</th><th>By</th></tr></thead>
+        <tbody>
+        @foreach (var s in _settings)
+        {
+            <tr>
+                <td class="mono">@s.Key</td>
+                <td class="mono">@s.Value</td>
+                <td>@s.UpdatedAt.ToString("u")</td>
+                <td>@(s.UpdatedBy ?? "—")</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    private List<SystemSetting> _settings = new();
+    private bool _showCreate;
+    private string _key = "";
+    private string _value = "";
+
+    protected override async Task OnInitializedAsync() =>
+        _settings = await Db.SystemSettings.OrderBy(s => s.Key).ToListAsync();
+
+    private async Task SaveAsync()
+    {
+        var state = await AuthState.GetAuthenticationStateAsync();
+        var actor = state.User.Identity?.Name ?? "admin";
+        var existing = await Db.SystemSettings.FirstOrDefaultAsync(s => s.Key == _key.Trim());
+        if (existing is null)
+        {
+            Db.SystemSettings.Add(new SystemSetting
+            {
+                Key = _key.Trim(),
+                Value = _value,
+                UpdatedAt = Clock.UtcNow,
+                UpdatedBy = actor
+            });
+        }
+        else
+        {
+            existing.Value = _value;
+            existing.UpdatedAt = Clock.UtcNow;
+            existing.UpdatedBy = actor;
+        }
+
+        await Db.SaveChangesAsync();
+        await Audit.WriteAsync(new AuditWriteRequest
+        {
+            Actor = actor,
+            Action = "system_setting.upsert",
+            EntityType = "SystemSetting",
+            EntityId = _key.Trim()
+        });
+        _showCreate = false;
+        _settings = await Db.SystemSettings.OrderBy(s => s.Key).ToListAsync();
+    }
+}

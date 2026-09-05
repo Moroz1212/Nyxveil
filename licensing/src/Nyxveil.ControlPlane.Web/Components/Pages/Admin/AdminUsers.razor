@@ -1,0 +1,109 @@
+@page "/admin/admin-users"
+@attribute [Authorize(Policy = AuthPolicies.SuperAdminOnly)]
+@rendermode InteractiveServer
+@inject UserManager<ApplicationUser> UserManager
+@inject AuthenticationStateProvider AuthState
+@inject IAuditService Audit
+
+<div class="page-header">
+    <div>
+        <h1>Admin users</h1>
+        <div class="sub">Identity accounts for the Control Plane console. SuperAdmin only.</div>
+    </div>
+    <button class="btn" @onclick="() => _showCreate = !_showCreate">@(_showCreate ? "Close" : "Invite admin")</button>
+</div>
+
+@if (_showCreate)
+{
+    <div class="panel form-grid">
+        <label>Email<input @bind="_email" type="email" /></label>
+        <label>Display name<input @bind="_displayName" /></label>
+        <label>Password<input @bind="_password" type="password" /></label>
+        <label>Role
+            <select @bind="_role">
+                <option value="@AdminRole.ReadOnly">ReadOnly</option>
+                <option value="@AdminRole.Operator">Operator</option>
+                <option value="@AdminRole.SuperAdmin">SuperAdmin</option>
+            </select>
+        </label>
+        <div class="actions" style="align-self:end"><button class="btn" @onclick="CreateAsync">Create</button></div>
+    </div>
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <div class="alert alert-error">@_error</div>
+    }
+}
+
+<div class="table-wrap">
+    <table class="data">
+        <thead><tr><th>Email</th><th>Name</th><th>Roles</th></tr></thead>
+        <tbody>
+        @foreach (var row in _rows)
+        {
+            <tr>
+                <td>@row.Email</td>
+                <td>@(row.DisplayName ?? "—")</td>
+                <td>@string.Join(", ", row.Roles)</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    private sealed record Row(string Email, string? DisplayName, IReadOnlyList<string> Roles);
+
+    private List<Row> _rows = new();
+    private bool _showCreate;
+    private string _email = "";
+    private string _displayName = "";
+    private string _password = "";
+    private string _role = AdminRole.Operator;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        var users = UserManager.Users.ToList();
+        var rows = new List<Row>();
+        foreach (var u in users)
+        {
+            var roles = await UserManager.GetRolesAsync(u);
+            rows.Add(new Row(u.Email ?? u.UserName ?? u.Id, u.DisplayName, roles.ToList()));
+        }
+        _rows = rows.OrderBy(r => r.Email).ToList();
+    }
+
+    private async Task CreateAsync()
+    {
+        _error = null;
+        var user = new ApplicationUser
+        {
+            UserName = _email.Trim(),
+            Email = _email.Trim(),
+            EmailConfirmed = true,
+            DisplayName = string.IsNullOrWhiteSpace(_displayName) ? null : _displayName.Trim()
+        };
+        var result = await UserManager.CreateAsync(user, _password);
+        if (!result.Succeeded)
+        {
+            _error = string.Join("; ", result.Errors.Select(e => e.Description));
+            return;
+        }
+
+        await UserManager.AddToRoleAsync(user, _role);
+        var state = await AuthState.GetAuthenticationStateAsync();
+        await Audit.WriteAsync(new AuditWriteRequest
+        {
+            Actor = state.User.Identity?.Name ?? "admin",
+            Action = "admin_user.created",
+            EntityType = "AdminUser",
+            EntityId = user.Id,
+            Detail = $"role={_role}"
+        });
+        _showCreate = false;
+        _password = "";
+        await ReloadAsync();
+    }
+}

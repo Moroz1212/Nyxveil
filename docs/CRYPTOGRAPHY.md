@@ -35,7 +35,9 @@ Domain separation labels prevent cross-direction key reuse.
 
 Each session uses fresh X25519 ephemeral keys. Compromise of long-term server TLS certificate does not decrypt past sessions that used ephemeral ECDH.
 
-Rekey derives new epoch keys from shared secret + epoch counter.
+Rekey uses a **fresh X25519 ECDH** exchange. ACK is sealed with the **old** epoch keys, then both sides install new keys. Receivers keep the previous recv AEAD for in-flight old-epoch packets.
+
+Cleartext record header: epoch (4 BE) || sequence (8 BE) before ciphertext. These values are also AEAD AAD/nonce inputs.
 
 ## Nonce Construction
 

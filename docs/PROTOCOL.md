@@ -2,6 +2,9 @@
 
 NVP/1 is the internal wire protocol for Nyxveil commercial VPN platform.
 
+**Protocol version:** `NVP/1` · **Core version:** `1.0.0` · **Go:** 1.24+  
+See [CORE-READINESS.md](CORE-READINESS.md).
+
 ## Design Principles
 
 1. **No custom cryptography** — X25519, HKDF-SHA256, ChaCha20-Poly1305, Ed25519, TLS 1.3
@@ -27,12 +30,13 @@ NVP/1 is the internal wire protocol for Nyxveil commercial VPN platform.
 
 ## Session Establishment
 
-1. Transport connect (QUIC preferred, TLS/TCP fallback)
-2. TLS 1.3 handshake (no NVP plaintext before this)
+1. Transport connect (QUIC preferred, TLS/TCP fallback) within the desired location
+2. TLS 1.3 handshake (no NVP plaintext before this); optional ECH (`KeySet` snapshot at listener build)
 3. X25519 handshake inside TLS-protected channel
-4. AUTH with signed access ticket (JWT Ed25519)
+4. AUTH with signed access ticket (JWT Ed25519; default location-scoped, optional `NodeScope`)
 5. ESTABLISHED — DATA frames permitted
 
+Automatic failover is **same location only**. Cross-location requires a new application `OpenSession`.
 ## Protocol Version
 
 Internal version identifier: `NVP/1` (conveyed only inside authenticated channel).

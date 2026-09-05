@@ -1,0 +1,54 @@
+@page "/admin/audit"
+@attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
+@rendermode InteractiveServer
+@inject ControlPlaneDbContext Db
+
+<div class="page-header">
+    <div>
+        <h1>Audit log</h1>
+        <div class="sub">Administrative and security-relevant actions.</div>
+    </div>
+</div>
+
+<div class="toolbar">
+    <input placeholder="Search actor / action / entity" @bind="_filter" @bind:event="oninput" />
+</div>
+
+<div class="table-wrap">
+    <table class="data">
+        <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Entity</th><th>Id</th><th>IP</th><th>Detail</th></tr></thead>
+        <tbody>
+        @foreach (var e in Filtered())
+        {
+            <tr>
+                <td>@e.Timestamp.ToString("u")</td>
+                <td>@e.Actor</td>
+                <td>@e.Action</td>
+                <td>@e.EntityType</td>
+                <td class="mono">@(e.EntityId ?? "—")</td>
+                <td>@(e.IpAddress ?? "—")</td>
+                <td>@(e.DetailsJson ?? "—")</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    private List<AuditLogEntry> _rows = new();
+    private string _filter = "";
+
+    protected override async Task OnInitializedAsync() =>
+        _rows = await Db.AuditLog.OrderByDescending(a => a.Timestamp).Take(500).ToListAsync();
+
+    private IEnumerable<AuditLogEntry> Filtered()
+    {
+        if (string.IsNullOrWhiteSpace(_filter)) return _rows;
+        var f = _filter.Trim();
+        return _rows.Where(e =>
+            e.Actor.Contains(f, StringComparison.OrdinalIgnoreCase) ||
+            e.Action.Contains(f, StringComparison.OrdinalIgnoreCase) ||
+            e.EntityType.Contains(f, StringComparison.OrdinalIgnoreCase) ||
+            (e.EntityId?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false));
+    }
+}

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nyxveil/nvp/session"
-	"github.com/nyxveil/nvp/transport"
-	"github.com/nyxveil/nvp/transport/memory"
+	"github.com/nyxveil/nvp/core/session"
+	"github.com/nyxveil/nvp/core/transport"
+	"github.com/nyxveil/nvp/core/transport/memory"
 )
 
 // failingTransport always fails dial (simulates UDP blocked).

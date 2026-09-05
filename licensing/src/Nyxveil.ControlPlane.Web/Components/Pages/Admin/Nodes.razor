@@ -1,0 +1,86 @@
+@page "/admin/nodes"
+@attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
+@rendermode InteractiveServer
+@inject ControlPlaneDbContext Db
+
+<div class="page-header">
+    <div>
+        <h1>Nodes</h1>
+        <div class="sub">VPN nodes with health and capacity.</div>
+    </div>
+</div>
+
+<div class="toolbar">
+    <input placeholder="Search node / location / name" @bind="_filter" @bind:event="oninput" />
+    <label><input type="checkbox" @bind="_showTest" /> Show test-only</label>
+</div>
+
+<div class="table-wrap">
+    <table class="data">
+        <thead>
+            <tr>
+                <th>Node</th>
+                <th>Location</th>
+                <th>Status</th>
+                <th>CPU</th>
+                <th>RAM</th>
+                <th>Sessions</th>
+                <th>Version</th>
+                <th>Proto</th>
+                <th>Last seen</th>
+                <th>Flags</th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var n in Filtered())
+        {
+            <tr>
+                <td><a href="@($"/admin/nodes/{Uri.EscapeDataString(n.Node.NodeId)}")">@n.Node.DisplayName</a><div class="mono muted">@n.Node.NodeId</div></td>
+                <td>@n.Node.LocationId</td>
+                <td><StatusBadge Status="@n.Node.Status.ToString()" /></td>
+                <td>@(n.Health?.CpuPercent.ToString("0.0") ?? "—")%</td>
+                <td>@(n.Health?.MemoryPercent.ToString("0.0") ?? "—")%</td>
+                <td>@n.Node.CurrentSessions / @n.Node.Capacity</td>
+                <td>@(n.Node.ServerVersion ?? "—")</td>
+                <td>@n.Node.ProtocolVersion</td>
+                <td>@(n.Node.LastSeenAt?.ToString("u") ?? "—")</td>
+                <td>
+                    @(n.Node.Enabled ? "" : "disabled ")
+                    @(n.Node.Draining ? "drain " : "")
+                    @(n.Node.TestOnly ? "test" : "")
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    private sealed record Row(Node Node, NodeHealth? Health);
+
+    private List<Row> _rows = new();
+    private string _filter = "";
+    private bool _showTest = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var nodes = await Db.Nodes.OrderBy(n => n.LocationId).ThenBy(n => n.DisplayName).ToListAsync();
+        var health = await Db.NodeHealth.ToDictionaryAsync(h => h.NodeId);
+        _rows = nodes.Select(n => new Row(n, health.GetValueOrDefault(n.NodeId))).ToList();
+    }
+
+    private IEnumerable<Row> Filtered()
+    {
+        IEnumerable<Row> q = _rows;
+        if (!_showTest) q = q.Where(r => !r.Node.TestOnly);
+        if (!string.IsNullOrWhiteSpace(_filter))
+        {
+            var f = _filter.Trim();
+            q = q.Where(r =>
+                r.Node.NodeId.Contains(f, StringComparison.OrdinalIgnoreCase) ||
+                r.Node.DisplayName.Contains(f, StringComparison.OrdinalIgnoreCase) ||
+                r.Node.LocationId.Contains(f, StringComparison.OrdinalIgnoreCase));
+        }
+        return q;
+    }
+}

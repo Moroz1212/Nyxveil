@@ -1,0 +1,60 @@
+﻿@inherits LayoutComponentBase
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AuthenticationStateProvider AuthState
+@inject NavigationManager Nav
+@inject UserManager<ApplicationUser> UserManager
+
+<div class="admin-shell">
+    @if (_showNav)
+    {
+        <aside class="admin-nav">
+            <div class="brand">
+                <span class="brand-mark">NV</span>
+                <div>
+                    <div class="brand-title">Nyxveil</div>
+                    <div class="brand-sub">Control Plane</div>
+                </div>
+            </div>
+            <NavMenu />
+            <div class="nav-footer">
+                <div class="user-chip">@_userLabel</div>
+                <form method="post" action="/account/logout">
+                    <button type="submit" class="btn btn-ghost btn-sm">Sign out</button>
+                </form>
+            </div>
+        </aside>
+    }
+
+    <main class="admin-main">
+        <div class="admin-content">
+            @Body
+        </div>
+    </main>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">Dismiss</span>
+</div>
+
+@code {
+    private bool _showNav;
+    private string _userLabel = "";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var path = Nav.ToBaseRelativePath(Nav.Uri).TrimStart('/');
+        _showNav = !(path.StartsWith("account/login", StringComparison.OrdinalIgnoreCase)
+                     || path.StartsWith("setup", StringComparison.OrdinalIgnoreCase)
+                     || path.StartsWith("account/access-denied", StringComparison.OrdinalIgnoreCase));
+
+        var state = await AuthState.GetAuthenticationStateAsync();
+        var user = state.User;
+        if (user.Identity?.IsAuthenticated == true)
+        {
+            var appUser = await UserManager.GetUserAsync(user);
+            _userLabel = appUser?.DisplayName ?? appUser?.Email ?? user.Identity.Name ?? "Admin";
+        }
+    }
+}

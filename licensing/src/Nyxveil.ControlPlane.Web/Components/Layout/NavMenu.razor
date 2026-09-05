@@ -1,0 +1,21 @@
+@using Microsoft.AspNetCore.Components.Authorization
+@using Nyxveil.ControlPlane.Web.Security
+
+<nav class="nav-links">
+    <NavLink href="/" Match="NavLinkMatch.All">Dashboard</NavLink>
+    <NavLink href="/admin/licenses">Licenses</NavLink>
+    <NavLink href="/admin/users">Users</NavLink>
+    <NavLink href="/admin/devices">Devices</NavLink>
+    <NavLink href="/admin/plans">Plans</NavLink>
+    <NavLink href="/admin/locations">Locations</NavLink>
+    <NavLink href="/admin/nodes">Nodes</NavLink>
+    <NavLink href="/admin/metrics">Metrics</NavLink>
+    <NavLink href="/admin/revocations">Revocations</NavLink>
+    <NavLink href="/admin/bootstrap-tokens">Bootstrap Tokens</NavLink>
+    <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
+        <NavLink href="/admin/signing-keys">Signing Keys</NavLink>
+        <NavLink href="/admin/admin-users">Admin Users</NavLink>
+    </AuthorizeView>
+    <NavLink href="/admin/settings">System Settings</NavLink>
+    <NavLink href="/admin/audit">Audit Log</NavLink>
+</nav>

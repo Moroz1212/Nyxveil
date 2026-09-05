@@ -1,0 +1,49 @@
+@page "/admin/revocations"
+@attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
+@rendermode InteractiveServer
+@inject ControlPlaneDbContext Db
+
+<div class="page-header">
+    <div>
+        <h1>Revocations</h1>
+        <div class="sub">Ticket / license / device revocation entries (versioned).</div>
+    </div>
+</div>
+
+<div class="toolbar">
+    <input placeholder="Search target id" @bind="_filter" @bind:event="oninput" />
+</div>
+
+<div class="table-wrap">
+    <table class="data">
+        <thead><tr><th>Version</th><th>Type</th><th>Target</th><th>Reason</th><th>By</th><th>Created</th></tr></thead>
+        <tbody>
+        @foreach (var r in Filtered())
+        {
+            <tr>
+                <td>@r.Version</td>
+                <td>@r.Type</td>
+                <td class="mono">@r.TargetId</td>
+                <td>@(r.Reason ?? "—")</td>
+                <td>@r.CreatedBy</td>
+                <td>@r.CreatedAt.ToString("u")</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    private List<Revocation> _rows = new();
+    private string _filter = "";
+
+    protected override async Task OnInitializedAsync() =>
+        _rows = await Db.Revocations.OrderByDescending(r => r.Version).Take(500).ToListAsync();
+
+    private IEnumerable<Revocation> Filtered()
+    {
+        if (string.IsNullOrWhiteSpace(_filter)) return _rows;
+        var f = _filter.Trim();
+        return _rows.Where(r => r.TargetId.Contains(f, StringComparison.OrdinalIgnoreCase));
+    }
+}

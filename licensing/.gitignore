@@ -1,0 +1,12 @@
+﻿bin/
+obj/
+.vs/
+*.user
+*.zip
+*.suo
+publish/
+artifacts/
+appsettings.Production.json
+**/keys/
+*.pfx
+*.key

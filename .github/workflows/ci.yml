@@ -11,21 +11,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.24'
       - name: Format check
         run: test -z "$(gofmt -l .)"
       - name: Vet
-        run: go vet ./...
+        run: go vet ./core/...
       - name: Test
-        run: go test -timeout 120s ./...
+        run: go test -timeout 120s ./core/...
       - name: Race test
-        run: go test -race -timeout 180s ./integration/... ./replay/... ./auth/ticket/... ./controlplane/...
+        run: go test -race -timeout 180s ./core/...
       - name: Benchmark smoke
-        run: go test -bench=BenchmarkTicketVerify -benchtime=1s ./auth/ticket/
+        run: go test -bench=BenchmarkTicketVerify -benchtime=1s ./core/auth/ticket/
       - name: Fuzz smoke
         run: |
-          go test -fuzz=FuzzDecodeWireRecord -fuzztime=10s ./packet/
-          go test -fuzz=FuzzTicketVerify -fuzztime=10s ./auth/ticket/
+          go test -fuzz=FuzzDecodeWireRecord -fuzztime=10s ./core/packet/
+          go test -fuzz=FuzzTicketVerify -fuzztime=10s ./core/auth/ticket/
+          go test -fuzz=FuzzDecodeInner -fuzztime=10s ./core/packet/
 
   build:
     runs-on: ubuntu-latest
@@ -33,6 +34,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
-      - name: Build all commands
-        run: go build -o /dev/null ./cmd/...
+          go-version: '1.24'
+      - name: Build core commands
+        run: go build -o /dev/null ./core/cmd/...
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Test Windows platform foundation
+        run: go test ./core/platform/windows/...

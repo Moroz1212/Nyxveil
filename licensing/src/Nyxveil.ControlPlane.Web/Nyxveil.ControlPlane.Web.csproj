@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Nyxveil.ControlPlane.Api\Nyxveil.ControlPlane.Api.csproj" />
+    <ProjectReference Include="..\Nyxveil.ControlPlane.Application\Nyxveil.ControlPlane.Application.csproj" />
+    <ProjectReference Include="..\Nyxveil.ControlPlane.Infrastructure\Nyxveil.ControlPlane.Infrastructure.csproj" />
+    <ProjectReference Include="..\Nyxveil.ControlPlane.Worker\Nyxveil.ControlPlane.Worker.csproj" />
+    <ProjectReference Include="..\Nyxveil.ControlPlane.Domain\Nyxveil.ControlPlane.Domain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="9.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.11" />
+    <PackageReference Include="Microsoft.AspNetCore.Identity.UI" Version="10.0.11" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.11">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.11" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="9.0.3" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+  </PropertyGroup>
+
+</Project>

@@ -1,6 +1,6 @@
 package tunnel
 
-import "github.com/nyxveil/nvp/transport"
+import "github.com/nyxveil/nvp/core/transport"
 
 // MTUConfig holds tunnel MTU configuration.
 type MTUConfig struct {

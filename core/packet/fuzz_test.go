@@ -3,12 +3,12 @@ package packet_test
 import (
 	"testing"
 
-	"github.com/nyxveil/nvp/control"
-	"github.com/nyxveil/nvp/packet"
+	"github.com/nyxveil/nvp/core/control"
+	"github.com/nyxveil/nvp/core/packet"
 )
 
 func FuzzDecodeWireRecord(f *testing.F) {
-	f.Add([]byte{0, 0, 0, 4, 1, 2, 3, 4})
+	f.Add([]byte{0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4})
 	f.Add([]byte{})
 	f.Add([]byte{0xFF, 0xFF, 0xFF, 0xFF})
 	f.Fuzz(func(t *testing.T, data []byte) {

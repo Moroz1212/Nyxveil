@@ -1,0 +1,101 @@
+@page "/admin/users"
+@attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
+@rendermode InteractiveServer
+@inject ControlPlaneDbContext Db
+@inject IClock Clock
+@inject AuthenticationStateProvider AuthState
+@inject IAuditService Audit
+
+<div class="page-header">
+    <div>
+        <h1>Users</h1>
+        <div class="sub">End-user accounts linked to licenses (not admin Identity users).</div>
+    </div>
+    <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
+        <button class="btn" @onclick="() => _showCreate = !_showCreate">@(_showCreate ? "Close" : "Add user")</button>
+    </AuthorizeView>
+</div>
+
+@if (_showCreate)
+{
+    <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
+        <div class="panel form-grid">
+            <label>Email<input @bind="_email" /></label>
+            <label>Display name<input @bind="_displayName" /></label>
+            <label>External id<input @bind="_externalId" /></label>
+            <div class="actions" style="align-self:end"><button class="btn" @onclick="CreateAsync">Save</button></div>
+        </div>
+    </AuthorizeView>
+}
+
+<div class="toolbar">
+    <input placeholder="Search email / name / external id" @bind="_filter" @bind:event="oninput" />
+</div>
+
+<div class="table-wrap">
+    <table class="data">
+        <thead><tr><th>UserId</th><th>Email</th><th>Name</th><th>Status</th><th>Created</th></tr></thead>
+        <tbody>
+        @foreach (var u in Filtered())
+        {
+            <tr>
+                <td class="mono">@u.UserId</td>
+                <td>@(u.Email ?? "—")</td>
+                <td>@(u.DisplayName ?? "—")</td>
+                <td><StatusBadge Status="@u.Status" /></td>
+                <td>@u.CreatedAt.ToString("u")</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    private List<UserAccount> _users = new();
+    private string _filter = "";
+    private bool _showCreate;
+    private string _email = "";
+    private string _displayName = "";
+    private string _externalId = "";
+
+    protected override async Task OnInitializedAsync() =>
+        _users = await Db.UserAccounts.OrderByDescending(u => u.CreatedAt).Take(500).ToListAsync();
+
+    private IEnumerable<UserAccount> Filtered()
+    {
+        if (string.IsNullOrWhiteSpace(_filter)) return _users;
+        var f = _filter.Trim();
+        return _users.Where(u =>
+            (u.Email?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false) ||
+            (u.DisplayName?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false) ||
+            (u.ExternalId?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false) ||
+            u.UserId.ToString().Contains(f, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task CreateAsync()
+    {
+        var now = Clock.UtcNow;
+        var user = new UserAccount
+        {
+            UserId = Guid.NewGuid(),
+            Email = string.IsNullOrWhiteSpace(_email) ? null : _email.Trim(),
+            DisplayName = string.IsNullOrWhiteSpace(_displayName) ? null : _displayName.Trim(),
+            ExternalId = string.IsNullOrWhiteSpace(_externalId) ? null : _externalId.Trim(),
+            Status = "Active",
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        Db.UserAccounts.Add(user);
+        await Db.SaveChangesAsync();
+        var state = await AuthState.GetAuthenticationStateAsync();
+        await Audit.WriteAsync(new AuditWriteRequest
+        {
+            Actor = state.User.Identity?.Name ?? "admin",
+            Action = "user.created",
+            EntityType = "User",
+            EntityId = user.UserId.ToString()
+        });
+        _showCreate = false;
+        _users = await Db.UserAccounts.OrderByDescending(u => u.CreatedAt).Take(500).ToListAsync();
+    }
+}

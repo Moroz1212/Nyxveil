@@ -1,0 +1,71 @@
+@page "/account/login"
+@layout EmptyLayout
+@inject UserManager<ApplicationUser> UserManager
+@inject NavigationManager Nav
+@inject IConfiguration Configuration
+
+<div class="auth-page">
+    <div class="auth-card">
+        <h1>Sign in</h1>
+        <p class="muted">Nyxveil Control Plane admin</p>
+
+        @if (_needsSetup)
+        {
+            @if (_allowWebBootstrap)
+            {
+                <div class="alert alert-warn">No SuperAdmin exists yet. <a href="/setup">Run first-time setup</a>.</div>
+            }
+            else
+            {
+                <div class="alert alert-warn">
+                    No SuperAdmin exists yet. Use the installer CLI:
+                    <span class="mono">admin create --username &lt;email&gt;</span>
+                </div>
+            }
+        }
+        else
+        {
+            @if (_error)
+            {
+                <div class="alert alert-error">Invalid email or password.</div>
+            }
+            @if (_setupOk)
+            {
+                <div class="alert alert-ok">SuperAdmin created. Sign in to continue.</div>
+            }
+
+            <form method="post" action="/account/login">
+                <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+                <label>Email<input name="email" type="email" required autocomplete="username" /></label>
+                <label>Password<input name="password" type="password" required autocomplete="current-password" /></label>
+                <button class="btn" type="submit">Sign in</button>
+            </form>
+        }
+    </div>
+</div>
+
+@code {
+    private bool _needsSetup;
+    private bool _allowWebBootstrap;
+    private bool _error;
+    private bool _setupOk;
+
+    [SupplyParameterFromQuery(Name = "returnUrl")] public string? ReturnUrl { get; set; } = "/";
+    [SupplyParameterFromQuery(Name = "error")] public string? Error { get; set; }
+    [SupplyParameterFromQuery(Name = "setup")] public string? Setup { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _error = Error == "1";
+        _setupOk = Setup == "1";
+        var setup = WebBootstrapGuard.ReadSetupOptions(Configuration);
+        _allowWebBootstrap = setup.AllowWebBootstrap;
+
+        var admins = await UserManager.GetUsersInRoleAsync(AdminRole.SuperAdmin);
+        _needsSetup = admins.Count == 0;
+        if (_needsSetup && _allowWebBootstrap)
+        {
+            Nav.NavigateTo("/setup");
+        }
+    }
+}

@@ -5,8 +5,9 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 
-	"github.com/nyxveil/nvp/transport"
+	"github.com/nyxveil/nvp/core/transport"
 )
 
 // Pair creates two connected in-memory transport conns for testing.
@@ -14,6 +15,9 @@ func Pair() (client transport.Conn, server transport.Conn) {
 	c1, c2 := net.Pipe()
 	return &conn{profile: transport.ProfileTLSTCP, rw: c1}, &conn{profile: transport.ProfileTLSTCP, rw: c2}
 }
+
+// Compile-time check: memory conn satisfies transport.Conn.
+var _ transport.Conn = (*conn)(nil)
 
 type conn struct {
 	profile transport.Profile
@@ -29,6 +33,11 @@ func (c *conn) Read(ctx context.Context) ([]byte, error) {
 		return nil, io.EOF
 	}
 	c.mu.Unlock()
+
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = c.rw.SetReadDeadline(deadline)
+		defer c.rw.SetReadDeadline(time.Time{})
+	}
 
 	type result struct {
 		data []byte
@@ -59,6 +68,10 @@ func (c *conn) Write(ctx context.Context, data []byte) error {
 	if c.closed {
 		return io.EOF
 	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = c.rw.SetWriteDeadline(deadline)
+		defer c.rw.SetWriteDeadline(time.Time{})
+	}
 	_, err := c.rw.Write(data)
 	return err
 }
@@ -73,11 +86,13 @@ func (c *conn) Close() error {
 	return c.rw.Close()
 }
 
-func (c *conn) LocalAddr() net.Addr        { return c.rw.LocalAddr() }
-func (c *conn) RemoteAddr() net.Addr       { return c.rw.RemoteAddr() }
-func (c *conn) Profile() transport.Profile { return c.profile }
+func (c *conn) LocalAddr() net.Addr                { return c.rw.LocalAddr() }
+func (c *conn) RemoteAddr() net.Addr               { return c.rw.RemoteAddr() }
+func (c *conn) Profile() transport.Profile         { return c.profile }
+func (c *conn) SetReadDeadline(t time.Time) error  { return c.rw.SetReadDeadline(t) }
+func (c *conn) SetWriteDeadline(t time.Time) error { return c.rw.SetWriteDeadline(t) }
 
-// Transport implements in-memory transport for unit tests.
+// Transport implements in-memory transport for unit tests only.
 type Transport struct{}
 
 func NewTransport() *Transport { return &Transport{} }

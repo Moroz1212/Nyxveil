@@ -1,0 +1,251 @@
+@page "/admin/licenses"
+@attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
+@rendermode InteractiveServer
+@inject ControlPlaneDbContext Db
+@inject ILicenseProvisioningService LicenseService
+@inject AuthenticationStateProvider AuthState
+@inject IAuditService Audit
+
+<div class="page-header">
+    <div>
+        <h1>Licenses</h1>
+        <div class="sub">Create, extend, and revoke licenses. Raw keys are shown once.</div>
+    </div>
+    <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
+        <button class="btn" @onclick="() => _showCreate = !_showCreate">@(_showCreate ? "Close" : "Create license")</button>
+    </AuthorizeView>
+</div>
+
+@if (!string.IsNullOrEmpty(_rawToken))
+{
+    <div class="alert alert-warn">
+        <strong>Save this license key now.</strong> It will not be shown again.
+        <div class="mono" style="margin-top:.5rem">@_rawToken</div>
+        <button class="btn btn-ghost btn-sm" style="margin-top:.5rem" @onclick="() => _rawToken = null">Dismiss</button>
+    </div>
+}
+
+@if (_showCreate)
+{
+    <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
+        <div class="panel">
+            <div class="form-grid">
+                <label>Plan
+                    <select @bind="_createPlanId">
+                        @foreach (var p in _plans)
+                        {
+                            <option value="@p.PlanId">@p.Code — @p.Name</option>
+                        }
+                    </select>
+                </label>
+                <label>Role
+                    <select @bind="_createRole">
+                        <option value="user">user</option>
+                        <option value="master">master</option>
+                        <option value="test">test</option>
+                    </select>
+                </label>
+                <label>Max devices<input type="number" min="1" @bind="_createMaxDevices" /></label>
+                <label>Expires at (UTC)<input type="datetime-local" @bind="_createExpiresLocal" /></label>
+                <label>Allowed locations (comma codes)<input @bind="_createLocations" /></label>
+                <label>Note<input @bind="_createNote" /></label>
+            </div>
+            <div class="actions" style="margin-top:1rem">
+                <button class="btn" @onclick="CreateAsync" disabled="@_busy">Create</button>
+            </div>
+            @if (!string.IsNullOrEmpty(_error))
+            {
+                <div class="alert alert-error" style="margin-top:1rem">@_error</div>
+            }
+        </div>
+    </AuthorizeView>
+}
+
+<div class="toolbar">
+    <input placeholder="Search license id / role / note" @bind="_filter" @bind:event="oninput" />
+    <select @bind="_statusFilter">
+        <option value="">All statuses</option>
+        @foreach (var s in Enum.GetNames<LicenseStatus>())
+        {
+            <option value="@s">@s</option>
+        }
+    </select>
+</div>
+
+<div class="table-wrap">
+    <table class="data">
+        <thead>
+            <tr>
+                <th>License</th>
+                <th>Plan</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Expires</th>
+                <th>Devices</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var row in Filtered())
+            {
+                <tr>
+                    <td class="mono">@LicenseIdFormat.ToPublicId(row.License.LicenseId)</td>
+                    <td>@row.PlanCode</td>
+                    <td>@row.License.Role</td>
+                    <td><StatusBadge Status="@row.License.Status.ToString()" /></td>
+                    <td>@row.License.CreatedAt.ToString("u")</td>
+                    <td>@(row.License.ExpiresAt?.ToString("u") ?? "—")</td>
+                    <td>@row.DeviceCount / @row.License.MaxDevices</td>
+                    <td>
+                        <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
+                            <div class="actions">
+                                <button class="btn btn-ghost btn-sm" @onclick="() => ExtendAsync(row.License.LicenseId)">+30d</button>
+                                @if (row.License.Status == LicenseStatus.Active)
+                                {
+                                    <button class="btn btn-ghost btn-sm" @onclick="() => AskRevoke(row.License.LicenseId)">Revoke</button>
+                                }
+                            </div>
+                        </AuthorizeView>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+<ConfirmDialog @bind-Visible="_confirmRevoke"
+               Title="Revoke license"
+               Message="This permanently revokes the license and adds it to the revocation list."
+               ConfirmText="Revoke"
+               OnConfirm="ConfirmRevokeAsync" />
+
+@code {
+    private sealed record Row(License License, string PlanCode, int DeviceCount);
+
+    private List<Row> _rows = new();
+    private List<Plan> _plans = new();
+    private string _filter = "";
+    private string _statusFilter = "";
+    private bool _showCreate;
+    private bool _busy;
+    private string? _error;
+    private string? _rawToken;
+    private Guid _createPlanId;
+    private string _createRole = "user";
+    private int _createMaxDevices = 3;
+    private DateTime? _createExpiresLocal;
+    private string _createLocations = "";
+    private string _createNote = "";
+    private bool _confirmRevoke;
+    private Guid _revokeId;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _plans = await Db.Plans.OrderBy(p => p.Code).ToListAsync();
+        if (_plans.Count > 0 && _createPlanId == Guid.Empty)
+        {
+            _createPlanId = _plans[0].PlanId;
+            _createMaxDevices = _plans[0].MaxDevices;
+        }
+
+        var licenses = await Db.Licenses.Include(l => l.Plan).Include(l => l.Devices).OrderByDescending(l => l.CreatedAt).Take(500).ToListAsync();
+        _rows = licenses.Select(l => new Row(l, l.Plan.Code, l.Devices.Count(d => d.Status == DeviceStatus.Active))).ToList();
+    }
+
+    private IEnumerable<Row> Filtered()
+    {
+        IEnumerable<Row> q = _rows;
+        if (!string.IsNullOrWhiteSpace(_statusFilter) && Enum.TryParse<LicenseStatus>(_statusFilter, out var st))
+            q = q.Where(r => r.License.Status == st);
+        if (!string.IsNullOrWhiteSpace(_filter))
+        {
+            var f = _filter.Trim();
+            q = q.Where(r =>
+                LicenseIdFormat.ToPublicId(r.License.LicenseId).Contains(f, StringComparison.OrdinalIgnoreCase) ||
+                r.License.Role.Contains(f, StringComparison.OrdinalIgnoreCase) ||
+                (r.License.Note?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                r.PlanCode.Contains(f, StringComparison.OrdinalIgnoreCase));
+        }
+        return q;
+    }
+
+    private async Task CreateAsync()
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            var actor = await ActorAsync();
+            var locations = string.IsNullOrWhiteSpace(_createLocations)
+                ? null
+                : _createLocations.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
+            DateTime? expires = null;
+            if (_createExpiresLocal.HasValue)
+                expires = DateTime.SpecifyKind(_createExpiresLocal.Value, DateTimeKind.Utc);
+
+            var resp = await LicenseService.CreateLicenseAsync(new CreateLicenseRequest
+            {
+                PlanId = _createPlanId,
+                Role = _createRole,
+                MaxDevices = _createMaxDevices,
+                ExpiresAt = expires,
+                AllowedLocations = locations,
+                Note = string.IsNullOrWhiteSpace(_createNote) ? null : _createNote,
+                CreatedBy = actor
+            });
+            _rawToken = resp.LicenseToken;
+            _showCreate = false;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ExtendAsync(Guid id)
+    {
+        var license = await Db.Licenses.FirstAsync(l => l.LicenseId == id);
+        var baseDate = license.ExpiresAt is { } e && e > DateTime.UtcNow ? e : DateTime.UtcNow;
+        await LicenseService.ExtendLicenseAsync(new ExtendLicenseRequest
+        {
+            LicenseId = id,
+            ExpiresAt = baseDate.AddDays(30)
+        });
+        await Audit.WriteAsync(new AuditWriteRequest
+        {
+            Actor = await ActorAsync(),
+            Action = "license.extended",
+            EntityType = "License",
+            EntityId = LicenseIdFormat.ToPublicId(id),
+            Detail = "+30 days"
+        });
+        await ReloadAsync();
+    }
+
+    private void AskRevoke(Guid id)
+    {
+        _revokeId = id;
+        _confirmRevoke = true;
+    }
+
+    private async Task ConfirmRevokeAsync()
+    {
+        await LicenseService.RevokeLicenseAsync(_revokeId);
+        await ReloadAsync();
+    }
+
+    private async Task<string> ActorAsync()
+    {
+        var state = await AuthState.GetAuthenticationStateAsync();
+        return state.User.Identity?.Name ?? "admin";
+    }
+}

@@ -1,12 +1,12 @@
 package keys
 
 import (
+	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 
-	"crypto/sha256"
 	"golang.org/x/crypto/chacha20poly1305"
-	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 )
 
@@ -24,32 +24,74 @@ type SessionKeys struct {
 	ServerToClient []byte
 }
 
+// Zero overwrites key material slices. Go GC may retain copies; this is best-effort.
+func (sk *SessionKeys) Zero() {
+	if sk == nil {
+		return
+	}
+	for i := range sk.ClientToServer {
+		sk.ClientToServer[i] = 0
+	}
+	for i := range sk.ServerToClient {
+		sk.ServerToClient[i] = 0
+	}
+	sk.ClientToServer = nil
+	sk.ServerToClient = nil
+}
+
 // EphemeralKeypair holds an X25519 ephemeral keypair.
 type EphemeralKeypair struct {
 	Private [32]byte
 	Public  [32]byte
+	priv    *ecdh.PrivateKey
 }
 
 // GenerateEphemeral generates a fresh X25519 keypair.
 func GenerateEphemeral() (*EphemeralKeypair, error) {
-	var kp EphemeralKeypair
-	if _, err := rand.Read(kp.Private[:]); err != nil {
+	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
 		return nil, fmt.Errorf("generate ephemeral private key: %w", err)
 	}
-	curve25519.ScalarBaseMult(&kp.Public, &kp.Private)
+	var kp EphemeralKeypair
+	copy(kp.Private[:], priv.Bytes())
+	copy(kp.Public[:], priv.PublicKey().Bytes())
+	kp.priv = priv
 	return &kp, nil
 }
 
 // SharedSecret computes X25519 shared secret from our private key and peer public key.
 func SharedSecret(private *[32]byte, peerPublic *[32]byte) ([32]byte, error) {
+	curve := ecdh.X25519()
+	priv, err := curve.NewPrivateKey(private[:])
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("invalid private key: %w", err)
+	}
+	pub, err := curve.NewPublicKey(peerPublic[:])
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("invalid peer public key: %w", err)
+	}
+	raw, err := priv.ECDH(pub)
+	if err != nil {
+		return [32]byte{}, err
+	}
 	var shared [32]byte
-	curve25519.ScalarMult(&shared, private, peerPublic)
-	// All-zero shared secret indicates invalid peer key.
+	copy(shared[:], raw)
 	var zero [32]byte
 	if shared == zero {
 		return shared, fmt.Errorf("invalid peer public key: low-order point")
 	}
 	return shared, nil
+}
+
+// ZeroPrivate overwrites ephemeral private key material.
+func (k *EphemeralKeypair) ZeroPrivate() {
+	if k == nil {
+		return
+	}
+	for i := range k.Private {
+		k.Private[i] = 0
+	}
+	k.priv = nil
 }
 
 // DeriveSessionKeys derives directional AEAD keys from shared secret and transcript.

@@ -2,7 +2,7 @@
 
 Base URL: `https://control.nyxveil.example/api/v1`
 
-All endpoints require HTTPS. Authentication via license token or node service identity as specified.
+All endpoints require HTTPS in production. Authentication via license token, access ticket, or node service identity as specified.
 
 ## Endpoints
 
@@ -23,43 +23,55 @@ All endpoints require HTTPS. Authentication via license token or node service id
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/ticket/issue` | Issue short-lived VPN access ticket |
-| POST | `/ticket/refresh` | Refresh existing ticket |
+| POST | `/ticket/issue` | Issue short-lived VPN access ticket (default location-scoped; optional node pin via `node_id`) |
+| POST | `/ticket/refresh` | Refresh from **current** entitlements (intersect locations; preserve/intersect NodeScope — never widen) |
 
 ### Catalog
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/catalog` | Signed node/location catalog |
-| GET | `/locations` | Location list |
-| GET | `/nodes` | Node registry (admin) |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/catalog` | **Required**: Bearer license token or access ticket | Signed node/location catalog |
+| GET | `/locations` | **Required**: same as catalog | Location list (filtered) |
+| GET | `/nodes` | **Required**: same as catalog | Node registry view (filtered) |
+
+Unauthenticated catalog/locations/nodes → `401`. Invalid license/ticket → `401`. Catalog is Ed25519-signed; clients verify before trusting node keys/SPKI.
 
 ### Node Operations
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/nodes/{node_id}/health` | Node heartbeat |
+| POST | `/nodes/{node_id}/health` | Node heartbeat (`UpdateNodeHealth` only — does not overwrite SPKI/config) |
 | POST | `/nodes/{node_id}/drain` | Enable draining mode |
 | POST | `/nodes/{node_id}/maintenance` | Maintenance mode |
+
+Node heartbeats use node service identity, not user tokens.
+
+### Revocation
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/revocation` | **Required**: node service identity (`X-Node-ID` + node bearer). User license tokens are rejected (`403`) | Revocation list (JTIs, licenses, devices) |
 
 ### Other
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/revocation` | Revocation list (JTIs, licenses, devices) |
 | GET | `/version` | Protocol version info |
 | POST | `/master/access` | Master role access (normal auth flow) |
 
 ## Node Authentication
 
-Nodes authenticate to Control Plane with unique service identity (mTLS or Ed25519-signed requests). User tokens are NOT used for node heartbeat.
+Nodes authenticate to Control Plane with unique service identity (Ed25519-signed node tokens / headers). User license credentials are NOT accepted for node heartbeat or revocation sync.
 
 ## Catalog Security
 
-Catalog MUST be signed or delivered over authenticated HTTPS. Client verifies signature before trusting node public keys.
+1. HTTPS delivery
+2. Caller authentication (license or ticket)
+3. Ed25519 catalog signature verified client-side
+4. Location scoping + `test_only` filtering by role
 
 ## test_only Filtering
 
 Control Plane filters test nodes from user catalog responses. Master role receives test + production nodes.
 
-See `controlplane/api/contract.go` for Go type definitions.
+See `core/controlplane/api` for Go type definitions.

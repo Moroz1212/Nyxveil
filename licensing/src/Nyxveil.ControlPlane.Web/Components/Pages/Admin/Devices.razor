@@ -1,0 +1,93 @@
+@page "/admin/devices"
+@attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
+@rendermode InteractiveServer
+@inject ControlPlaneDbContext Db
+@inject IDeviceService DeviceService
+@inject AuthenticationStateProvider AuthState
+
+<div class="page-header">
+    <div>
+        <h1>Devices</h1>
+        <div class="sub">Activated client devices bound to licenses.</div>
+    </div>
+</div>
+
+<div class="toolbar">
+    <input placeholder="Search device / license / platform" @bind="_filter" @bind:event="oninput" />
+</div>
+
+<div class="table-wrap">
+    <table class="data">
+        <thead>
+            <tr>
+                <th>Device</th>
+                <th>License</th>
+                <th>Platform</th>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Last seen</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var d in Filtered())
+        {
+            <tr>
+                <td class="mono">@d.ClientDeviceId</td>
+                <td class="mono">@LicenseIdFormat.ToPublicId(d.LicenseId)</td>
+                <td>@(d.Platform ?? "—")</td>
+                <td>@(d.DeviceName ?? "—")</td>
+                <td><StatusBadge Status="@d.Status.ToString()" /></td>
+                <td>@(d.LastSeenAt?.ToString("u") ?? "—")</td>
+                <td>
+                    <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
+                        @if (d.Status == DeviceStatus.Active)
+                        {
+                            <button class="btn btn-danger btn-sm" @onclick="() => AskRevoke(d.ClientDeviceId)">Revoke</button>
+                        }
+                    </AuthorizeView>
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+</div>
+
+<ConfirmDialog @bind-Visible="_confirm"
+               Title="Revoke device"
+               Message="Revoke this device and add it to the revocation list?"
+               ConfirmText="Revoke"
+               OnConfirm="ConfirmRevokeAsync" />
+
+@code {
+    private List<Device> _devices = new();
+    private string _filter = "";
+    private bool _confirm;
+    private string _revokeId = "";
+
+    protected override async Task OnInitializedAsync() =>
+        _devices = await Db.Devices.OrderByDescending(d => d.CreatedAt).Take(500).ToListAsync();
+
+    private IEnumerable<Device> Filtered()
+    {
+        if (string.IsNullOrWhiteSpace(_filter)) return _devices;
+        var f = _filter.Trim();
+        return _devices.Where(d =>
+            d.ClientDeviceId.Contains(f, StringComparison.OrdinalIgnoreCase) ||
+            LicenseIdFormat.ToPublicId(d.LicenseId).Contains(f, StringComparison.OrdinalIgnoreCase) ||
+            (d.Platform?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false) ||
+            (d.DeviceName?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false));
+    }
+
+    private void AskRevoke(string id)
+    {
+        _revokeId = id;
+        _confirm = true;
+    }
+
+    private async Task ConfirmRevokeAsync()
+    {
+        await DeviceService.RevokeAsync(_revokeId);
+        _devices = await Db.Devices.OrderByDescending(d => d.CreatedAt).Take(500).ToListAsync();
+    }
+}

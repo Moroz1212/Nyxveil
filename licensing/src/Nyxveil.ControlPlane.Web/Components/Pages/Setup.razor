@@ -1,0 +1,100 @@
+@page "/setup"
+@layout EmptyLayout
+@inject UserManager<ApplicationUser> UserManager
+@inject NavigationManager Nav
+@inject IConfiguration Configuration
+@inject IHostEnvironment Environment
+@inject IHttpContextAccessor HttpContextAccessor
+
+<div class="auth-page">
+    <div class="auth-card">
+        <h1>First-run setup</h1>
+
+        @if (_showInstallerOnly)
+        {
+            <p class="muted">Web bootstrap is disabled. Create the first SuperAdmin with the installer CLI:</p>
+            <pre class="mono">Nyxveil.ControlPlane.Web.exe admin create --username admin@example.com</pre>
+            <p class="muted">Password is read from stdin (installer pipes a SecureString). Do not pass passwords on the command line.</p>
+            <a href="/account/login">Go to login</a>
+        }
+        else if (_notFound)
+        {
+            <div class="alert alert-warn">Setup is not available.</div>
+            <a href="/account/login">Go to login</a>
+        }
+        else
+        {
+            <p class="muted">Create the initial SuperAdmin. Available only when no SuperAdmin exists and web bootstrap is enabled.</p>
+
+            @if (!string.IsNullOrEmpty(_error))
+            {
+                <div class="alert alert-error">@_error</div>
+            }
+
+            @if (_locked)
+            {
+                <div class="alert alert-warn">Setup already completed. Use the login page.</div>
+                <a href="/account/login">Go to login</a>
+            }
+            else
+            {
+                <form method="post" action="/account/setup">
+                    <label>Email<input name="email" type="email" required autocomplete="username" /></label>
+                    <label>Display name<input name="displayName" type="text" autocomplete="name" /></label>
+                    <label>Password<input name="password" type="password" required minlength="12" autocomplete="new-password" /></label>
+                    @if (_requireToken)
+                    {
+                        <label>Bootstrap token<input name="bootstrapToken" type="password" required autocomplete="one-time-code" /></label>
+                    }
+                    <button class="btn" type="submit">Create SuperAdmin</button>
+                </form>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    private bool _locked;
+    private bool _showInstallerOnly;
+    private bool _notFound;
+    private bool _requireToken;
+    private string? _error;
+
+    [SupplyParameterFromQuery] public string? Error { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _error = Error;
+        var setup = WebBootstrapGuard.ReadSetupOptions(Configuration);
+        var admins = await UserManager.GetUsersInRoleAsync(AdminRole.SuperAdmin);
+        _locked = admins.Count > 0;
+
+        if (_locked)
+        {
+            Nav.NavigateTo("/account/login");
+            return;
+        }
+
+        if (!setup.AllowWebBootstrap)
+        {
+            _showInstallerOnly = true;
+            return;
+        }
+
+        var http = HttpContextAccessor.HttpContext;
+        if (http is null)
+        {
+            _notFound = true;
+            return;
+        }
+
+        // Page itself: Development convenience or Production localhost gate (token checked on POST).
+        if (!Environment.IsDevelopment() && !WebBootstrapGuard.IsLocalhost(http))
+        {
+            _notFound = true;
+            return;
+        }
+
+        _requireToken = !Environment.IsDevelopment();
+    }
+}

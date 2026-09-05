@@ -1,0 +1,18 @@
+@namespace Nyxveil.ControlPlane.Web.Components.Shared
+
+<span class="status-badge status-@CssClass">@Label</span>
+
+@code {
+    [Parameter] public string Status { get; set; } = "";
+
+    private string CssClass => Status.ToLowerInvariant() switch
+    {
+        "healthy" or "active" or "online" => "healthy",
+        "degraded" or "pending" or "expiring" => "degraded",
+        "offline" or "revoked" or "disabled" or "expired" => "offline",
+        "maintenance" or "draining" => "degraded",
+        _ => "neutral"
+    };
+
+    private string Label => string.IsNullOrWhiteSpace(Status) ? "unknown" : Status;
+}

@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Nyxveil.ControlPlane.Api/Nyxveil.ControlPlane.Api.csproj" />
+    <Project Path="src/Nyxveil.ControlPlane.Application/Nyxveil.ControlPlane.Application.csproj" />
+    <Project Path="src/Nyxveil.ControlPlane.Domain/Nyxveil.ControlPlane.Domain.csproj" />
+    <Project Path="src/Nyxveil.ControlPlane.Infrastructure/Nyxveil.ControlPlane.Infrastructure.csproj" />
+    <Project Path="src/Nyxveil.ControlPlane.Web/Nyxveil.ControlPlane.Web.csproj" />
+    <Project Path="src/Nyxveil.ControlPlane.Worker/Nyxveil.ControlPlane.Worker.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Nyxveil.ControlPlane.IntegrationTests/Nyxveil.ControlPlane.IntegrationTests.csproj" />
+    <Project Path="tests/Nyxveil.ControlPlane.UnitTests/Nyxveil.ControlPlane.UnitTests.csproj" />
+  </Folder>
+</Solution>

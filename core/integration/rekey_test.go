@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nyxveil/nvp/keys"
-	"github.com/nyxveil/nvp/packet"
-	"github.com/nyxveil/nvp/session"
-	"github.com/nyxveil/nvp/transport/memory"
+	"github.com/nyxveil/nvp/core/keys"
+	"github.com/nyxveil/nvp/core/packet"
+	"github.com/nyxveil/nvp/core/session"
+	"github.com/nyxveil/nvp/core/transport/memory"
 )
 
 func TestFreshECDHRekeyPayload(t *testing.T) {
@@ -55,8 +55,13 @@ func TestFreshECDHRekeySession(t *testing.T) {
 	_ = clientSess.SendData(ctx, []byte{1, 2, 3})
 	_ = clientSess.SendData(ctx, []byte{4, 5, 6})
 
-	time.Sleep(100 * time.Millisecond)
-	cancel()
+	time.Sleep(200 * time.Millisecond)
+	if clientSess.Epoch() < 2 {
+		t.Fatalf("expected rekey epoch >= 2, got %d", clientSess.Epoch())
+	}
+	if err := clientSess.SendData(ctx, []byte{7, 8, 9}); err != nil {
+		t.Fatalf("data after rekey: %v", err)
+	}
 	_ = clientSess.Close(context.Background())
 	_ = serverSess.Close(context.Background())
 

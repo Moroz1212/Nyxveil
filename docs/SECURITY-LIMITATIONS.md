@@ -3,47 +3,51 @@
 ## Explicit Non-Guarantees
 
 1. **Resistance to blocking by every network/TSPU: NOT GUARANTEED**
-2. **Protocol undetectability: NOT GUARANTEED**
+2. **Protocol undetectability / DPI bypass: NOT GUARANTEED** (and not claimed)
 3. **Traffic analysis immunity: NOT GUARANTEED**
 4. **100% security: NOT POSSIBLE**
-5. **Independent security audit: NOT PERFORMED**
+5. **Third-party lab audit: not part of the project process** (internal cyclic reviews only)
 
 ## Known Limitations
 
-### Cryptographic
-- Session layer rekey uses fresh X25519 ECDH exchange per epoch
-- ECH supported via `transport/ech` policy (requires DNS HTTPS config for required mode)
-- MASQUE transport: interface stub only (`transport/masque`)
-
 ### Network
-- Server IP always visible to observer
-- QUIC/TLS on port 443 is classifiable traffic
-- Length-prefix framing is observable pattern (generic)
+
+- Server IP always visible (UNAVOIDABLE)
+- QUIC/TLS on 443 is classifiable
+- Length-prefix framing is an observable pattern inside the secure channel
+- ALPN: TLS uses **no** application ALPN; QUIC uses real HTTP/3 (`h3` + CONNECT). Custom markers (`nvp/1`) and fake `h2` are forbidden
+- No claim of censorship circumvention against state DPI/TSPU
+- Automatic Core failover is **same-location only**; cross-location is a new session by the app (not silent Core hopping)
 
 ### Authentication
-- Revocation delay bounded by ticket TTL without active denylist sync
-- max_devices enforced at Control Plane, not re-checked per packet on node
+
+- Revocation delay bounded by ticket TTL plus sync interval
+- `max_devices` enforced at Control Plane, not per packet on the node
+- Catalog requires auth; revocation sync requires node identity — misconfiguration can widen exposure
+- Ticket refresh never widens location/`NodeScope`; default tickets are location-scoped
+
+### Cryptographic
+
+- Session rekey uses fresh X25519 ECDH per epoch
+- ECH via `transport/ech` (DNS HTTPS required for required mode); deployment NOT VERIFIED by default
+- Server ECH: `KeySet` applied at listener build; Core 1.0 does not live-rotate mid-connection via `GetEncryptedClientHelloKeys` — reconfigure the listener
+- MASQUE: interface stub only (`Available() == false`); disabled in NVP/1
+- AUTH binds to NVP handshake transcript, not TLS exporter
 
 ### Platform
-- DNS privacy requires platform-layer DoH/DoT integration
-- Split tunneling not in wire protocol — platform responsibility
-- Windows/Android TUN drivers not in this core
+
+- DNS privacy is a platform concern (DoH/DoT)
+- Split tunneling is not in the wire protocol
+- Windows/Android TUN drivers are foundations, not full apps
 
 ### Operational
-- No payment/billing in protocol core
-- Control Plane reference API only — production deployment requires hardening
-- Benchmarks environment-dependent
 
-## Commercial Readiness Gate
+- SQLite is single-instance; set `NVP_LICENSE_KEK` (64 hex chars) in production
+- No billing in protocol core
+- Heartbeats must use `UpdateNodeHealth` so SPKI/config is not overwritten
 
-Minimum requirements for production claim:
-- [ ] Independent cryptographic audit
-- [ ] Production Control Plane deployment
-- [ ] Real-network DPI testing documented
-- [ ] ECH infrastructure deployed
-- [ ] Revocation push mechanism operational
-- [ ] mTLS node ↔ Control Plane in production
+## Commercial launch
 
-Current reference implementation status: **development foundation**
+Not a production VPN service until DPI/TSPU is tested on target networks and client apps are complete. Internal code audits do not replace that.
 
 Independent security/cryptographic audit: **NOT PERFORMED**

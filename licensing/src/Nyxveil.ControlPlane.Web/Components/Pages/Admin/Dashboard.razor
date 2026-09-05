@@ -1,0 +1,65 @@
+@page "/"
+@attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
+@rendermode InteractiveServer
+@inject IDashboardQueryService DashboardQuery
+@inject NavigationManager Nav
+@inject UserManager<ApplicationUser> UserManager
+@inject IConfiguration Configuration
+
+@if (_needsSetup)
+{
+    <p class="muted">@_setupMessage</p>
+}
+else if (_summary is null)
+{
+    <p class="muted">Loading dashboard…</p>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>Dashboard</h1>
+            <div class="sub">Operational overview · UTC @DateTime.UtcNow.ToString("u")</div>
+        </div>
+    </div>
+
+    <div class="stats-grid">
+        <div class="stat"><div class="label">Total nodes</div><div class="value">@_summary.TotalNodes</div></div>
+        <div class="stat"><div class="label">Healthy</div><div class="value">@_summary.HealthyNodes</div></div>
+        <div class="stat"><div class="label">Degraded</div><div class="value">@_summary.DegradedNodes</div></div>
+        <div class="stat"><div class="label">Offline</div><div class="value">@_summary.OfflineNodes</div></div>
+        <div class="stat"><div class="label">Active sessions</div><div class="value">@_summary.ActiveSessions</div></div>
+        <div class="stat"><div class="label">Active licenses</div><div class="value">@_summary.ActiveLicenses</div></div>
+        <div class="stat"><div class="label">Expiring (14d)</div><div class="value">@_summary.ExpiringLicenses</div></div>
+        <div class="stat"><div class="label">Revoked licenses</div><div class="value">@_summary.RevokedLicenses</div></div>
+        <div class="stat"><div class="label">Active devices</div><div class="value">@_summary.ActiveDevices</div></div>
+        <div class="stat"><div class="label">Bootstrap pending</div><div class="value">@_summary.PendingBootstrapTokens</div></div>
+    </div>
+}
+
+@code {
+    private DashboardSummary? _summary;
+    private bool _needsSetup;
+    private string _setupMessage = "Redirecting to setup…";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var admins = await UserManager.GetUsersInRoleAsync(AdminRole.SuperAdmin);
+        if (admins.Count == 0)
+        {
+            _needsSetup = true;
+            var setup = WebBootstrapGuard.ReadSetupOptions(Configuration);
+            if (setup.AllowWebBootstrap)
+            {
+                Nav.NavigateTo("/setup", forceLoad: true);
+            }
+            else
+            {
+                _setupMessage = "No SuperAdmin exists. Use the installer CLI: admin create --username <email>";
+            }
+            return;
+        }
+
+        _summary = await DashboardQuery.GetSummaryAsync();
+    }
+}

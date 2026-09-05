@@ -8,20 +8,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nyxveil/nvp/auth/ticket"
-	"github.com/nyxveil/nvp/control"
-	"github.com/nyxveil/nvp/keys"
-	"github.com/nyxveil/nvp/packet"
-	"github.com/nyxveil/nvp/replay"
-	"github.com/nyxveil/nvp/server"
-	"github.com/nyxveil/nvp/session"
-	"github.com/nyxveil/nvp/transport"
-	"github.com/nyxveil/nvp/transport/memory"
+	"github.com/nyxveil/nvp/core/auth/ticket"
+	"github.com/nyxveil/nvp/core/authhandler"
+	"github.com/nyxveil/nvp/core/control"
+	"github.com/nyxveil/nvp/core/keys"
+	"github.com/nyxveil/nvp/core/packet"
+	"github.com/nyxveil/nvp/core/replay"
+	"github.com/nyxveil/nvp/core/session"
+	"github.com/nyxveil/nvp/core/transport"
+	"github.com/nyxveil/nvp/core/transport/memory"
 )
 
-func setupTicket(t *testing.T) (string, ticket.VerifierConfig) {
+func setupTicket(t *testing.T) (string, ed25519.PrivateKey, ticket.VerifierConfig) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devPub, devPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +36,7 @@ func setupTicket(t *testing.T) (string, ticket.VerifierConfig) {
 		PrivateKey: priv,
 		TTL:        15 * time.Minute,
 	}
-	tok, err := ticket.Issue(issuer, "lic_test", "dev_test", "user", "premium", []string{"connect"}, []string{"fi"})
+	tok, err := ticket.IssueWithDevice(issuer, "lic_test", "dev_test", "user", "premium", []string{"connect"}, []string{"fi"}, devPub)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,11 +46,11 @@ func setupTicket(t *testing.T) (string, ticket.VerifierConfig) {
 		PublicKeys: map[string]ed25519.PublicKey{"cp-key-1": pub},
 		Revoked:    ticket.NewMemoryRevocation(),
 	}
-	return tok, verifier
+	return tok, devPriv, verifier
 }
 
 func TestFullSessionEstablishment(t *testing.T) {
-	tok, verifier := setupTicket(t)
+	tok, devPriv, verifier := setupTicket(t)
 
 	clientConn, serverConn := memory.Pair()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -54,7 +58,7 @@ func TestFullSessionEstablishment(t *testing.T) {
 
 	clientSess := session.New(session.DefaultConfig(true))
 	serverSess := session.New(session.DefaultConfig(false))
-	authHandler := server.NewAuthHandler("fi-hel-01", verifier)
+	authHandler := authhandler.NewAuthHandler("fi-hel-01", "fi", verifier)
 
 	serverSess.OnControl(func(msgType byte, payload []byte) error {
 		if msgType == control.TypeAuth {
@@ -82,7 +86,11 @@ func TestFullSessionEstablishment(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	if err := clientSess.SendAuth(ctx, []byte(tok)); err != nil {
+	authBody, err := ticket.EncodeAuthPayload(tok, clientSess.Transcript(), devPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := clientSess.SendAuth(ctx, authBody); err != nil {
 		t.Fatal(err)
 	}
 
@@ -172,6 +180,9 @@ func (c *captureConn) Write(ctx context.Context, data []byte) error {
 	return c.Conn.Write(ctx, data)
 }
 
+func (c *captureConn) SetReadDeadline(t time.Time) error  { return c.Conn.SetReadDeadline(t) }
+func (c *captureConn) SetWriteDeadline(t time.Time) error { return c.Conn.SetWriteDeadline(t) }
+
 func TestTamperedCiphertextRejected(t *testing.T) {
 	kp, _ := keys.GenerateEphemeral()
 	peerKP, _ := keys.GenerateEphemeral()
@@ -194,9 +205,31 @@ func TestTamperedCiphertextRejected(t *testing.T) {
 	}
 }
 
+func TestWrongKeyRejected(t *testing.T) {
+	skA, err := keys.DeriveSessionKeys([32]byte{1}, []byte("transcript"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skB, err := keys.DeriveSessionKeys([32]byte{2}, []byte("transcript"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seal, err := keys.NewClientAEAD(skA.ClientToServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open, err := keys.NewClientAEAD(skB.ClientToServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, _ := packet.EncodeInner(control.TypeData, []byte("secret"), nil)
+	ct, _ := seal.Seal(1, 0, inner)
+	if _, err := open.Open(1, 0, ct); err == nil {
+		t.Fatal("wrong key should reject ciphertext")
+	}
+}
+
 func TestReplayRejected(t *testing.T) {
-	// Replay protection is validated at replay window unit tests and session layer.
-	// Direct wire replay test requires full session sync; covered by replay package.
 	w := replay.NewWindow(64)
 	w.Reset(1)
 	_ = w.CheckAndMark(1, 1)
@@ -243,7 +276,7 @@ func TestExpiredTicketRejected(t *testing.T) {
 }
 
 func TestWrongDeviceRejected(t *testing.T) {
-	tok, verifier := setupTicket(t)
+	tok, _, verifier := setupTicket(t)
 	_, err := ticket.Verify(verifier, tok, "wrong_device", "")
 	if err != ticket.ErrWrongDevice {
 		t.Fatalf("expected wrong device, got %v", err)
@@ -256,6 +289,20 @@ func TestDataBeforeAuthRejected(t *testing.T) {
 	}
 	if session.StateSecureChannel.CanSendData() {
 		t.Fatal("DATA should not be allowed before auth")
+	}
+	clientConn, serverConn := memory.Pair()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clientSess := session.New(session.DefaultConfig(true))
+	serverSess := session.New(session.DefaultConfig(false))
+	go func() {
+		_ = serverSess.Connect(ctx, serverConn)
+		_ = serverSess.RunHandshake(ctx)
+	}()
+	_ = clientSess.Connect(ctx, clientConn)
+	_ = clientSess.RunHandshake(ctx)
+	if err := clientSess.SendData(ctx, []byte{1, 2, 3}); err == nil {
+		t.Fatal("DATA before AUTH/established must fail")
 	}
 }
 
@@ -282,7 +329,7 @@ func TestStateMachineTransitions(t *testing.T) {
 
 func TestOversizedFrameRejected(t *testing.T) {
 	huge := make([]byte, 70000)
-	_, err := packet.EncodeWireRecord(huge)
+	_, err := packet.EncodeWireRecord(1, 0, huge)
 	if err == nil {
 		t.Fatal("oversized frame should be rejected")
 	}
