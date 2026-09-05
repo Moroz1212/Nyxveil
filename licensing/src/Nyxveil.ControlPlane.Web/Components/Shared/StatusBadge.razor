@@ -14,5 +14,5 @@
         _ => "neutral"
     };
 
-    private string Label => string.IsNullOrWhiteSpace(Status) ? "unknown" : Status;
+    private string Label => UiText.Status(Status);
 }

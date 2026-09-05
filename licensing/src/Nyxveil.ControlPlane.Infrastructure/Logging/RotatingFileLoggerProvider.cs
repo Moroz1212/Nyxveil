@@ -139,7 +139,7 @@ public sealed class RotatingFileLoggerProvider : ILoggerProvider
 
             var message = formatter(state, exception);
             if (exception is not null)
-                message += " " + exception;
+                message += Environment.NewLine + exception;
             _provider.Write(_category, logLevel, message);
         }
     }

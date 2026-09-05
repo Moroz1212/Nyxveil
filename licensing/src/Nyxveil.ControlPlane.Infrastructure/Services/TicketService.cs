@@ -153,7 +153,10 @@ public sealed class TicketService : ITicketService
             throw new ForbiddenException(nodeErr!);
 
         var role = TicketScopeCalculator.NormalizeRole(lic.Role);
-        var permissions = TicketScopeCalculator.PermissionsFromPlanJson(lic.Plan.Permissions);
+        if (role != old.Role && old.Role != "master")
+            throw new ForbiddenException("role changed; open a new session");
+        var permissions = TicketScopeCalculator.Intersect(old.Permissions,
+            TicketScopeCalculator.PermissionsFromPlanJson(lic.Plan.Permissions));
         if (!TicketScopeCalculator.HasConnectPermission(permissions))
             throw new ForbiddenException("plan missing connect permission");
 

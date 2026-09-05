@@ -51,11 +51,16 @@ public static class ServiceCollectionExtensions
     {
         services.AddSingleton<IDatabaseConnectionStringProvider, DatabaseConnectionStringProvider>();
 
-        services.AddDbContext<ControlPlaneDbContext>((sp, options) =>
+        // Singleton factory (options resolve Singleton connection-string provider).
+        // Scoped ControlPlaneDbContext is created per scope from the factory so Blazor UI and
+        // Identity/API share one registration pattern without concurrent shared instances.
+        services.AddDbContextFactory<ControlPlaneDbContext>((sp, options) =>
         {
             var cs = sp.GetRequiredService<IDatabaseConnectionStringProvider>().GetConnectionString();
             options.UseSqlServer(cs);
         });
+        services.AddScoped(sp =>
+            sp.GetRequiredService<IDbContextFactory<ControlPlaneDbContext>>().CreateDbContext());
 
         services
             .AddIdentityCore<ApplicationUser>(options =>

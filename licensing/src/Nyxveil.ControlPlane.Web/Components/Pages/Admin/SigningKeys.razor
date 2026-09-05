@@ -1,30 +1,29 @@
 @page "/admin/signing-keys"
 @attribute [Authorize(Policy = AuthPolicies.SuperAdminOnly)]
 @rendermode InteractiveServer
-@inject ISigningKeyService SigningKeyService
+@inject IServiceScopeFactory Scopes
 @inject AuthenticationStateProvider AuthState
-@inject IAuditService Audit
 
 <div class="page-header">
     <div>
-        <h1>Signing keys</h1>
-        <div class="sub">Ed25519 catalog / ticket signing material. SuperAdmin only.</div>
+        <h1>Ключи подписи</h1>
+        <div class="sub">Ключи Ed25519 для подписи каталога и билетов доступа. Только для главного администратора.</div>
     </div>
-    <button class="btn btn-danger" @onclick="() => _confirm = true">Rotate key</button>
+    <button class="btn btn-danger" @onclick="() => _confirm = true" disabled="@_busy">Сменить ключ</button>
 </div>
 
 @if (_current is not null)
 {
     <div class="panel">
-        <p><strong>Active key id:</strong> <span class="mono">@_current.KeyId</span></p>
-        <p class="muted">Public key (hex)</p>
+        <p><strong>Идентификатор текущего ключа:</strong> <span class="mono">@_current.KeyId</span></p>
+        <p class="muted">Открытый ключ (HEX)</p>
         <div class="mono">@Convert.ToHexString(_current.PublicKey)</div>
     </div>
 }
 
 <div class="table-wrap">
     <table class="data">
-        <thead><tr><th>Key id</th><th>Status</th><th>Public key</th></tr></thead>
+        <thead><tr><th>Идентификатор ключа</th><th>Статус</th><th>Открытый ключ</th></tr></thead>
         <tbody>
         @foreach (var k in _keys)
         {
@@ -39,44 +38,65 @@
 </div>
 
 <ConfirmDialog @bind-Visible="_confirm"
-               Title="Rotate signing key"
-               Message="Rotate the active Ed25519 signing key? Previous key remains for verification until retired."
-               ConfirmText="Rotate"
+               Title="Сменить ключ подписи"
+               Message="Сменить текущий ключ подписи Ed25519? Предыдущий ключ останется доступен для проверки до вывода из обращения."
+               ConfirmText="Сменить"
                OnConfirm="RotateAsync" />
 
 @code {
     private SigningMaterialDto? _current;
     private List<VerificationKeyDto> _keys = new();
     private bool _confirm;
+    private bool _busy;
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
     private async Task LoadAsync()
     {
-        try
+        await BlazorWork.RunAsync(Scopes, async sp =>
         {
-            _current = await SigningKeyService.GetCurrentSigningMaterialAsync();
-        }
-        catch
-        {
-            _current = null;
-        }
+            var signingKeyService = sp.GetRequiredService<ISigningKeyService>();
+            try
+            {
+                _current = await signingKeyService.GetCurrentSigningMaterialAsync();
+            }
+            catch
+            {
+                _current = null;
+            }
 
-        _keys = (await SigningKeyService.GetVerificationKeysAsync()).ToList();
+            _keys = (await signingKeyService.GetVerificationKeysAsync()).ToList();
+        });
     }
 
     private async Task RotateAsync()
     {
-        var result = await SigningKeyService.RotateAsync();
-        var state = await AuthState.GetAuthenticationStateAsync();
-        await Audit.WriteAsync(new AuditWriteRequest
+        if (_busy) return;
+        _busy = true;
+        try
         {
-            Actor = state.User.Identity?.Name ?? "admin",
-            Action = "signing_key.rotated",
-            EntityType = "SigningKey",
-            EntityId = result.NewKeyId,
-            Detail = $"previous={result.PreviousKeyId}"
-        });
-        await LoadAsync();
+            var state = await AuthState.GetAuthenticationStateAsync();
+            var actor = state.User.Identity?.Name ?? "admin";
+
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var signingKeyService = sp.GetRequiredService<ISigningKeyService>();
+                var audit = sp.GetRequiredService<IAuditService>();
+                var result = await signingKeyService.RotateAsync();
+                await audit.WriteAsync(new AuditWriteRequest
+                {
+                    Actor = actor,
+                    Action = "signing_key.rotated",
+                    EntityType = "SigningKey",
+                    EntityId = result.NewKeyId,
+                    Detail = $"previous={result.PreviousKeyId}"
+                });
+            });
+            await LoadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
     }
 }

@@ -1,14 +1,13 @@
 @page "/admin/nodes/{NodeId}"
 @attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
 @rendermode InteractiveServer
-@inject ControlPlaneDbContext Db
-@inject INodeManagementService NodeMgmt
+@inject IServiceScopeFactory Scopes
 @inject AuthenticationStateProvider AuthState
 @inject NavigationManager Nav
 
 @if (_node is null)
 {
-    <p class="muted">Node not found.</p>
+    <p class="muted">Сервер не найден.</p>
 }
 else
 {
@@ -17,57 +16,60 @@ else
             <h1>@_node.DisplayName</h1>
             <div class="sub mono">@_node.NodeId · @_node.LocationId</div>
         </div>
-        <a class="btn btn-ghost" href="/admin/nodes">Back</a>
+        <div class="actions">
+            <a class="btn" href="@($"/admin/metrics?node={Uri.EscapeDataString(NodeId)}")">Графики нагрузки</a>
+            <a class="btn btn-ghost" href="/admin/nodes">Назад</a>
+        </div>
     </div>
 
     <div class="stats-grid">
-        <div class="stat"><div class="label">Runtime</div><div class="value" style="font-size:1.1rem"><StatusBadge Status="@_node.Status.ToString()" /></div></div>
-        <div class="stat"><div class="label">Sessions</div><div class="value">@_node.CurrentSessions / @(_cfg?.Capacity ?? _node.Capacity)</div></div>
-        <div class="stat"><div class="label">Config</div><div class="value" style="font-size:1rem">v@(_cfg?.ConfigVersion ?? _node.ConfigVersion)</div></div>
-        <div class="stat"><div class="label">CPU</div><div class="value">@(_health?.CpuPercent.ToString("0.0") ?? "—")%</div></div>
+        <div class="stat"><div class="label">Состояние</div><div class="value" style="font-size:1.1rem"><StatusBadge Status="@_node.Status.ToString()" /></div></div>
+        <div class="stat"><div class="label">Сеансы</div><div class="value">@_node.CurrentSessions / @(_cfg?.Capacity ?? _node.Capacity)</div></div>
+        <div class="stat"><div class="label">Версия конфигурации</div><div class="value" style="font-size:1rem">v@(_cfg?.ConfigVersion ?? _node.ConfigVersion)</div></div>
+        <div class="stat"><div class="label">CPU</div><div class="value">@(_health?.CpuPercent.ToString("0.0", UiText.Culture) ?? "—")%</div></div>
     </div>
 
     @if (_cfg is not null)
     {
         <div class="panel">
-            <h3>Managed config (authoritative)</h3>
+            <h3>Настройки сервера</h3>
             <p class="muted">
-                Enabled=@(_cfg.Enabled ? "yes" : "no") ·
-                Draining=@(_cfg.Draining ? "yes" : "no") ·
-                Maintenance=@(_cfg.MaintenanceMode ? "yes" : "no") ·
-                TestOnly=@(_node.TestOnly ? "yes" : "no") ·
-                Capacity=@_cfg.Capacity
+                Включён=@(_cfg.Enabled ? "да" : "нет") ·
+                Завершение сеансов=@(_cfg.Draining ? "да" : "нет") ·
+                Обслуживание=@(_cfg.MaintenanceMode ? "да" : "нет") ·
+                Тестовый=@(_node.TestOnly ? "да" : "нет") ·
+                Лимит=@_cfg.Capacity
             </p>
         </div>
     }
 
     <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
         <div class="panel actions">
-            <button class="btn btn-ghost" @onclick="() => SetEnabledAsync(!(_cfg?.Enabled ?? true))">@((_cfg?.Enabled ?? true) ? "Disable" : "Enable")</button>
-            <button class="btn btn-ghost" @onclick="() => SetDrainingAsync(!(_cfg?.Draining ?? false))">@((_cfg?.Draining ?? false) ? "Stop drain" : "Drain")</button>
-            <button class="btn btn-ghost" @onclick="() => SetTestOnlyAsync(!_node.TestOnly)">@(_node.TestOnly ? "Clear test-only" : "Mark test-only")</button>
+            <button class="btn btn-ghost" @onclick="() => SetEnabledAsync(!(_cfg?.Enabled ?? true))" disabled="@_busy">@((_cfg?.Enabled ?? true) ? "Отключить" : "Включить")</button>
+            <button class="btn btn-ghost" @onclick="() => SetDrainingAsync(!(_cfg?.Draining ?? false))" disabled="@_busy">@((_cfg?.Draining ?? false) ? "Разрешить новые сеансы" : "Завершать текущие сеансы")</button>
+            <button class="btn btn-ghost" @onclick="() => SetTestOnlyAsync(!_node.TestOnly)" disabled="@_busy">@(_node.TestOnly ? "Снять тестовый режим" : "Включить тестовый режим")</button>
             @if (_cfg?.MaintenanceMode == true)
             {
-                <button class="btn btn-ghost" @onclick="ExitMaintenanceAsync">Exit maintenance</button>
+                <button class="btn btn-ghost" @onclick="ExitMaintenanceAsync" disabled="@_busy">Завершить обслуживание</button>
             }
             else
             {
-                <button class="btn btn-danger" @onclick="() => _confirmMaint = true">Enter maintenance</button>
+                <button class="btn btn-danger" @onclick="() => _confirmMaint = true" disabled="@_busy">Начать обслуживание</button>
             }
         </div>
         <div class="panel">
-            <h3>Capacity &amp; location</h3>
+            <h3>Лимит сеансов и локация</h3>
             <div class="form-grid">
-                <label>Configured capacity
+                <label>Лимит одновременных сеансов
                     <input type="number" min="0" @bind="_editCapacity" />
                 </label>
-                <label>Location (id or code)
+                <label>Локация (идентификатор или код)
                     <input @bind="_editLocation" />
                 </label>
             </div>
             <div class="actions" style="margin-top:.75rem">
-                <button class="btn" @onclick="SaveCapacityAsync">Save capacity</button>
-                <button class="btn btn-ghost" @onclick="ChangeLocationAsync">Change location</button>
+                <button class="btn" @onclick="SaveCapacityAsync" disabled="@_busy">Сохранить лимит</button>
+                <button class="btn btn-ghost" @onclick="ChangeLocationAsync" disabled="@_busy">Изменить локацию</button>
             </div>
             @if (!string.IsNullOrEmpty(_error))
             {
@@ -77,12 +79,12 @@ else
     </AuthorizeView>
 
     <div class="panel">
-        <h3>Identity &amp; endpoints</h3>
-        <p class="mono muted">Public identity: @Convert.ToHexString(_node.PublicIdentity)</p>
-        <p class="muted">Protocol @_node.ProtocolVersion · Server @(_node.ServerVersion ?? "—") · SPKI @(_node.SpkiPin is null ? "—" : Convert.ToHexString(_node.SpkiPin))</p>
+        <h3>Идентификация и адреса подключения</h3>
+        <p class="mono muted">Открытый ключ идентификации: @Convert.ToHexString(_node.PublicIdentity)</p>
+        <p class="muted">Протокол @_node.ProtocolVersion · Версия сервера @(_node.ServerVersion ?? "—") · SPKI @(_node.SpkiPin is null ? "—" : Convert.ToHexString(_node.SpkiPin))</p>
         <div class="table-wrap" style="margin-top:.75rem">
             <table class="data">
-                <thead><tr><th>Host</th><th>Port</th><th>Family</th><th>Priority</th><th>Enabled</th></tr></thead>
+                <thead><tr><th>Адрес</th><th>Порт</th><th>Семейство адресов</th><th>Приоритет</th><th>Включено</th></tr></thead>
                 <tbody>
                 @foreach (var ep in _endpoints)
                 {
@@ -91,7 +93,7 @@ else
                         <td>@ep.Port</td>
                         <td>@ep.AddressFamily</td>
                         <td>@ep.Priority</td>
-                        <td>@(ep.Enabled ? "yes" : "no")</td>
+                        <td>@(ep.Enabled ? "да" : "нет")</td>
                     </tr>
                 }
                 </tbody>
@@ -100,17 +102,17 @@ else
     </div>
 
     <div class="panel">
-        <h3>Recent metrics</h3>
+        <h3>Последние метрики</h3>
         <div class="table-wrap">
             <table class="data">
-                <thead><tr><th>Time</th><th>CPU</th><th>RAM</th><th>Sessions</th></tr></thead>
+                <thead><tr><th>Время (UTC)</th><th>CPU</th><th>Память</th><th>Сеансы</th></tr></thead>
                 <tbody>
                 @foreach (var m in _metrics)
                 {
                     <tr>
-                        <td>@m.Timestamp.ToString("u")</td>
-                        <td>@m.CpuPercent.ToString("0.0")%</td>
-                        <td>@m.MemoryPercent.ToString("0.0")%</td>
+                        <td>@m.Timestamp.ToString("dd.MM.yyyy HH:mm:ss 'UTC'")</td>
+                        <td>@m.CpuPercent.ToString("0.0", UiText.Culture)%</td>
+                        <td>@m.MemoryPercent.ToString("0.0", UiText.Culture)%</td>
                         <td>@m.ActiveSessions</td>
                     </tr>
                 }
@@ -121,9 +123,9 @@ else
 }
 
 <ConfirmDialog @bind-Visible="_confirmMaint"
-               Title="Enter maintenance"
-               Message="Enter maintenance mode? Catalog will advertise Draining=true so Frozen Core will not select this node for new connections. Enabled/Draining flags otherwise stay unchanged."
-               ConfirmText="Confirm"
+               Title="Начать обслуживание"
+               Message="Перевести сервер в режим обслуживания? Новые подключения не будут направляться на этот сервер. Сохранённые настройки доступности и завершения сеансов сохранятся."
+               ConfirmText="Подтвердить"
                OnConfirm="EnterMaintenanceAsync" />
 
 @code {
@@ -135,6 +137,7 @@ else
     private List<NodeEndpoint> _endpoints = new();
     private List<NodeMetric> _metrics = new();
     private bool _confirmMaint;
+    private bool _busy;
     private int _editCapacity;
     private string _editLocation = "";
     private string? _error;
@@ -144,14 +147,18 @@ else
     private async Task LoadAsync()
     {
         _error = null;
-        _node = await Db.Nodes.FirstOrDefaultAsync(n => n.NodeId == NodeId);
-        if (_node is null) return;
-        _cfg = await Db.NodeConfigs.FirstOrDefaultAsync(c => c.NodeId == NodeId);
-        _health = await Db.NodeHealth.FirstOrDefaultAsync(h => h.NodeId == NodeId);
-        _endpoints = await Db.NodeEndpoints.Where(e => e.NodeId == NodeId).OrderBy(e => e.Priority).ToListAsync();
-        _metrics = await Db.NodeMetrics.Where(m => m.NodeId == NodeId).OrderByDescending(m => m.Timestamp).Take(50).ToListAsync();
-        _editCapacity = _cfg?.Capacity ?? _node.Capacity;
-        _editLocation = _node.LocationId;
+        await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            var db = sp.GetRequiredService<ControlPlaneDbContext>();
+            _node = await db.Nodes.FirstOrDefaultAsync(n => n.NodeId == NodeId);
+            if (_node is null) return;
+            _cfg = await db.NodeConfigs.FirstOrDefaultAsync(c => c.NodeId == NodeId);
+            _health = await db.NodeHealth.FirstOrDefaultAsync(h => h.NodeId == NodeId);
+            _endpoints = await db.NodeEndpoints.Where(e => e.NodeId == NodeId).OrderBy(e => e.Priority).ToListAsync();
+            _metrics = await db.NodeMetrics.Where(m => m.NodeId == NodeId).OrderByDescending(m => m.Timestamp).Take(50).ToListAsync();
+            _editCapacity = _cfg?.Capacity ?? _node.Capacity;
+            _editLocation = _node.LocationId;
+        });
     }
 
     private async Task<string> ActorAsync()
@@ -160,73 +167,49 @@ else
         return state.User.Identity?.Name ?? "admin";
     }
 
-    private async Task SetEnabledAsync(bool enabled)
+    private async Task RunNodeActionAsync(Func<INodeManagementService, string, Task> action)
     {
+        if (_busy) return;
+        _busy = true;
+        _error = null;
         try
         {
-            await NodeMgmt.SetEnabledAsync(NodeId, enabled, await ActorAsync());
+            var actor = await ActorAsync();
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var nodeMgmt = sp.GetRequiredService<INodeManagementService>();
+                await action(nodeMgmt, actor);
+            });
             await LoadAsync();
         }
-        catch (Exception ex) { _error = ex.Message; }
+        catch (Exception ex)
+        {
+            _error = UiText.Error(ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
     }
 
-    private async Task SetDrainingAsync(bool draining)
-    {
-        try
-        {
-            await NodeMgmt.SetDrainingAsync(NodeId, draining, await ActorAsync());
-            await LoadAsync();
-        }
-        catch (Exception ex) { _error = ex.Message; }
-    }
+    private Task SetEnabledAsync(bool enabled) =>
+        RunNodeActionAsync((svc, actor) => svc.SetEnabledAsync(NodeId, enabled, actor));
 
-    private async Task SetTestOnlyAsync(bool testOnly)
-    {
-        try
-        {
-            await NodeMgmt.SetTestOnlyAsync(NodeId, testOnly, await ActorAsync());
-            await LoadAsync();
-        }
-        catch (Exception ex) { _error = ex.Message; }
-    }
+    private Task SetDrainingAsync(bool draining) =>
+        RunNodeActionAsync((svc, actor) => svc.SetDrainingAsync(NodeId, draining, actor));
 
-    private async Task EnterMaintenanceAsync()
-    {
-        try
-        {
-            await NodeMgmt.EnterMaintenanceAsync(NodeId, await ActorAsync());
-            await LoadAsync();
-        }
-        catch (Exception ex) { _error = ex.Message; }
-    }
+    private Task SetTestOnlyAsync(bool testOnly) =>
+        RunNodeActionAsync((svc, actor) => svc.SetTestOnlyAsync(NodeId, testOnly, actor));
 
-    private async Task ExitMaintenanceAsync()
-    {
-        try
-        {
-            await NodeMgmt.ExitMaintenanceAsync(NodeId, await ActorAsync());
-            await LoadAsync();
-        }
-        catch (Exception ex) { _error = ex.Message; }
-    }
+    private Task EnterMaintenanceAsync() =>
+        RunNodeActionAsync((svc, actor) => svc.EnterMaintenanceAsync(NodeId, actor));
 
-    private async Task SaveCapacityAsync()
-    {
-        try
-        {
-            await NodeMgmt.SetCapacityAsync(NodeId, _editCapacity, await ActorAsync());
-            await LoadAsync();
-        }
-        catch (Exception ex) { _error = ex.Message; }
-    }
+    private Task ExitMaintenanceAsync() =>
+        RunNodeActionAsync((svc, actor) => svc.ExitMaintenanceAsync(NodeId, actor));
 
-    private async Task ChangeLocationAsync()
-    {
-        try
-        {
-            await NodeMgmt.ChangeLocationAsync(NodeId, _editLocation, await ActorAsync());
-            await LoadAsync();
-        }
-        catch (Exception ex) { _error = ex.Message; }
-    }
+    private Task SaveCapacityAsync() =>
+        RunNodeActionAsync((svc, actor) => svc.SetCapacityAsync(NodeId, _editCapacity, actor));
+
+    private Task ChangeLocationAsync() =>
+        RunNodeActionAsync((svc, actor) => svc.ChangeLocationAsync(NodeId, _editLocation, actor));
 }

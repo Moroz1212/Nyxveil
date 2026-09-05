@@ -37,7 +37,8 @@ public sealed class NodeRegistrationService : INodeRegistrationService
         NodeRegisterRequest request,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(request.NodeId))
+        if (string.IsNullOrWhiteSpace(request.NodeId) || request.NodeId.Length > 128 ||
+            request.NodeId.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not '-' and not '_' and not '.'))
             throw new ValidationException("node_id is required");
         if (string.IsNullOrWhiteSpace(request.LocationId))
             throw new ValidationException("location_id is required");
@@ -57,7 +58,7 @@ public sealed class NodeRegistrationService : INodeRegistrationService
 
         if (existing is not null)
         {
-            if (!existing.PublicIdentity.SequenceEqual(request.PublicIdentity))
+            if (existing.NodeId != request.NodeId || !existing.PublicIdentity.SequenceEqual(request.PublicIdentity))
                 throw new ConflictException("node_id already registered with different identity");
 
             // Existing node: require PoP of registered credential key. No bootstrap reset,
@@ -65,13 +66,7 @@ public sealed class NodeRegistrationService : INodeRegistrationService
             if (string.IsNullOrWhiteSpace(request.NodeToken))
                 throw new ForbiddenException("existing node requires proof-of-possession");
 
-            await _nodeAuth.ValidateNodeRequestAsync(
-                    existing.NodeId,
-                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                    {
-                        ["Authorization"] = "Bearer " + request.NodeToken.Trim()
-                    },
-                    cancellationToken)
+            await _nodeAuth.VerifyCoreNodeTokenV1Async(existing.NodeId, request.NodeToken.Trim(), cancellationToken)
                 .ConfigureAwait(false);
 
             var cred = await _db.NodeCredentials.AsNoTracking()
@@ -197,26 +192,12 @@ public sealed class NodeRegistrationService : INodeRegistrationService
 
     public async Task<NodeConfigResponse> GetConfigAsync(string nodeId, CancellationToken cancellationToken = default)
     {
-        var cfg = await _db.NodeConfigs.AsNoTracking()
+        var cfg = await _db.NodeConfigs.AsNoTracking().Include(c => c.Node)
             .FirstOrDefaultAsync(c => c.NodeId == nodeId, cancellationToken)
             .ConfigureAwait(false)
             ?? throw new NotFoundException("node config not found");
 
-        return new NodeConfigResponse
-        {
-            NodeId = cfg.NodeId,
-            Enabled = cfg.Enabled,
-            Draining = cfg.Draining,
-            MaintenanceMode = cfg.MaintenanceMode,
-            TransportPolicyJson = cfg.TransportPolicyJson,
-            EchPolicyJson = cfg.EchPolicyJson,
-            Mtu = cfg.Mtu,
-            Capacity = cfg.Capacity,
-            MinimumServerVersion = cfg.MinimumServerVersion,
-            MinimumProtocolVersion = cfg.MinimumProtocolVersion,
-            ConfigVersion = cfg.ConfigVersion,
-            UpdatedAt = cfg.UpdatedAt
-        };
+        return NodeManagementService.ToResponse(cfg);
     }
 
     /// <summary>

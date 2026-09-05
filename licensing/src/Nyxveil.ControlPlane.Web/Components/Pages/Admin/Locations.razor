@@ -1,18 +1,17 @@
 @page "/admin/locations"
 @attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
 @rendermode InteractiveServer
-@inject ControlPlaneDbContext Db
+@inject IServiceScopeFactory Scopes
 @inject IClock Clock
 @inject AuthenticationStateProvider AuthState
-@inject IAuditService Audit
 
 <div class="page-header">
     <div>
-        <h1>Locations</h1>
-        <div class="sub">Geographic locations used for catalog and ticket scope.</div>
+        <h1>Локации</h1>
+        <div class="sub">Географические локации серверов, доступные клиентам.</div>
     </div>
     <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
-        <button class="btn" @onclick="() => _showCreate = !_showCreate">@(_showCreate ? "Close" : "Add location")</button>
+        <button class="btn" @onclick="() => _showCreate = !_showCreate" disabled="@_busy">@(_showCreate ? "Закрыть" : "Добавить локацию")</button>
     </AuthorizeView>
 </div>
 
@@ -20,20 +19,20 @@
 {
     <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
         <div class="panel form-grid">
-            <label>Location id<input @bind="_id" /></label>
-            <label>Code<input @bind="_code" /></label>
-            <label>Country<input @bind="_country" /></label>
-            <label>City<input @bind="_city" /></label>
-            <label>Display name<input @bind="_display" /></label>
-            <label>Sort order<input type="number" @bind="_sort" /></label>
-            <div class="actions" style="align-self:end"><button class="btn" @onclick="CreateAsync">Save</button></div>
+            <label>Идентификатор локации<input @bind="_id" /></label>
+            <label>Код<input @bind="_code" /></label>
+            <label>Страна<input @bind="_country" /></label>
+            <label>Город<input @bind="_city" /></label>
+            <label>Отображаемое имя<input @bind="_display" /></label>
+            <label>Порядок сортировки<input type="number" @bind="_sort" /></label>
+            <div class="actions" style="align-self:end"><button class="btn" @onclick="CreateAsync" disabled="@_busy">Сохранить</button></div>
         </div>
     </AuthorizeView>
 }
 
 <div class="table-wrap">
     <table class="data">
-        <thead><tr><th>Id</th><th>Code</th><th>Display</th><th>Country</th><th>City</th><th>Enabled</th><th>Sort</th><th></th></tr></thead>
+        <thead><tr><th>Идентификатор</th><th>Код</th><th>Название</th><th>Страна</th><th>Город</th><th>Включено</th><th>Порядок</th><th></th></tr></thead>
         <tbody>
         @foreach (var loc in _locations)
         {
@@ -43,11 +42,11 @@
                 <td>@loc.DisplayName</td>
                 <td>@loc.Country</td>
                 <td>@loc.City</td>
-                <td>@(loc.Enabled ? "yes" : "no")</td>
+                <td>@(loc.Enabled ? "да" : "нет")</td>
                 <td>@loc.SortOrder</td>
                 <td>
                     <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
-                        <button class="btn btn-ghost btn-sm" @onclick="() => ToggleAsync(loc)">@(loc.Enabled ? "Disable" : "Enable")</button>
+                        <button class="btn btn-ghost btn-sm" @onclick="() => ToggleAsync(loc.LocationId)" disabled="@_busy">@(loc.Enabled ? "Отключить" : "Включить")</button>
                     </AuthorizeView>
                 </td>
             </tr>
@@ -59,6 +58,7 @@
 @code {
     private List<Location> _locations = new();
     private bool _showCreate;
+    private bool _busy;
     private string _id = "";
     private string _code = "";
     private string _country = "";
@@ -66,43 +66,82 @@
     private string _display = "";
     private int _sort;
 
-    protected override async Task OnInitializedAsync() =>
-        _locations = await Db.Locations.OrderBy(l => l.SortOrder).ThenBy(l => l.Code).ToListAsync();
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _locations = await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            var db = sp.GetRequiredService<ControlPlaneDbContext>();
+            return await db.Locations.OrderBy(l => l.SortOrder).ThenBy(l => l.Code).ToListAsync();
+        });
+    }
 
     private async Task CreateAsync()
     {
-        var now = Clock.UtcNow;
-        var loc = new Location
+        if (_busy) return;
+        _busy = true;
+        try
         {
-            LocationId = string.IsNullOrWhiteSpace(_id) ? _code.Trim() : _id.Trim(),
-            Code = _code.Trim(),
-            Country = _country.Trim(),
-            City = _city.Trim(),
-            DisplayName = string.IsNullOrWhiteSpace(_display) ? $"{_city}, {_country}" : _display.Trim(),
-            Enabled = true,
-            SortOrder = _sort,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-        Db.Locations.Add(loc);
-        await Db.SaveChangesAsync();
-        var state = await AuthState.GetAuthenticationStateAsync();
-        await Audit.WriteAsync(new AuditWriteRequest
+            var state = await AuthState.GetAuthenticationStateAsync();
+            var actor = state.User.Identity?.Name ?? "admin";
+            var now = Clock.UtcNow;
+            var loc = new Location
+            {
+                LocationId = string.IsNullOrWhiteSpace(_id) ? _code.Trim() : _id.Trim(),
+                Code = _code.Trim(),
+                Country = _country.Trim(),
+                City = _city.Trim(),
+                DisplayName = string.IsNullOrWhiteSpace(_display) ? $"{_city}, {_country}" : _display.Trim(),
+                Enabled = true,
+                SortOrder = _sort,
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var db = sp.GetRequiredService<ControlPlaneDbContext>();
+                var audit = sp.GetRequiredService<IAuditService>();
+                db.Locations.Add(loc);
+                await db.SaveChangesAsync();
+                await audit.WriteAsync(new AuditWriteRequest
+                {
+                    Actor = actor,
+                    Action = "location.created",
+                    EntityType = "Location",
+                    EntityId = loc.LocationId
+                });
+            });
+            _showCreate = false;
+            await ReloadAsync();
+        }
+        finally
         {
-            Actor = state.User.Identity?.Name ?? "admin",
-            Action = "location.created",
-            EntityType = "Location",
-            EntityId = loc.LocationId
-        });
-        _showCreate = false;
-        _locations = await Db.Locations.OrderBy(l => l.SortOrder).ThenBy(l => l.Code).ToListAsync();
+            _busy = false;
+        }
     }
 
-    private async Task ToggleAsync(Location loc)
+    private async Task ToggleAsync(string locationId)
     {
-        loc.Enabled = !loc.Enabled;
-        loc.UpdatedAt = Clock.UtcNow;
-        await Db.SaveChangesAsync();
-        _locations = await Db.Locations.OrderBy(l => l.SortOrder).ThenBy(l => l.Code).ToListAsync();
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            var now = Clock.UtcNow;
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var db = sp.GetRequiredService<ControlPlaneDbContext>();
+                var entity = await db.Locations.FirstAsync(l => l.LocationId == locationId);
+                entity.Enabled = !entity.Enabled;
+                entity.UpdatedAt = now;
+                await db.SaveChangesAsync();
+            });
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
     }
 }

@@ -33,7 +33,7 @@ function Test-ShouldExclude([string]$FullPath, [string]$Root) {
     $rel = $FullPath.Substring($Root.Length).TrimStart('\', '/')
     $parts = $rel -split '[\\/]'
     foreach ($p in $parts) {
-        if ($p -in @('bin', 'obj', 'secrets', '.git', '.vs', 'artifacts', 'publish', 'TestResults', 'logs')) { return $true }
+        if ($p -in @('bin', 'obj', 'secrets', '.git', '.vs', 'artifacts', 'publish', 'TestResults', 'logs', 'temp', 'tmp', 'work', '.cache', 'node_modules')) { return $true }
     }
     if ($rel -match '(?i)(^|[/\\])(secrets|artifacts|publish|bin|obj)([/\\]|$)') { return $true }
     if ($rel -match '(?i)\.(pfx|dpapi|user)$') { return $true }

@@ -1,6 +1,6 @@
 @page "/setup"
 @layout EmptyLayout
-@inject UserManager<ApplicationUser> UserManager
+@inject IServiceScopeFactory Scopes
 @inject NavigationManager Nav
 @inject IConfiguration Configuration
 @inject IHostEnvironment Environment
@@ -8,23 +8,23 @@
 
 <div class="auth-page">
     <div class="auth-card">
-        <h1>First-run setup</h1>
+        <h1>Первоначальная настройка</h1>
 
         @if (_showInstallerOnly)
         {
-            <p class="muted">Web bootstrap is disabled. Create the first SuperAdmin with the installer CLI:</p>
+            <p class="muted">Создание администратора через сайт отключено. Используйте команду установщика:</p>
             <pre class="mono">Nyxveil.ControlPlane.Web.exe admin create --username admin@example.com</pre>
-            <p class="muted">Password is read from stdin (installer pipes a SecureString). Do not pass passwords on the command line.</p>
-            <a href="/account/login">Go to login</a>
+            <p class="muted">Установщик запросит пароль отдельно. Не указывайте пароль в аргументах команды.</p>
+            <a href="/account/login">Перейти ко входу</a>
         }
         else if (_notFound)
         {
-            <div class="alert alert-warn">Setup is not available.</div>
-            <a href="/account/login">Go to login</a>
+            <div class="alert alert-warn">Первоначальная настройка недоступна.</div>
+            <a href="/account/login">Перейти ко входу</a>
         }
         else
         {
-            <p class="muted">Create the initial SuperAdmin. Available only when no SuperAdmin exists and web bootstrap is enabled.</p>
+            <p class="muted">Создайте первого главного администратора. Эта форма доступна только при разрешённой первоначальной настройке.</p>
 
             @if (!string.IsNullOrEmpty(_error))
             {
@@ -33,20 +33,20 @@
 
             @if (_locked)
             {
-                <div class="alert alert-warn">Setup already completed. Use the login page.</div>
-                <a href="/account/login">Go to login</a>
+                <div class="alert alert-warn">Настройка уже выполнена. Перейдите на страницу входа.</div>
+                <a href="/account/login">Перейти ко входу</a>
             }
             else
             {
                 <form method="post" action="/account/setup">
-                    <label>Email<input name="email" type="email" required autocomplete="username" /></label>
-                    <label>Display name<input name="displayName" type="text" autocomplete="name" /></label>
-                    <label>Password<input name="password" type="password" required minlength="12" autocomplete="new-password" /></label>
+                    <label>Электронная почта<input name="email" type="email" required autocomplete="username" /></label>
+                    <label>Отображаемое имя<input name="displayName" type="text" autocomplete="name" /></label>
+                    <label>Пароль<input name="password" type="password" required minlength="12" autocomplete="new-password" /></label>
                     @if (_requireToken)
                     {
-                        <label>Bootstrap token<input name="bootstrapToken" type="password" required autocomplete="one-time-code" /></label>
+                        <label>Токен регистрации<input name="bootstrapToken" type="password" required autocomplete="one-time-code" /></label>
                     }
-                    <button class="btn" type="submit">Create SuperAdmin</button>
+                    <button class="btn" type="submit">Создать главного администратора</button>
                 </form>
             }
         }
@@ -66,8 +66,13 @@
     {
         _error = Error;
         var setup = WebBootstrapGuard.ReadSetupOptions(Configuration);
-        var admins = await UserManager.GetUsersInRoleAsync(AdminRole.SuperAdmin);
-        _locked = admins.Count > 0;
+        var adminCount = await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            var userManager = sp.GetRequiredService<UserManager<ApplicationUser>>();
+            var admins = await userManager.GetUsersInRoleAsync(AdminRole.SuperAdmin);
+            return admins.Count;
+        });
+        _locked = adminCount > 0;
 
         if (_locked)
         {

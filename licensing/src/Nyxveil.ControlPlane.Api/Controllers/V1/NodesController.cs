@@ -39,10 +39,10 @@ public sealed class NodesController : ControllerBase
 
     /// <summary>
     /// POST /api/v1/nodes/{nodeId}/health — Core PathNodeHealth; requires node auth
-    /// (headers and/or body node_token).
+    /// (nvp-node-req-v2 signature headers).
     /// </summary>
     [HttpPost("nodes/{nodeId}/health")]
-    [NodeAuth(AllowBodyCredentials = true)]
+    [NodeAuth]
     [RateLimit]
     public async Task<ActionResult<NodeHeartbeatResponse>> Health(
         string nodeId,
@@ -58,7 +58,6 @@ public sealed class NodesController : ControllerBase
                 Status = StatusCodes.Status400BadRequest
             });
 
-        EnsureNodeTokenFromAuth(request);
         var result = await _heartbeat.ProcessHeartbeatAsync(request, cancellationToken)
             .ConfigureAwait(false);
         return Ok(result);
@@ -68,7 +67,7 @@ public sealed class NodesController : ControllerBase
     /// POST /api/v1/node/heartbeat — convenience alias for PathNodeHealth.
     /// </summary>
     [HttpPost("node/heartbeat")]
-    [NodeAuth(AllowBodyCredentials = true)]
+    [NodeAuth]
     [RateLimit]
     public async Task<ActionResult<NodeHeartbeatResponse>> Heartbeat(
         [FromBody] NodeHeartbeatRequest request,
@@ -89,7 +88,6 @@ public sealed class NodesController : ControllerBase
             });
         }
 
-        EnsureNodeTokenFromAuth(request);
         var result = await _heartbeat.ProcessHeartbeatAsync(request, cancellationToken)
             .ConfigureAwait(false);
         return Ok(result);
@@ -108,13 +106,4 @@ public sealed class NodesController : ControllerBase
         return Ok(result);
     }
 
-    private void EnsureNodeTokenFromAuth(NodeHeartbeatRequest request)
-    {
-        if (!string.IsNullOrWhiteSpace(request.NodeToken))
-            return;
-
-        var bearer = AuthTokenExtractor.ExtractBearer(Request);
-        if (!string.IsNullOrWhiteSpace(bearer))
-            request.NodeToken = bearer;
-    }
 }

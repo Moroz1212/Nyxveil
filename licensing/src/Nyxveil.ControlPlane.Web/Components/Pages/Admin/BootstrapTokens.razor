@@ -1,25 +1,25 @@
 @page "/admin/bootstrap-tokens"
 @attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
 @rendermode InteractiveServer
-@inject IBootstrapTokenService Bootstrap
+@inject IServiceScopeFactory Scopes
 @inject AuthenticationStateProvider AuthState
 
 <div class="page-header">
     <div>
-        <h1>Bootstrap tokens</h1>
-        <div class="sub">One-time (or limited-use) tokens for node registration.</div>
+        <h1>Токены регистрации</h1>
+        <div class="sub">Одноразовые токены или токены с ограничением числа регистраций серверов.</div>
     </div>
     <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
-        <button class="btn" @onclick="() => _showCreate = !_showCreate">@(_showCreate ? "Close" : "Create token")</button>
+        <button class="btn" @onclick="() => _showCreate = !_showCreate" disabled="@_busy">@(_showCreate ? "Закрыть" : "Создать токен")</button>
     </AuthorizeView>
 </div>
 
 @if (!string.IsNullOrEmpty(_rawToken))
 {
     <div class="alert alert-warn">
-        <strong>Save this bootstrap token now.</strong> It will not be shown again.
+        <strong>Сохраните этот токен регистрации сейчас.</strong> Повторно он показан не будет.
         <div class="mono" style="margin-top:.5rem">@_rawToken</div>
-        <button class="btn btn-ghost btn-sm" style="margin-top:.5rem" @onclick="() => _rawToken = null">Dismiss</button>
+        <button class="btn btn-ghost btn-sm" style="margin-top:.5rem" @onclick="() => _rawToken = null">Закрыть</button>
     </div>
 }
 
@@ -27,18 +27,18 @@
 {
     <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
         <div class="panel form-grid">
-            <label>Expires at (UTC)<input type="datetime-local" @bind="_expiresLocal" /></label>
-            <label>Max uses<input type="number" min="1" @bind="_maxUses" /></label>
-            <label>Allowed location<input @bind="_allowedLocation" /></label>
-            <label>Note<input @bind="_note" /></label>
-            <div class="actions" style="align-self:end"><button class="btn" @onclick="CreateAsync">Create</button></div>
+            <label>Истекает (UTC)<input type="datetime-local" @bind="_expiresLocal" /></label>
+            <label>Лимит использований<input type="number" min="1" @bind="_maxUses" /></label>
+            <label>Разрешённая локация<input @bind="_allowedLocation" /></label>
+            <label>Примечание<input @bind="_note" /></label>
+            <div class="actions" style="align-self:end"><button class="btn" @onclick="CreateAsync" disabled="@_busy">Создать</button></div>
         </div>
     </AuthorizeView>
 }
 
 <div class="table-wrap">
     <table class="data">
-        <thead><tr><th>Id</th><th>Status</th><th>Uses</th><th>Location</th><th>Expires</th><th>Created</th><th>By</th></tr></thead>
+        <thead><tr><th>Идентификатор</th><th>Статус</th><th>Использования</th><th>Локация</th><th>Истекает (UTC)</th><th>Создано (UTC)</th><th>Автор</th></tr></thead>
         <tbody>
         @foreach (var t in _items)
         {
@@ -47,8 +47,8 @@
                 <td><StatusBadge Status="@t.Status" /></td>
                 <td>@t.UsedCount / @t.MaxUses</td>
                 <td>@(t.AllowedLocation ?? "—")</td>
-                <td>@t.ExpiresAt.ToString("u")</td>
-                <td>@t.CreatedAt.ToString("u")</td>
+                <td>@t.ExpiresAt.ToString("dd.MM.yyyy HH:mm:ss 'UTC'")</td>
+                <td>@t.CreatedAt.ToString("dd.MM.yyyy HH:mm:ss 'UTC'")</td>
                 <td>@t.CreatedBy</td>
             </tr>
         }
@@ -59,28 +59,56 @@
 @code {
     private List<BootstrapTokenListItemDto> _items = new();
     private bool _showCreate;
+    private bool _busy;
     private string? _rawToken;
     private DateTime _expiresLocal = DateTime.UtcNow.AddDays(7);
     private int _maxUses = 1;
     private string _allowedLocation = "";
     private string _note = "";
 
-    protected override async Task OnInitializedAsync() =>
-        _items = (await Bootstrap.ListAsync()).ToList();
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _items = await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            var bootstrap = sp.GetRequiredService<IBootstrapTokenService>();
+            return (await bootstrap.ListAsync()).ToList();
+        });
+    }
 
     private async Task CreateAsync()
     {
-        var state = await AuthState.GetAuthenticationStateAsync();
-        var resp = await Bootstrap.CreateAsync(new CreateBootstrapTokenRequest
+        if (_busy) return;
+        _busy = true;
+        try
         {
-            ExpiresAt = DateTime.SpecifyKind(_expiresLocal, DateTimeKind.Utc),
-            MaxUses = Math.Max(1, _maxUses),
-            AllowedLocation = string.IsNullOrWhiteSpace(_allowedLocation) ? null : _allowedLocation.Trim(),
-            Note = string.IsNullOrWhiteSpace(_note) ? null : _note.Trim(),
-            CreatedBy = state.User.Identity?.Name ?? "admin"
-        });
-        _rawToken = resp.BootstrapToken;
-        _showCreate = false;
-        _items = (await Bootstrap.ListAsync()).ToList();
+            var state = await AuthState.GetAuthenticationStateAsync();
+            var actor = state.User.Identity?.Name ?? "admin";
+            var expiresAt = DateTime.SpecifyKind(_expiresLocal, DateTimeKind.Utc);
+            var maxUses = Math.Max(1, _maxUses);
+            var allowedLocation = string.IsNullOrWhiteSpace(_allowedLocation) ? null : _allowedLocation.Trim();
+            var note = string.IsNullOrWhiteSpace(_note) ? null : _note.Trim();
+
+            var resp = await BlazorWork.RunAsync(Scopes, sp =>
+            {
+                var bootstrap = sp.GetRequiredService<IBootstrapTokenService>();
+                return bootstrap.CreateAsync(new CreateBootstrapTokenRequest
+                {
+                    ExpiresAt = expiresAt,
+                    MaxUses = maxUses,
+                    AllowedLocation = allowedLocation,
+                    Note = note,
+                    CreatedBy = actor
+                });
+            });
+            _rawToken = resp.BootstrapToken;
+            _showCreate = false;
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
     }
 }

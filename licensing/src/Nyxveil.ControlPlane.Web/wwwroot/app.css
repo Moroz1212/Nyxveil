@@ -234,3 +234,28 @@ table.data tr:last-child td { border-bottom: none; }
 
 h1:focus { outline: none; }
 .validation-message { color: #e50000; }
+
+/* Metrics: scalable inline SVG, keyboard sorting and a readable mobile layout. */
+.admin-main { min-width: 0; }
+.charts-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.metric-chart { min-width: 0; margin: 0; }
+.metric-chart h3 { margin: 0 0 .25rem; }
+.metric-chart svg { display: block; width: 100%; height: auto; margin-top: .5rem; overflow: visible; }
+.metric-chart svg text { fill: var(--muted); font-size: 12px; }
+.chart-grid { stroke: var(--border); stroke-width: 1; }
+.chart-empty { min-height: 170px; display: grid; place-items: center; color: var(--muted); text-align: center; }
+.metric-chart circle:hover { r: 5; }
+.metrics-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 1rem; margin-top: 1.5rem; }
+.metrics-controls label, .toolbar label { display: grid; gap: .35rem; color: var(--muted); }
+.metrics-controls select { max-width: 100%; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: .6rem; font: inherit; }
+.metrics-controls label { max-width: 100%; }
+.sort-button, .server-select { background: none; border: 0; color: inherit; font: inherit; padding: 0; cursor: pointer; text-align: left; }
+.server-select { color: #85baff; }
+.sort-button:hover, .server-select:hover { text-decoration: underline; }
+.selected-row { background: var(--accent-soft); }
+button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid #85baff; outline-offset: 4px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+details.panel { margin-top: 1rem; }
+details summary { cursor: pointer; margin-bottom: .75rem; }
+@media (max-width: 1100px) { .charts-grid { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .admin-main { padding: 1rem; } .page-header { flex-wrap: wrap; } }

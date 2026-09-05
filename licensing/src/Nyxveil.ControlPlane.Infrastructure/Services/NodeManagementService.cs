@@ -99,7 +99,7 @@ public sealed class NodeManagementService : INodeManagementService
         string nodeId,
         CancellationToken cancellationToken = default)
     {
-        var cfg = await _db.NodeConfigs.AsNoTracking()
+        var cfg = await _db.NodeConfigs.AsNoTracking().Include(c => c.Node)
             .FirstOrDefaultAsync(c => c.NodeId == nodeId, cancellationToken)
             .ConfigureAwait(false)
             ?? throw new NotFoundException("node config not found");
@@ -119,44 +119,59 @@ public sealed class NodeManagementService : INodeManagementService
 
         await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
-        var node = await _db.Nodes.FirstOrDefaultAsync(n => n.NodeId == nodeId, cancellationToken)
-            .ConfigureAwait(false)
-            ?? throw new NotFoundException("node not found");
-
-        var cfg = await _db.NodeConfigs.FirstOrDefaultAsync(c => c.NodeId == nodeId, cancellationToken)
-            .ConfigureAwait(false)
-            ?? throw new NotFoundException("node config not found");
-
-        apply(node, cfg);
-
-        var now = _clock.UtcNow;
-        cfg.ConfigVersion = checked(cfg.ConfigVersion + 1);
-        cfg.UpdatedAt = now;
-
-        // Projection mirrors for catalog / list queries.
-        node.Enabled = cfg.Enabled;
-        node.Draining = cfg.Draining;
-        node.ConfigVersion = cfg.ConfigVersion;
-        if (node.Capacity > cfg.Capacity)
-            node.Capacity = cfg.Capacity;
-        node.UpdatedAt = now;
-
-        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
-
-        await _audit.WriteAsync(new AuditWriteRequest
+        try
         {
-            Actor = string.IsNullOrWhiteSpace(actor) ? "admin" : actor,
-            Action = auditAction,
-            EntityType = "Node",
-            EntityId = nodeId,
-            Detail = $"config_version={cfg.ConfigVersion}"
-        }, cancellationToken).ConfigureAwait(false);
+            var node = await _db.Nodes.FirstOrDefaultAsync(n => n.NodeId == nodeId, cancellationToken)
+                .ConfigureAwait(false)
+                ?? throw new NotFoundException("node not found");
+
+            var cfg = await _db.NodeConfigs.FirstOrDefaultAsync(c => c.NodeId == nodeId, cancellationToken)
+                .ConfigureAwait(false)
+                ?? throw new NotFoundException("node config not found");
+
+            apply(node, cfg);
+
+            var now = _clock.UtcNow;
+            cfg.ConfigVersion = checked(cfg.ConfigVersion + 1);
+            cfg.UpdatedAt = now;
+
+            // Projection mirrors for catalog / list queries.
+            node.Enabled = cfg.Enabled;
+            node.Draining = cfg.Draining;
+            node.ConfigVersion = cfg.ConfigVersion;
+            if (node.Capacity > cfg.Capacity)
+                node.Capacity = cfg.Capacity;
+            node.UpdatedAt = now;
+
+            await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await _audit.WriteAsync(new AuditWriteRequest
+            {
+                Actor = string.IsNullOrWhiteSpace(actor) ? "admin" : actor,
+                Action = auditAction,
+                EntityType = "Node",
+                EntityId = nodeId,
+                Detail = $"config_version={cfg.ConfigVersion}"
+            }, cancellationToken).ConfigureAwait(false);
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            _db.ChangeTracker.Clear();
+            throw new ConflictException("node config changed concurrently; reload and retry");
+        }
+        catch
+        {
+            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            _db.ChangeTracker.Clear();
+            throw;
+        }
     }
 
     internal static NodeConfigResponse ToResponse(NodeConfig cfg) => new()
     {
         NodeId = cfg.NodeId,
+        LocationId = cfg.Node.LocationId,
         Enabled = cfg.Enabled,
         Draining = cfg.Draining,
         MaintenanceMode = cfg.MaintenanceMode,

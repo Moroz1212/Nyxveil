@@ -1,18 +1,17 @@
 @page "/admin/users"
 @attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
 @rendermode InteractiveServer
-@inject ControlPlaneDbContext Db
+@inject IServiceScopeFactory Scopes
 @inject IClock Clock
 @inject AuthenticationStateProvider AuthState
-@inject IAuditService Audit
 
 <div class="page-header">
     <div>
-        <h1>Users</h1>
-        <div class="sub">End-user accounts linked to licenses (not admin Identity users).</div>
+        <h1>Пользователи</h1>
+        <div class="sub">Пользовательские учётные записи, связанные с лицензиями.</div>
     </div>
     <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
-        <button class="btn" @onclick="() => _showCreate = !_showCreate">@(_showCreate ? "Close" : "Add user")</button>
+        <button class="btn" @onclick="() => _showCreate = !_showCreate" disabled="@_busy">@(_showCreate ? "Закрыть" : "Добавить пользователя")</button>
     </AuthorizeView>
 </div>
 
@@ -20,21 +19,21 @@
 {
     <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
         <div class="panel form-grid">
-            <label>Email<input @bind="_email" /></label>
-            <label>Display name<input @bind="_displayName" /></label>
-            <label>External id<input @bind="_externalId" /></label>
-            <div class="actions" style="align-self:end"><button class="btn" @onclick="CreateAsync">Save</button></div>
+            <label>Электронная почта<input @bind="_email" /></label>
+            <label>Отображаемое имя<input @bind="_displayName" /></label>
+            <label>Внешний идентификатор<input @bind="_externalId" /></label>
+            <div class="actions" style="align-self:end"><button class="btn" @onclick="CreateAsync" disabled="@_busy">Сохранить</button></div>
         </div>
     </AuthorizeView>
 }
 
 <div class="toolbar">
-    <input placeholder="Search email / name / external id" @bind="_filter" @bind:event="oninput" />
+    <input placeholder="Поиск по почте, имени или внешнему идентификатору" @bind="_filter" @bind:event="oninput" />
 </div>
 
 <div class="table-wrap">
     <table class="data">
-        <thead><tr><th>UserId</th><th>Email</th><th>Name</th><th>Status</th><th>Created</th></tr></thead>
+        <thead><tr><th>Идентификатор пользователя</th><th>Электронная почта</th><th>Название</th><th>Статус</th><th>Создано (UTC)</th></tr></thead>
         <tbody>
         @foreach (var u in Filtered())
         {
@@ -43,7 +42,7 @@
                 <td>@(u.Email ?? "—")</td>
                 <td>@(u.DisplayName ?? "—")</td>
                 <td><StatusBadge Status="@u.Status" /></td>
-                <td>@u.CreatedAt.ToString("u")</td>
+                <td>@u.CreatedAt.ToString("dd.MM.yyyy HH:mm:ss 'UTC'")</td>
             </tr>
         }
         </tbody>
@@ -54,12 +53,21 @@
     private List<UserAccount> _users = new();
     private string _filter = "";
     private bool _showCreate;
+    private bool _busy;
     private string _email = "";
     private string _displayName = "";
     private string _externalId = "";
 
-    protected override async Task OnInitializedAsync() =>
-        _users = await Db.UserAccounts.OrderByDescending(u => u.CreatedAt).Take(500).ToListAsync();
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _users = await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            var db = sp.GetRequiredService<ControlPlaneDbContext>();
+            return await db.UserAccounts.OrderByDescending(u => u.CreatedAt).Take(500).ToListAsync();
+        });
+    }
 
     private IEnumerable<UserAccount> Filtered()
     {
@@ -74,28 +82,47 @@
 
     private async Task CreateAsync()
     {
-        var now = Clock.UtcNow;
-        var user = new UserAccount
+        if (_busy) return;
+        _busy = true;
+        try
         {
-            UserId = Guid.NewGuid(),
-            Email = string.IsNullOrWhiteSpace(_email) ? null : _email.Trim(),
-            DisplayName = string.IsNullOrWhiteSpace(_displayName) ? null : _displayName.Trim(),
-            ExternalId = string.IsNullOrWhiteSpace(_externalId) ? null : _externalId.Trim(),
-            Status = "Active",
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-        Db.UserAccounts.Add(user);
-        await Db.SaveChangesAsync();
-        var state = await AuthState.GetAuthenticationStateAsync();
-        await Audit.WriteAsync(new AuditWriteRequest
+            var state = await AuthState.GetAuthenticationStateAsync();
+            var actor = state.User.Identity?.Name ?? "admin";
+            var now = Clock.UtcNow;
+            var email = string.IsNullOrWhiteSpace(_email) ? null : _email.Trim();
+            var displayName = string.IsNullOrWhiteSpace(_displayName) ? null : _displayName.Trim();
+            var externalId = string.IsNullOrWhiteSpace(_externalId) ? null : _externalId.Trim();
+
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var db = sp.GetRequiredService<ControlPlaneDbContext>();
+                var audit = sp.GetRequiredService<IAuditService>();
+                var user = new UserAccount
+                {
+                    UserId = Guid.NewGuid(),
+                    Email = email,
+                    DisplayName = displayName,
+                    ExternalId = externalId,
+                    Status = "Active",
+                    CreatedAt = now,
+                    UpdatedAt = now
+                };
+                db.UserAccounts.Add(user);
+                await db.SaveChangesAsync();
+                await audit.WriteAsync(new AuditWriteRequest
+                {
+                    Actor = actor,
+                    Action = "user.created",
+                    EntityType = "User",
+                    EntityId = user.UserId.ToString()
+                });
+            });
+            _showCreate = false;
+            await ReloadAsync();
+        }
+        finally
         {
-            Actor = state.User.Identity?.Name ?? "admin",
-            Action = "user.created",
-            EntityType = "User",
-            EntityId = user.UserId.ToString()
-        });
-        _showCreate = false;
-        _users = await Db.UserAccounts.OrderByDescending(u => u.CreatedAt).Take(500).ToListAsync();
+            _busy = false;
+        }
     }
 }

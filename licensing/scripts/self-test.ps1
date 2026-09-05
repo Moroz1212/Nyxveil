@@ -25,6 +25,13 @@ function Ok([string]$Msg) { Write-Host "[PASS] $Msg" -ForegroundColor Green }
 function Fail([string]$Msg) { Write-Host "[FAIL] $Msg" -ForegroundColor Red; [void]$failures.Add($Msg) }
 function Warn([string]$Msg) { Write-Host "[WARN] $Msg" -ForegroundColor Yellow; [void]$warnings.Add($Msg) }
 
+function Get-OptionalProperty($Object, [string]$Name) {
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -ne $property) { return $property.Value }
+    return $null
+}
+
 Write-Host '=== Nyxveil Control Plane self-test ==='
 
 $op = $null
@@ -196,7 +203,8 @@ else {
 }
 
 # Hostname-aware HTTP (no TrustAll). SelfSigned may skip HTTP if CLI already passed.
-if (-not (Test-HttpsHealthLocal -Port $Port -PublicHostname $publicHostname -InstallDir $InstallDir -CertificateMode $certMode)) {
+if (-not (Test-HttpsHealthLocal -Port $Port -PublicHostname $publicHostname -InstallDir $InstallDir `
+            -CertificateMode $certMode -CertificateValidationMode $certValidationMode)) {
     Fail "Local health gate failed for $publicHostname :$Port"
 }
 else {
@@ -259,26 +267,31 @@ $appsettingsPath = Join-Path $InstallDir 'appsettings.Production.json'
 if (Test-Path $appsettingsPath) {
     try {
         $settings = Get-Content -LiteralPath $appsettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($settings.Setup -and $settings.Setup.AllowWebBootstrap -eq $true) {
+        $setupSettings = Get-OptionalProperty $settings 'Setup'
+        if ((Get-OptionalProperty $setupSettings 'AllowWebBootstrap') -eq $true) {
             Fail 'Setup:AllowWebBootstrap is true in Production (must be false).'
         }
         else {
             Ok 'Setup web bootstrap disabled (or absent) in appsettings.Production.json'
         }
-        if ($settings.Kestrel -and $settings.Kestrel.Endpoints) {
+        $kestrelSettings = Get-OptionalProperty $settings 'Kestrel'
+        if (Get-OptionalProperty $kestrelSettings 'Endpoints') {
             Warn 'Legacy Kestrel:Endpoints present — Hosting section is SoT; consider removing Endpoints.'
         }
-        if ($settings.Certificate -and $settings.Certificate.Mode -ne 'Store') {
-            Fail "appsettings Certificate:Mode=$($settings.Certificate.Mode) (expected Store with thumbprint)."
+        $certificateSettings = Get-OptionalProperty $settings 'Certificate'
+        $configuredMode = [string](Get-OptionalProperty $certificateSettings 'Mode')
+        if ($configuredMode -ne 'Store') {
+            Fail "appsettings Certificate:Mode=$configuredMode (expected Store with thumbprint)."
         }
-        elseif ($settings.Certificate -and [string]::IsNullOrWhiteSpace([string]$settings.Certificate.Thumbprint)) {
+        elseif ([string]::IsNullOrWhiteSpace([string](Get-OptionalProperty $certificateSettings 'Thumbprint'))) {
             Fail 'appsettings Certificate:Thumbprint is empty.'
         }
         else {
             Ok 'Certificate Mode=Store with thumbprint in appsettings.Production.json'
         }
-        if ($settings.Certificate -and $settings.Certificate.ValidationMode) {
-            Ok ("Certificate ValidationMode={0}" -f $settings.Certificate.ValidationMode)
+        $configuredValidation = Get-OptionalProperty $certificateSettings 'ValidationMode'
+        if ($configuredValidation) {
+            Ok ("Certificate ValidationMode={0}" -f $configuredValidation)
         }
         $cs = ''
         try { $cs = [string]$settings.ConnectionStrings.ControlPlane } catch { }
@@ -290,7 +303,7 @@ if (Test-Path $appsettingsPath) {
         }
     }
     catch {
-        Warn "Could not parse appsettings.Production.json: $($_.Exception.Message)"
+        Fail "Could not validate appsettings.Production.json: $($_.Exception.Message)"
     }
 }
 else {

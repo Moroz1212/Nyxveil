@@ -1,4 +1,4 @@
-﻿using System.Security.Cryptography;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -12,13 +12,11 @@ namespace Nyxveil.ControlPlane.Infrastructure.Security;
 
 public sealed class NodeAuthService : INodeAuthenticator
 {
-    private const string SigPrefix = "nvp-node-req-v1";
     private static readonly TimeSpan MaxSkew = TimeSpan.FromMinutes(5);
 
     private readonly ControlPlaneDbContext _db;
     private readonly ILicenseKeyHasher _hasher;
     private readonly IClock _clock;
-    private readonly NodeAuthOptions _options;
 
     public NodeAuthService(
         ControlPlaneDbContext db,
@@ -29,7 +27,7 @@ public sealed class NodeAuthService : INodeAuthenticator
         _db = db;
         _hasher = hasher;
         _clock = clock;
-        _options = options.Value;
+        _ = options;
     }
 
     public string IssueNodeBearerToken(string nodeId)
@@ -64,6 +62,7 @@ public sealed class NodeAuthService : INodeAuthenticator
             .ConfigureAwait(false)
             ?? throw new UnauthorizedException("unknown node");
 
+        if (cred.NodeId != nodeId) throw new UnauthorizedException("node identity mismatch");
         var tokenUnix = CoreNodeToken.Verify(nodeId, token.Trim(), cred.PublicKey, _clock.UtcNow);
         await AcceptCoreTokenUnixAsync(nodeId, tokenUnix, cancellationToken).ConfigureAwait(false);
 
@@ -76,100 +75,71 @@ public sealed class NodeAuthService : INodeAuthenticator
     public async Task ValidateNodeRequestAsync(
         string nodeId,
         IReadOnlyDictionary<string, string> signatureHeaders,
+        NodeRequestData request,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(nodeId))
-            throw new UnauthorizedException("missing node id");
-
-        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (signatureHeaders is not null)
+        if (string.IsNullOrEmpty(nodeId) || nodeId.Length > 128 ||
+            nodeId.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not '-' and not '_' and not '.'))
+            throw new UnauthorizedException("invalid node id");
+        var headers = new Dictionary<string, string>(signatureHeaders, StringComparer.OrdinalIgnoreCase);
+        if (!headers.TryGetValue("X-Node-Signature", out var signature) ||
+            !headers.TryGetValue("X-Node-Timestamp", out var timestamp) ||
+            !headers.TryGetValue("X-Node-Nonce", out var nonce))
+            throw new UnauthorizedException("req-v2 signature required");
+        if (!long.TryParse(timestamp, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var unix) ||
+            timestamp != unix.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            throw new UnauthorizedException("invalid timestamp");
+        var now = _clock.UtcNow;
+        DateTime ts;
+        try { ts = DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime; }
+        catch (ArgumentOutOfRangeException) { throw new UnauthorizedException("invalid timestamp"); }
+        if (now - ts > MaxSkew || ts - now > MaxSkew)
+            throw new UnauthorizedException("node signature expired");
+        byte[] nonceBytes;
+        byte[] sig;
+        try
         {
-            foreach (var kv in signatureHeaders)
-                headers[kv.Key] = kv.Value;
+            nonceBytes = Base64UrlDecode(nonce);
+            sig = Base64UrlDecode(signature);
         }
-
-        var cred = await _db.NodeCredentials
-            .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.NodeId == nodeId, cancellationToken)
-            .ConfigureAwait(false)
+        catch (FormatException) { throw new UnauthorizedException("invalid signature encoding"); }
+        if (nonceBytes.Length is < 16 or > 64 || nonce != Encode(nonceBytes) || sig.Length != 64 || signature != Encode(sig))
+            throw new UnauthorizedException("invalid nonce or signature");
+        var cred = await _db.NodeCredentials.AsNoTracking().SingleOrDefaultAsync(c => c.NodeId == nodeId, cancellationToken)
             ?? throw new UnauthorizedException("unknown node");
-
-        var bearer = ExtractBearer(headers);
-        var authenticated = false;
-
-        if (!string.IsNullOrWhiteSpace(bearer))
+        // SQL installations may use case-insensitive collation. Identity remains ordinal.
+        if (cred.NodeId != nodeId || cred.PublicKey.Length != 32)
+            throw new UnauthorizedException("invalid node identity");
+        var msg = Encoding.UTF8.GetBytes($"nvp-node-req-v2|{nodeId}|{timestamp}|{nonce}|{request.Method}|{request.PathAndQuery}|{request.BodySha256}");
+        var pub = PublicKey.Import(SignatureAlgorithm.Ed25519, cred.PublicKey, KeyBlobFormat.RawPublicKey);
+        if (!SignatureAlgorithm.Ed25519.Verify(pub, msg, sig))
+            throw new UnauthorizedException("invalid node signature");
+        var nonceHash = Convert.ToHexString(SHA256.HashData(nonceBytes)).ToLowerInvariant();
+        // The composite PK arbitrates concurrent requests across all service instances.
+        if (await _db.NodeRequestNonces.AnyAsync(n => n.NodeId == nodeId && n.NonceHash == nonceHash, cancellationToken))
+            throw new UnauthorizedException("node request replayed");
+        var row = new Nyxveil.ControlPlane.Domain.Entities.NodeRequestNonce
         {
-            if (CoreNodeToken.LooksLike(bearer))
-            {
-                var tokenUnix = CoreNodeToken.Verify(nodeId, bearer.Trim(), cred.PublicKey, _clock.UtcNow);
-                await AcceptCoreTokenUnixAsync(nodeId, tokenUnix, cancellationToken).ConfigureAwait(false);
-                authenticated = true;
-            }
-            else if (_options.AllowLegacyBearer)
-            {
-                if (string.IsNullOrEmpty(cred.NodeAuthSecretVerifier))
-                    throw new UnauthorizedException("node bearer not configured");
-
-                var material = nodeId + "\n" + bearer.Trim();
-                if (!_hasher.Verify(cred.NodeAuthSecretVerifier, material))
-                    throw new UnauthorizedException("invalid node token");
-
-                if (!bearer.StartsWith("nvpnode_" + nodeId + "_", StringComparison.Ordinal))
-                    throw new UnauthorizedException("node token binding mismatch");
-
-                authenticated = true;
-            }
-            else if (bearer.StartsWith("nvpnode_", StringComparison.Ordinal))
-            {
-                throw new UnauthorizedException("legacy node bearer disabled");
-            }
-        }
-
-        headers.TryGetValue("X-Node-Signature", out var signatureBase64);
-        headers.TryGetValue("X-Node-Timestamp", out var timestamp);
-        headers.TryGetValue("X-Node-Method", out var method);
-        headers.TryGetValue("X-Node-Path", out var path);
-        if (string.IsNullOrEmpty(method))
-            headers.TryGetValue(":method", out method);
-        if (string.IsNullOrEmpty(path))
-            headers.TryGetValue(":path", out path);
-
-        if (!string.IsNullOrWhiteSpace(signatureBase64))
+            NodeId = nodeId,
+            NonceHash = nonceHash,
+            Timestamp = ts,
+            ExpiresAt = ts.Add(MaxSkew).AddSeconds(1)
+        };
+        var authenticatedCredential = await _db.NodeCredentials.SingleAsync(c => c.NodeId == nodeId, cancellationToken);
+        authenticatedCredential.LastAuthAt = now;
+        _db.NodeRequestNonces.Add(row);
+        try { await _db.SaveChangesAsync(cancellationToken); }
+        catch (DbUpdateException)
         {
-            if (string.IsNullOrWhiteSpace(timestamp) || string.IsNullOrWhiteSpace(method) || string.IsNullOrWhiteSpace(path))
-                throw new UnauthorizedException("incomplete signature headers");
-
-            if (!long.TryParse(timestamp, out var tsUnix))
-                throw new UnauthorizedException("invalid timestamp");
-
-            var ts = DateTimeOffset.FromUnixTimeSeconds(tsUnix).UtcDateTime;
-            var now = _clock.UtcNow;
-            if (now - ts > MaxSkew || ts - now > MaxSkew)
-                throw new UnauthorizedException("node signature expired");
-
-            byte[] sig;
-            try { sig = Base64UrlDecode(signatureBase64); }
-            catch (FormatException) { throw new UnauthorizedException("invalid signature encoding"); }
-
-            var msg = Encoding.UTF8.GetBytes($"{SigPrefix}|{nodeId}|{timestamp}|{method.ToUpperInvariant()}|{path}");
-            if (cred.PublicKey.Length != 32)
-                throw new UnauthorizedException("invalid node public key");
-
-            var pub = PublicKey.Import(SignatureAlgorithm.Ed25519, cred.PublicKey, KeyBlobFormat.RawPublicKey);
-            if (!SignatureAlgorithm.Ed25519.Verify(pub, msg, sig))
-                throw new UnauthorizedException("invalid node signature");
-
-            authenticated = true;
+            _db.Entry(row).State = EntityState.Detached;
+            if (await _db.NodeRequestNonces.AnyAsync(n => n.NodeId == nodeId && n.NonceHash == nonceHash, cancellationToken))
+                throw new UnauthorizedException("node request replayed");
+            throw;
         }
-
-        if (!authenticated)
-            throw new UnauthorizedException("node authentication required");
-
-        var tracked = await _db.NodeCredentials.FirstAsync(c => c.NodeId == nodeId, cancellationToken)
-            .ConfigureAwait(false);
-        tracked.LastAuthAt = _clock.UtcNow;
-        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
+
+    private static string Encode(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     public async Task AcceptCoreTokenUnixAsync(
         string nodeId,
@@ -198,19 +168,6 @@ public sealed class NodeAuthService : INodeAuthenticator
             throw new UnauthorizedException("node token replayed");
         tracked.LastCoreTokenUnix = tokenUnix;
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private static string? ExtractBearer(IReadOnlyDictionary<string, string> headers)
-    {
-        if (headers.TryGetValue("Authorization", out var auth) &&
-            auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-            return auth["Bearer ".Length..].Trim();
-
-        if (headers.TryGetValue("node_token", out var token))
-            return token;
-
-        headers.TryGetValue("X-Node-Token", out token);
-        return token;
     }
 
     private static byte[] Base64UrlDecode(string input)
@@ -245,7 +202,9 @@ public static class CoreNodeToken
             throw new UnauthorizedException("invalid node token");
         if (!long.TryParse(token.AsSpan(0, dot), out var tsUnix))
             throw new UnauthorizedException("invalid node token");
-        var ts = DateTimeOffset.FromUnixTimeSeconds(tsUnix).UtcDateTime;
+        DateTime ts;
+        try { ts = DateTimeOffset.FromUnixTimeSeconds(tsUnix).UtcDateTime; }
+        catch (ArgumentOutOfRangeException) { throw new UnauthorizedException("invalid node token"); }
         if (utcNow - ts > MaxSkew || ts - utcNow > MaxSkew)
             throw new UnauthorizedException("node token expired");
         byte[] sig;

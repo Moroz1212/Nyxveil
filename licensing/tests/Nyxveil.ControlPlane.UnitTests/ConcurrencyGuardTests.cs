@@ -52,9 +52,9 @@ public sealed class ConcurrencyGuardTests : IAsyncDisposable
             ["Authorization"] = "Bearer " + token
         };
 
-        await _fx.NodeAuth.ValidateNodeRequestAsync(nodeId, headers);
+        await _fx.NodeAuth.VerifyCoreNodeTokenV1Async(nodeId, token);
         await Assert.ThrowsAsync<UnauthorizedException>(() =>
-            _fx.NodeAuth.ValidateNodeRequestAsync(nodeId, headers));
+            _fx.NodeAuth.VerifyCoreNodeTokenV1Async(nodeId, token));
     }
 
     [Fact]
@@ -89,10 +89,7 @@ public sealed class ConcurrencyGuardTests : IAsyncDisposable
         // Token at "now" but LastCoreTokenUnix already equals/exceeds → replay.
         var token = CoreNodeToken.Sign(nodeId, seed, _fx.Clock.UtcNow);
         await Assert.ThrowsAsync<UnauthorizedException>(() =>
-            _fx.NodeAuth.ValidateNodeRequestAsync(nodeId, new Dictionary<string, string>
-            {
-                ["Authorization"] = "Bearer " + token
-            }));
+            _fx.NodeAuth.VerifyCoreNodeTokenV1Async(nodeId, token));
     }
 
     [Fact]

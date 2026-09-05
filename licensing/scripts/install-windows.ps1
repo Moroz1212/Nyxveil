@@ -319,10 +319,18 @@ try {
 
     if ([string]::IsNullOrWhiteSpace($AdminUser)) {
         if ($NonInteractive) { throw '-AdminUser is required in -NonInteractive mode.' }
-        $AdminUser = Read-Host 'First SuperAdmin username/email'
+        $AdminUser = Read-Host 'First SuperAdmin email (used for sign-in)'
     }
+    try {
+        $adminAddress = New-Object System.Net.Mail.MailAddress($AdminUser)
+        if ($adminAddress.Address -cne $AdminUser -or -not $AdminUser.Contains('@')) {
+            throw 'Use an email address without a display name.'
+        }
+    }
+    catch { throw '-AdminUser must be an email address, for example admin@your-domain.com.' }
     if (-not $AdminPassword) {
         if ($NonInteractive) { throw '-AdminPassword is required in -NonInteractive mode.' }
+        Write-Host 'Password: at least 12 characters, uppercase and lowercase Latin letters, a digit and a special character.'
         $AdminPassword = Read-Host 'First SuperAdmin password' -AsSecureString
         $confirm = Read-Host 'Confirm password' -AsSecureString
         $p1 = ConvertFrom-SecureStringPlain -SecureString $AdminPassword
@@ -384,7 +392,8 @@ Use -InstallMode Fresh only on a clean secrets dir, or restore via scripts\resto
     $sqlPrepared = New-CreateDatabaseScriptCopy -SourcePath $sqlSource -DatabaseName $Database
     try {
         Write-Host "Applying create_database.sql (DatabaseName=$Database)..."
-        Invoke-NyxveilSql -Server $DatabaseServer -InputFile $sqlPrepared -DatabaseName $Database `
+        # Connect to master before CREATE DATABASE; prepared SQL binds and USEs the target.
+        Invoke-NyxveilSql -Server $DatabaseServer -InputFile $sqlPrepared -DatabaseName 'master' `
             -DatabaseAuth $DatabaseAuth -DatabaseUser $DatabaseUser -DatabasePassword $DatabasePassword
     }
     finally {
@@ -528,14 +537,10 @@ Use -InstallMode Fresh only on a clean secrets dir, or restore via scripts\resto
     # 11) Create first admin (CLI)
     # -------------------------------------------------------------------------
     Write-Host 'Creating first SuperAdmin via CLI (password on stdin)...'
-    try {
-        Invoke-AdminCreate -InstallDir $InstallDir -AdminUser $AdminUser -AdminPassword $AdminPassword
-    }
-    catch {
-        # Exit 2 / already exists is acceptable on Repair/Upgrade
-        if ($InstallMode -eq 'Fresh') { throw }
-        Write-Warning "Admin create: $($_.Exception.Message)"
-    }
+    # Only the explicit already-exists result is acceptable during Repair/Upgrade.
+    # Invalid passwords and all other failures must stop before starting the service.
+    Invoke-AdminCreate -InstallDir $InstallDir -AdminUser $AdminUser -AdminPassword $AdminPassword `
+        -AllowAlreadyExists:($InstallMode -ne 'Fresh')
 
     # -------------------------------------------------------------------------
     # 12) Start-Service

@@ -14,7 +14,7 @@ public sealed class CustomWebApplicationFactory : WebApplicationFactory<Program>
     public const string TestKekHex =
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-    private readonly string _dbName = "cp-int-" + Guid.NewGuid().ToString("N");
+    private readonly string _dbName = Path.Combine(Path.GetTempPath(), "cp-int-" + Guid.NewGuid().ToString("N") + ".db");
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -29,10 +29,14 @@ public sealed class CustomWebApplicationFactory : WebApplicationFactory<Program>
         {
             RemoveDbContextRegistrations(services);
 
-            services.AddDbContext<ControlPlaneDbContext>(options =>
-                options.UseInMemoryDatabase(_dbName)
-                    .ConfigureWarnings(w => w.Ignore(
-                        Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning)));
+            using (var schema = new RelationalTestDbContext(new DbContextOptionsBuilder<RelationalTestDbContext>()
+                .UseSqlite($"Data Source={_dbName};Pooling=False").Options)) schema.Database.EnsureCreated();
+
+            services.AddDbContext<RelationalTestDbContext>(options =>
+                options.UseSqlite($"Data Source={_dbName};Pooling=False"));
+            services.AddScoped<ControlPlaneDbContext>(sp => sp.GetRequiredService<RelationalTestDbContext>());
+            services.AddSingleton<IDbContextFactory<ControlPlaneDbContext>>(
+                new TestControlPlaneDbContextFactory(_dbName));
 
             foreach (var d in services.Where(IsControlPlaneWorker).ToList())
                 services.Remove(d);
@@ -62,11 +66,44 @@ public sealed class CustomWebApplicationFactory : WebApplicationFactory<Program>
         foreach (var d in services.Where(d =>
                      d.ServiceType == typeof(ControlPlaneDbContext) ||
                      d.ServiceType == typeof(DbContextOptions<ControlPlaneDbContext>) ||
+                     d.ServiceType == typeof(IDbContextFactory<ControlPlaneDbContext>) ||
                      d.ImplementationType == typeof(ControlPlaneDbContext) ||
                      d.ServiceType.FullName?.Contains("ControlPlaneDbContext", StringComparison.Ordinal) == true)
                      .ToList())
         {
             services.Remove(d);
         }
+    }
+
+    private sealed class TestControlPlaneDbContextFactory : IDbContextFactory<ControlPlaneDbContext>
+    {
+        private readonly string _dbName;
+
+        public TestControlPlaneDbContextFactory(string dbName) => _dbName = dbName;
+
+        public ControlPlaneDbContext CreateDbContext()
+        {
+            var options = new DbContextOptionsBuilder<RelationalTestDbContext>()
+                .UseSqlite($"Data Source={_dbName};Pooling=False")
+                .Options;
+            return new RelationalTestDbContext(options);
+        }
+
+        public ValueTask<ControlPlaneDbContext> CreateDbContextAsync(CancellationToken cancellationToken = default) =>
+            new(CreateDbContext());
+    }
+}
+
+// SQL Server DDL is verified separately. SQLite exercises relational transactions,
+// uniqueness and optimistic concurrency; only SQL Server-specific CHECK syntax is omitted.
+public sealed class RelationalTestDbContext : ControlPlaneDbContext
+{
+    public RelationalTestDbContext(DbContextOptions<RelationalTestDbContext> options) : base(options) { }
+    protected override void OnModelCreating(ModelBuilder builder)
+    {
+        base.OnModelCreating(builder);
+        foreach (var entity in builder.Model.GetEntityTypes())
+            foreach (var check in entity.GetCheckConstraints().ToArray())
+                entity.RemoveCheckConstraint(check.Name!);
     }
 }

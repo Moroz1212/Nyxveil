@@ -286,7 +286,9 @@ public sealed class ControlPlaneServiceTests : IAsyncDisposable
     {
         var boot = await CreateBootstrapAsync(maxUses: 5);
         var identity = ControlPlaneTestFixture.RandomKey32();
-        var pk = ControlPlaneTestFixture.RandomKey32();
+        var seed = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        using var key = NSec.Cryptography.Key.Import(NSec.Cryptography.SignatureAlgorithm.Ed25519, seed, NSec.Cryptography.KeyBlobFormat.RawPrivateKey);
+        var pk = key.Export(NSec.Cryptography.KeyBlobFormat.RawPublicKey);
         var req = NewNodeRequest(boot.BootstrapToken, "node-idem");
         req.PublicIdentity = identity;
         req.PublicKey = pk;
@@ -297,7 +299,7 @@ public sealed class ControlPlaneServiceTests : IAsyncDisposable
         var retry = NewNodeRequest(boot.BootstrapToken, "node-idem");
         retry.PublicIdentity = identity;
         retry.PublicKey = pk;
-        retry.NodeToken = first.NodeToken;
+        retry.NodeToken = Nyxveil.ControlPlane.Infrastructure.Security.CoreNodeToken.Sign(req.NodeId, seed, _fx.Clock.UtcNow);
         var second = await _fx.Nodes.RegisterWithBootstrapAsync(retry);
 
         Assert.True(first.Registered);
@@ -317,9 +319,7 @@ public sealed class ControlPlaneServiceTests : IAsyncDisposable
         var statusBefore = node.Status;
         var cfgVersionBefore = (await _fx.Db.NodeConfigs.SingleAsync(c => c.NodeId == nodeId)).ConfigVersion;
 
-        await _fx.NodeAuth.ValidateNodeRequestAsync(
-            nodeId,
-            new Dictionary<string, string> { ["Authorization"] = "Bearer " + token });
+        await _fx.NodeAuth.VerifyCoreNodeTokenV1Async(nodeId, token);
 
         await _fx.Heartbeats.ProcessHeartbeatAsync(new NodeHeartbeatRequest
         {
@@ -364,9 +364,7 @@ public sealed class ControlPlaneServiceTests : IAsyncDisposable
         var boot = await CreateBootstrapAsync(maxUses: 2);
         await _fx.Nodes.RegisterWithBootstrapAsync(NewNodeRequest(boot.BootstrapToken, "node-b"));
 
-        await Assert.ThrowsAsync<UnauthorizedException>(() => _fx.NodeAuth.ValidateNodeRequestAsync(
-            "node-b",
-            new Dictionary<string, string> { ["Authorization"] = "Bearer " + tokenA }));
+        await Assert.ThrowsAsync<UnauthorizedException>(() => _fx.NodeAuth.VerifyCoreNodeTokenV1Async("node-b", tokenA));
 
         Assert.Equal("node-a", nodeA);
     }
@@ -607,11 +605,6 @@ public sealed class ControlPlaneServiceTests : IAsyncDisposable
         Assert.Contains(signed.Catalog.Nodes, n => n.NodeId == "node-prod");
     }
 
-    [Fact(Skip = "Anonymous catalog is enforced at API level (LicenseAuth → 401).")]
-    public void TestAnonymousCatalogIsApiLevel()
-    {
-    }
-
     private async Task<CreateLicenseResponse> CreateStandardLicenseAsync(
         string role = "user",
         Guid? planId = null,
@@ -673,8 +666,11 @@ public sealed class ControlPlaneServiceTests : IAsyncDisposable
     {
         var boot = await CreateBootstrapAsync(maxUses: 3);
         var req = NewNodeRequest(boot.BootstrapToken, nodeId);
+        var seed = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        using var key = NSec.Cryptography.Key.Import(NSec.Cryptography.SignatureAlgorithm.Ed25519, seed, NSec.Cryptography.KeyBlobFormat.RawPrivateKey);
+        req.PublicKey = key.Export(NSec.Cryptography.KeyBlobFormat.RawPublicKey);
         var registered = await _fx.Nodes.RegisterWithBootstrapAsync(req);
-        return (registered.NodeId, registered.NodeToken, req.PublicIdentity, req.SpkiPin);
+        return (registered.NodeId, Nyxveil.ControlPlane.Infrastructure.Security.CoreNodeToken.Sign(req.NodeId, seed, _fx.Clock.UtcNow), req.PublicIdentity, req.SpkiPin);
     }
 
     private async Task SeedTestAndProdNodesAsync()

@@ -48,9 +48,7 @@ public sealed class NodeHeartbeatService : INodeHeartbeatService
         if (request.Capacity > 0)
         {
             var configured = cfg?.Capacity ?? node.Capacity;
-            node.Capacity = configured > 0
-                ? Math.Min(request.Capacity, configured)
-                : request.Capacity;
+            node.Capacity = Math.Min(request.Capacity, configured);
         }
 
         // Do NOT set Status=Healthy (would exit maintenance semantics / fight health worker).

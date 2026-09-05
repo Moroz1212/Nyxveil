@@ -8,7 +8,7 @@ public sealed class NodeRegisterRequest
     public string BootstrapToken { get; set; } = string.Empty;
 
     /// <summary>
-    /// Proof-of-possession for existing-node idempotent retry (Frozen Core node token or legacy bearer).
+    /// Proof-of-possession for existing-node idempotent retry (Frozen Core node token).
     /// </summary>
     [JsonPropertyName("node_token")]
     public string? NodeToken { get; set; }
@@ -90,6 +90,9 @@ public sealed class NodeConfigResponse
 {
     [JsonPropertyName("node_id")]
     public string NodeId { get; set; } = string.Empty;
+
+    [JsonPropertyName("location_id")]
+    public string LocationId { get; set; } = string.Empty;
 
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; }

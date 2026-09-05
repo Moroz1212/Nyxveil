@@ -1,5 +1,7 @@
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
 
 namespace Nyxveil.ControlPlane.UnitTests;
@@ -83,8 +85,24 @@ public sealed class SchemaAlignmentTests
 
         var sql = File.ReadAllText(PreDeployGateTests.FindLicensingFile("database", "create_database.sql"));
         Assert.Contains(migrationId, sql, StringComparison.Ordinal);
-        Assert.Contains($"MigrationId = N'{migrationId}'", sql, StringComparison.Ordinal);
+        Assert.Contains($"[MigrationId] = N'{migrationId}'", sql, StringComparison.Ordinal);
         Assert.Contains($"VALUES (N'{migrationId}'", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestSqlBaselineExactlyMatchesEfGeneratedDdlAndModel()
+    {
+        using var db = new ControlPlaneDbContext(new DbContextOptionsBuilder<ControlPlaneDbContext>()
+            .UseSqlServer("Server=unused;Database=SchemaOnly;Integrated Security=True").Options);
+        Assert.False(db.Database.HasPendingModelChanges());
+        var generated = db.GetService<IMigrator>().GenerateScript(options: MigrationsSqlGenerationOptions.Idempotent);
+        var sql = File.ReadAllText(PreDeployGateTests.FindLicensingFile("database", "create_database.sql"));
+        var body = sql.Split("-- BEGIN EF GENERATED BASELINE")[1].Split("-- END EF GENERATED BASELINE")[0];
+        Assert.Equal(generated.Replace("\r\n", "\n").Trim(), body.Replace("\r\n", "\n").Trim());
+        var config = db.Model.FindEntityType(typeof(Nyxveil.ControlPlane.Domain.Entities.NodeConfig))!;
+        Assert.True(config.FindProperty("ConfigVersion")!.IsConcurrencyToken);
+        var nonce = db.Model.FindEntityType(typeof(Nyxveil.ControlPlane.Domain.Entities.NodeRequestNonce))!;
+        Assert.Equal(new[] { "NodeId", "NonceHash" }, nonce.FindPrimaryKey()!.Properties.Select(p => p.Name));
     }
 
     private static string FindInitialMigrationCs()

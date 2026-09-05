@@ -52,6 +52,8 @@ public sealed class MetricsRetentionWorker : BackgroundService
         var db = scope.ServiceProvider.GetRequiredService<ControlPlaneDbContext>();
         var clock = scope.ServiceProvider.GetRequiredService<IClock>();
         var cutoff = clock.UtcNow.AddDays(-rawDays);
+        var now = clock.UtcNow;
+        await db.NodeRequestNonces.Where(n => n.ExpiresAt < now).ExecuteDeleteAsync(cancellationToken);
 
         var deleted = await db.NodeMetrics
             .Where(m => m.Timestamp < cutoff)

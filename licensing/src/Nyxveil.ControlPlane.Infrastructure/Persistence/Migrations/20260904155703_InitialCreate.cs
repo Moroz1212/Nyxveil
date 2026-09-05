@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -888,11 +888,37 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                 table: "Users",
                 column: "ExternalId",
                 filter: "[ExternalId] IS NOT NULL");
+            migrationBuilder.CreateTable(
+                name: "NodeRequestNonces",
+                columns: table => new
+                {
+                    NodeId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    NonceHash = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false),
+                    Timestamp = table.Column<DateTime>(type: "datetime2", nullable: false),
+                    ExpiresAt = table.Column<DateTime>(type: "datetime2", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_NodeRequestNonces", x => new { x.NodeId, x.NonceHash });
+                    table.ForeignKey(
+                        name: "FK_NodeRequestNonces_Nodes_NodeId",
+                        column: x => x.NodeId,
+                        principalTable: "Nodes",
+                        principalColumn: "NodeId",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_NodeRequestNonces_ExpiresAt",
+                table: "NodeRequestNonces",
+                column: "ExpiresAt");
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.DropTable(
+                name: "NodeRequestNonces");
             migrationBuilder.DropTable(
                 name: "AspNetRoleClaims");
 

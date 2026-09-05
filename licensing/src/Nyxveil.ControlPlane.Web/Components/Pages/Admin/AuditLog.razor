@@ -1,27 +1,27 @@
 @page "/admin/audit"
 @attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
 @rendermode InteractiveServer
-@inject ControlPlaneDbContext Db
+@inject IServiceScopeFactory Scopes
 
 <div class="page-header">
     <div>
-        <h1>Audit log</h1>
-        <div class="sub">Administrative and security-relevant actions.</div>
+        <h1>Журнал действий</h1>
+        <div class="sub">Действия администраторов и события безопасности. Время указано в UTC.</div>
     </div>
 </div>
 
 <div class="toolbar">
-    <input placeholder="Search actor / action / entity" @bind="_filter" @bind:event="oninput" />
+    <input placeholder="Поиск по исполнителю, действию или объекту" @bind="_filter" @bind:event="oninput" />
 </div>
 
 <div class="table-wrap">
     <table class="data">
-        <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Entity</th><th>Id</th><th>IP</th><th>Detail</th></tr></thead>
+        <thead><tr><th>Время (UTC)</th><th>Исполнитель</th><th>Действие</th><th>Объект</th><th>Идентификатор</th><th>IP</th><th>Подробности</th></tr></thead>
         <tbody>
         @foreach (var e in Filtered())
         {
             <tr>
-                <td>@e.Timestamp.ToString("u")</td>
+                <td>@e.Timestamp.ToString("dd.MM.yyyy HH:mm:ss 'UTC'")</td>
                 <td>@e.Actor</td>
                 <td>@e.Action</td>
                 <td>@e.EntityType</td>
@@ -38,8 +38,14 @@
     private List<AuditLogEntry> _rows = new();
     private string _filter = "";
 
-    protected override async Task OnInitializedAsync() =>
-        _rows = await Db.AuditLog.OrderByDescending(a => a.Timestamp).Take(500).ToListAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        _rows = await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            var db = sp.GetRequiredService<ControlPlaneDbContext>();
+            return await db.AuditLog.OrderByDescending(a => a.Timestamp).Take(500).ToListAsync();
+        });
+    }
 
     private IEnumerable<AuditLogEntry> Filtered()
     {

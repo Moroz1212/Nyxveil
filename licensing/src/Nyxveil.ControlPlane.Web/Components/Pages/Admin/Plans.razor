@@ -1,18 +1,17 @@
 @page "/admin/plans"
 @attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
 @rendermode InteractiveServer
-@inject ControlPlaneDbContext Db
+@inject IServiceScopeFactory Scopes
 @inject IClock Clock
 @inject AuthenticationStateProvider AuthState
-@inject IAuditService Audit
 
 <div class="page-header">
     <div>
-        <h1>Plans</h1>
-        <div class="sub">Subscription plans (trial / standard / premium / master).</div>
+        <h1>Тарифы</h1>
+        <div class="sub">Тарифы подписки: пробный, стандартный, премиум и мастер.</div>
     </div>
     <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
-        <button class="btn" @onclick="() => _showCreate = !_showCreate">@(_showCreate ? "Close" : "Add plan")</button>
+        <button class="btn" @onclick="() => _showCreate = !_showCreate" disabled="@_busy">@(_showCreate ? "Закрыть" : "Добавить тариф")</button>
     </AuthorizeView>
 </div>
 
@@ -20,20 +19,20 @@
 {
     <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
         <div class="panel form-grid">
-            <label>Code<input @bind="_code" /></label>
-            <label>Name<input @bind="_name" /></label>
-            <label>Duration days<input type="number" min="0" @bind="_duration" /></label>
-            <label>Max devices<input type="number" min="1" @bind="_maxDevices" /></label>
-            <label>Locations policy<input @bind="_locationsPolicy" /></label>
-            <label>Permissions JSON<input @bind="_permissions" /></label>
-            <div class="actions" style="align-self:end"><button class="btn" @onclick="CreateAsync">Save</button></div>
+            <label>Код<input @bind="_code" /></label>
+            <label>Название<input @bind="_name" /></label>
+            <label>Длительность (дни)<input type="number" min="0" @bind="_duration" /></label>
+            <label>Лимит устройств<input type="number" min="1" @bind="_maxDevices" /></label>
+            <label>Правила доступа к локациям (JSON)<input @bind="_locationsPolicy" /></label>
+            <label>Разрешения (JSON)<input @bind="_permissions" /></label>
+            <div class="actions" style="align-self:end"><button class="btn" @onclick="CreateAsync" disabled="@_busy">Сохранить</button></div>
         </div>
     </AuthorizeView>
 }
 
 <div class="table-wrap">
     <table class="data">
-        <thead><tr><th>Code</th><th>Name</th><th>Status</th><th>Days</th><th>Max devices</th><th>Permissions</th></tr></thead>
+        <thead><tr><th>Код</th><th>Название</th><th>Статус</th><th>Дни</th><th>Лимит устройств</th><th>Разрешения</th></tr></thead>
         <tbody>
         @foreach (var p in _plans)
         {
@@ -53,6 +52,7 @@
 @code {
     private List<Plan> _plans = new();
     private bool _showCreate;
+    private bool _busy;
     private string _code = "";
     private string _name = "";
     private int _duration = 30;
@@ -60,36 +60,60 @@
     private string _locationsPolicy = "[\"*\"]";
     private string _permissions = "[\"connect\"]";
 
-    protected override async Task OnInitializedAsync() =>
-        _plans = await Db.Plans.OrderBy(p => p.Code).ToListAsync();
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _plans = await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            var db = sp.GetRequiredService<ControlPlaneDbContext>();
+            return await db.Plans.OrderBy(p => p.Code).ToListAsync();
+        });
+    }
 
     private async Task CreateAsync()
     {
-        var now = Clock.UtcNow;
-        var plan = new Plan
+        if (_busy) return;
+        _busy = true;
+        try
         {
-            PlanId = Guid.NewGuid(),
-            Code = _code.Trim(),
-            Name = _name.Trim(),
-            Status = "Active",
-            DurationDays = _duration,
-            MaxDevices = Math.Max(1, _maxDevices),
-            AllowedLocationsPolicy = _locationsPolicy,
-            Permissions = _permissions,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-        Db.Plans.Add(plan);
-        await Db.SaveChangesAsync();
-        var state = await AuthState.GetAuthenticationStateAsync();
-        await Audit.WriteAsync(new AuditWriteRequest
+            var state = await AuthState.GetAuthenticationStateAsync();
+            var actor = state.User.Identity?.Name ?? "admin";
+            var now = Clock.UtcNow;
+            var plan = new Plan
+            {
+                PlanId = Guid.NewGuid(),
+                Code = _code.Trim(),
+                Name = _name.Trim(),
+                Status = "Active",
+                DurationDays = _duration,
+                MaxDevices = Math.Max(1, _maxDevices),
+                AllowedLocationsPolicy = _locationsPolicy,
+                Permissions = _permissions,
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var db = sp.GetRequiredService<ControlPlaneDbContext>();
+                var audit = sp.GetRequiredService<IAuditService>();
+                db.Plans.Add(plan);
+                await db.SaveChangesAsync();
+                await audit.WriteAsync(new AuditWriteRequest
+                {
+                    Actor = actor,
+                    Action = "plan.created",
+                    EntityType = "Plan",
+                    EntityId = plan.PlanId.ToString()
+                });
+            });
+            _showCreate = false;
+            await ReloadAsync();
+        }
+        finally
         {
-            Actor = state.User.Identity?.Name ?? "admin",
-            Action = "plan.created",
-            EntityType = "Plan",
-            EntityId = plan.PlanId.ToString()
-        });
-        _showCreate = false;
-        _plans = await Db.Plans.OrderBy(p => p.Code).ToListAsync();
+            _busy = false;
+        }
     }
 }

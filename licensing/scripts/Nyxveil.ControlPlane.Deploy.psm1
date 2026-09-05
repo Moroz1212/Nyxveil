@@ -323,7 +323,7 @@ function New-NyxveilFirewallRule {
 
     $existing = Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue
     if ($existing) {
-        Update-NyxveilFirewallRule -Port $Port -RuleName $RuleName
+        $null = Update-NyxveilFirewallRule -Port $Port -RuleName $RuleName
         return $RuleName
     }
 
@@ -769,8 +769,13 @@ function Get-NyxveilSqlcmdArgs {
 
     $sqlArgs = New-Object 'System.Collections.Generic.List[string]'
     [void]$sqlArgs.Add('-b')
+    # ODBC sqlcmd otherwise starts with QUOTED_IDENTIFIER OFF, which rejects
+    # filtered indexes in the EF baseline. This only changes our connection.
+    [void]$sqlArgs.Add('-I')
     [void]$sqlArgs.Add('-S')
     [void]$sqlArgs.Add($Server)
+    [void]$sqlArgs.Add('-d')
+    [void]$sqlArgs.Add($DatabaseName)
     [void]$sqlArgs.Add('-v')
     [void]$sqlArgs.Add("DatabaseName=$DatabaseName")
 
@@ -921,6 +926,7 @@ function New-CreateDatabaseScriptCopy {
         [Parameter(Mandatory = $true)][string]$DatabaseName,
         [string]$DestinationPath = ''
     )
+    Assert-ValidDatabaseName -DatabaseName $DatabaseName
     if (-not (Test-Path $SourcePath)) {
         throw "create_database.sql not found: $SourcePath"
     }
@@ -945,6 +951,10 @@ GO
             $content = $header + $content
         }
     }
+
+    # In-script :setvar takes precedence over sqlcmd -v. Bind the validated target
+    # explicitly so custom installs and the temporary DB harness cannot touch the default DB.
+    $content = $content -replace '(?im)^\s*:setvar\s+DatabaseName\s+[^\r\n]+', ":setvar DatabaseName $DatabaseName"
 
     Set-Content -LiteralPath $DestinationPath -Value $content -Encoding UTF8
     return $DestinationPath
@@ -1537,7 +1547,9 @@ function New-NyxveilSelfSignedCertificate {
         -DnsName $DnsName `
         -CertStoreLocation $storePath `
         -KeyExportPolicy Exportable `
-        -KeySpec KeyExchange `
+        -Provider 'Microsoft Software Key Storage Provider' `
+        -KeyAlgorithm RSA `
+        -KeySpec None `
         -KeyLength 2048 `
         -HashAlgorithm SHA256 `
         -NotAfter (Get-Date).AddYears(2) `
@@ -1546,86 +1558,95 @@ function New-NyxveilSelfSignedCertificate {
     return $cert
 }
 
+function Resolve-NyxveilMachineKeyPath {
+    <#
+    .SYNOPSIS
+      Resolve only the exact persisted machine-key filename, never a directory ACL.
+      RSACng may wrap a legacy CSP; its UniqueName then refers to RSA\MachineKeys.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$UniqueName,
+        [Parameter(Mandatory = $true)][bool]$IsMachineKey,
+        [Parameter(Mandatory = $true)][ValidateSet('CspRsa', 'CngRsa', 'CngEcdsa')][string]$Storage,
+        [string]$KeyRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    )
+    if (-not $IsMachineKey) {
+        throw 'Certificate private key is user-scoped. Import it into LocalMachine\My with a persisted machine key.'
+    }
+    if ([string]::IsNullOrWhiteSpace($UniqueName) -or
+        [IO.Path]::GetFileName($UniqueName) -ne $UniqueName -or
+        $UniqueName -in @('.', '..') -or $UniqueName.Contains(':')) {
+        throw 'Certificate private key must have a valid persisted container filename.'
+    }
+    $relativePaths = switch ($Storage) {
+        'CspRsa' { 'Microsoft\Crypto\RSA\MachineKeys' }
+        'CngRsa' { 'Microsoft\Crypto\Keys'; 'Microsoft\Crypto\RSA\MachineKeys' }
+        'CngEcdsa' { 'Microsoft\Crypto\Keys' }
+    }
+    $candidates = @($relativePaths | ForEach-Object {
+        Join-Path (Join-Path $KeyRoot $_) $UniqueName
+    })
+    $found = @($candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf -ErrorAction Stop })
+    if ($found.Count -ne 1) {
+        throw "Expected one $Storage machine-key file; found $($found.Count). Checked: $($candidates -join '; ')"
+    }
+    return $found[0]
+}
+
 function Grant-CertificatePrivateKeyAccess {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
         [Parameter(Mandatory = $true)][string]$Account
     )
-    $keyPath = $null
-    $errors = New-Object 'System.Collections.Generic.List[string]'
-
+    $rsa = $null
+    $ecdsa = $null
     try {
-        $rsa = $null
-        try {
-            $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
-        }
-        catch {
-            [void]$errors.Add("GetRSAPrivateKey: $($_.Exception.Message)")
-        }
+        $accountSid = ([Security.Principal.NTAccount]::new($Account)).Translate([Security.Principal.SecurityIdentifier])
+        $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
         if (-not $rsa) {
             try { $rsa = $Certificate.PrivateKey } catch { }
         }
-
         if ($rsa -is [System.Security.Cryptography.RSACryptoServiceProvider]) {
-            $keyName = $rsa.CspKeyContainerInfo.UniqueKeyContainerName
-            $machineKeyPath = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
-            $candidate = Join-Path $machineKeyPath $keyName
-            if (Test-Path -LiteralPath $candidate) { $keyPath = $candidate }
-            else { [void]$errors.Add("RSA CSP container not found: $candidate") }
+            $info = $rsa.CspKeyContainerInfo
+            $keyPath = Resolve-NyxveilMachineKeyPath -UniqueName $info.UniqueKeyContainerName `
+                -IsMachineKey $info.MachineKeyStore -Storage CspRsa
         }
-        elseif ($rsa -and $rsa.GetType().FullName -match 'RSACng') {
-            $keyName = $null
-            try { $keyName = $rsa.Key.UniqueName } catch { [void]$errors.Add("RSACng UniqueName: $($_.Exception.Message)") }
-            if ($keyName) {
-                $machineKeyPath = Join-Path $env:ProgramData 'Microsoft\Crypto\Keys'
-                $candidate = Join-Path $machineKeyPath $keyName
-                if (Test-Path -LiteralPath $candidate) { $keyPath = $candidate }
-                else { [void]$errors.Add("RSA CNG key file not found: $candidate") }
-            }
+        elseif ($rsa -is [System.Security.Cryptography.RSACng]) {
+            $keyPath = Resolve-NyxveilMachineKeyPath -UniqueName $rsa.Key.UniqueName `
+                -IsMachineKey $rsa.Key.IsMachineKey -Storage CngRsa
         }
-    }
-    catch {
-        [void]$errors.Add("RSA path: $($_.Exception.Message)")
-    }
-
-    if (-not $keyPath) {
-        try {
+        elseif (-not $rsa) {
             $ecdsa = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($Certificate)
-            if ($ecdsa -and $ecdsa.GetType().FullName -match 'ECDsaCng') {
-                $keyName = $null
-                try { $keyName = $ecdsa.Key.UniqueName } catch { [void]$errors.Add("ECDsaCng UniqueName: $($_.Exception.Message)") }
-                if ($keyName) {
-                    $machineKeyPath = Join-Path $env:ProgramData 'Microsoft\Crypto\Keys'
-                    $candidate = Join-Path $machineKeyPath $keyName
-                    if (Test-Path -LiteralPath $candidate) { $keyPath = $candidate }
-                    else { [void]$errors.Add("ECDSA CNG key file not found: $candidate") }
-                }
+            if ($ecdsa -isnot [System.Security.Cryptography.ECDsaCng]) {
+                throw 'Certificate does not expose a supported persisted RSA or ECDSA private key.'
             }
-            elseif (-not $ecdsa) {
-                [void]$errors.Add('GetECDsaPrivateKey returned null.')
-            }
+            $keyPath = Resolve-NyxveilMachineKeyPath -UniqueName $ecdsa.Key.UniqueName `
+                -IsMachineKey $ecdsa.Key.IsMachineKey -Storage CngEcdsa
         }
-        catch {
-            [void]$errors.Add("ECDSA path: $($_.Exception.Message)")
+        else {
+            throw "Unsupported RSA provider: $($rsa.GetType().FullName)"
         }
-    }
-
-    if (-not $keyPath -or -not (Test-Path -LiteralPath $keyPath)) {
-        $detail = ($errors -join '; ')
-        throw "Cannot grant private-key ACL for certificate $($Certificate.Thumbprint) to '$Account' (key container not found). $detail"
-    }
-
-    try {
         $acl = Get-Acl -LiteralPath $keyPath
         $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            $Account, 'Read', 'Allow')
+            $accountSid, 'Read', 'Allow')
         $acl.AddAccessRule($rule)
         Set-Acl -LiteralPath $keyPath -AclObject $acl
+        $read = [Security.AccessControl.FileSystemRights]::Read
+        $granted = @((Get-Acl -LiteralPath $keyPath).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) |
+            Where-Object { $_.IdentityReference -eq $accountSid -and
+                $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                ($_.FileSystemRights -band $read) -eq $read })
+        if ($granted.Count -eq 0) { throw 'Private-key Read ACE was not persisted.' }
         Write-Host "Granted private-key Read to $Account on $keyPath."
     }
     catch {
-        throw "Failed to grant certificate private key ACL to '$Account': $($_.Exception.Message)"
+        throw "Cannot grant private-key Read for certificate $($Certificate.Thumbprint) to '$Account': $($_.Exception.Message)"
+    }
+    finally {
+        if ($rsa) { $rsa.Dispose() }
+        if ($ecdsa) { $ecdsa.Dispose() }
     }
 }
 
@@ -1647,24 +1668,25 @@ function Initialize-NyxveilRestrictedDirectory {
         New-Item -ItemType Directory -Force -Path $Path | Out-Null
     }
 
-    # Disable inheritance and grant only SYSTEM + Administrators (FullControl).
+    # Numeric well-known SIDs work on every Windows display language. icacls
+    # requires the '*' prefix. Grant recovery access before removing inheritance.
+    Invoke-NativeChecked -Name "icacls SYSTEM $Path" -Script {
+        & icacls $Path /grant:r '*S-1-5-18:(OI)(CI)F' /C | Out-Null
+    }
+    Invoke-NativeChecked -Name "icacls Administrators $Path" -Script {
+        & icacls $Path /grant:r '*S-1-5-32-544:(OI)(CI)F' /C | Out-Null
+    }
     Invoke-NativeChecked -Name "icacls reset $Path" -Script {
         & icacls $Path /inheritance:r /C | Out-Null
     }
-    Invoke-NativeChecked -Name "icacls SYSTEM $Path" -Script {
-        & icacls $Path /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" /C | Out-Null
-    }
-    Invoke-NativeChecked -Name "icacls Administrators $Path" -Script {
-        & icacls $Path /grant:r "BUILTIN\Administrators:(OI)(CI)F" /C | Out-Null
-    }
     foreach ($principal in @(
-            'BUILTIN\Users',
-            'Everyone',
-            'NT AUTHORITY\Authenticated Users'
+            '*S-1-5-32-545', # Users
+            '*S-1-1-0', # Everyone
+            '*S-1-5-11' # Authenticated Users
         )) {
-        # Best-effort removal; ignore if ACE absent.
-        & icacls $Path /remove:g $principal /T /C 2>$null | Out-Null
-        $global:LASTEXITCODE = 0
+        Invoke-NativeChecked -Name "icacls remove $principal from $Path" -Script {
+            & icacls $Path /remove:g $principal /T /C | Out-Null
+        }
     }
     Write-Host "Restricted directory ready (SYSTEM+Administrators only): $Path"
 }
@@ -1718,12 +1740,13 @@ function Set-NyxveilDirectoryAcls {
                 & icacls $sensitive /grant "${ServiceAccount}:(OI)(CI)M" /T /C | Out-Null
             }
             foreach ($principal in @(
-                    'BUILTIN\Users',
-                    'Everyone',
-                    'NT AUTHORITY\Authenticated Users'
+                    '*S-1-5-32-545', # Users
+                    '*S-1-1-0', # Everyone
+                    '*S-1-5-11' # Authenticated Users
                 )) {
-                & icacls $sensitive /remove:g $principal /T /C 2>$null | Out-Null
-                $global:LASTEXITCODE = 0
+                Invoke-NativeChecked -Name "icacls remove $principal from $sensitive" -Script {
+                    & icacls $sensitive /remove:g $principal /T /C | Out-Null
+                }
             }
         }
     }
@@ -2022,6 +2045,13 @@ function Write-AppsettingsProduction {
                 Default                = 'Information'
                 'Microsoft.AspNetCore' = 'Warning'
             }
+            File = [ordered]@{
+                Enabled          = $true
+                Directory        = (Join-Path $env:ProgramData 'Nyxveil\ControlPlane\logs')
+                FilePrefix       = 'controlplane'
+                MaxFileSizeMB    = 10
+                MaxRetainedFiles = 14
+            }
         }
         AllowedHosts = '*'
     }
@@ -2036,45 +2066,21 @@ function Invoke-AdminCreate {
     param(
         [Parameter(Mandatory = $true)][string]$InstallDir,
         [Parameter(Mandatory = $true)][string]$AdminUser,
-        [Parameter(Mandatory = $true)][securestring]$AdminPassword
+        [Parameter(Mandatory = $true)][securestring]$AdminPassword,
+        [switch]$AllowAlreadyExists
     )
-    $exe = Join-Path $InstallDir 'Nyxveil.ControlPlane.Web.exe'
-    if (-not (Test-Path $exe)) {
-        throw "Web host not found: $exe"
+    $result = Invoke-NyxveilWebCli -InstallDir $InstallDir `
+        -Arguments @('admin', 'create', '--username', $AdminUser, '--stdin') -StdinSecure $AdminPassword
+    if ($AllowAlreadyExists -and $result.ExitCode -eq 2) {
+        Write-Host 'A SuperAdmin already exists; preserving the existing account.'
+        return
     }
-
-    $plain = ConvertFrom-SecureStringPlain -SecureString $AdminPassword
-    try {
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $exe
-        $psi.Arguments = "admin create --username `"$AdminUser`" --stdin"
-        $psi.WorkingDirectory = $InstallDir
-        $psi.UseShellExecute = $false
-        $psi.RedirectStandardInput = $true
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.CreateNoWindow = $true
-        $psi.EnvironmentVariables['ASPNETCORE_ENVIRONMENT'] = 'Production'
-
-        $p = New-Object System.Diagnostics.Process
-        $p.StartInfo = $psi
-        [void]$p.Start()
-        $p.StandardInput.WriteLine($plain)
-        $p.StandardInput.Close()
-        $stdout = $p.StandardOutput.ReadToEnd()
-        $stderr = $p.StandardError.ReadToEnd()
-        $p.WaitForExit(120000) | Out-Null
-
-        if ($p.ExitCode -ne 0) {
-            if ($stdout) { Write-Host $stdout }
-            if ($stderr) { Write-Host $stderr }
-            throw "admin create failed with exit code $($p.ExitCode)."
-        }
-        Write-Host "First admin '$AdminUser' created."
+    if ($result.ExitCode -ne 0) {
+        if ($result.StdOut) { Write-Host $result.StdOut }
+        if ($result.StdErr) { Write-Host $result.StdErr }
+        throw "admin create failed with exit code $($result.ExitCode)."
     }
-    finally {
-        $plain = $null
-    }
+    Write-Host "First admin '$AdminUser' created."
 }
 
 function Get-CertificateSummary {

@@ -1,23 +1,18 @@
 # Node registration
 
-## Flow
+1. Admin creates a bootstrap token, optionally restricted to a location, use count and expiry.
+2. A new node generates its identity/keypair and sends bootstrap + public identity + credential public key to `POST /api/v1/nodes/register`.
+3. Control Plane atomically consumes the bootstrap use and creates registry, credentials, health and NodeConfig in one transaction.
+4. The response includes authoritative config, canonical `location_id` and `config_version`.
+5. All normal heartbeat/config/revocation requests use **nvp-node-req-v2**.
 
-1. Admin creates a **bootstrap token** (optional allowed location, max uses, expiry)
-2. Raw bootstrap token shown once in admin UI
-3. Node calls `POST /api/v1/nodes/register` with bootstrap token + identity material (`location_id`, Ed25519 `public_key`, …)
-4. Control Plane validates token with **atomic consume** (`UPDATE ... WHERE UsedCount < MaxUses`), creates the node, stores credential public key for Frozen Core `nodeauth`
-5. Subsequent node calls use Core node tokens (and optional legacy bearer if enabled)
+An existing NodeId requires proof of the registered private key: Frozen Core
+`nvp-node-v1` in body `node_token`. Both public identity and public key must remain
+unchanged. No new credential is returned. Bootstrap cannot reset an identity or
+replace a key. Key rotation is not a registration retry and is not implemented here.
 
-## Idempotency / re-register
+TestOnly nodes are accessible only to active, valid **master-role** licenses.
+The test role and master Plan.Code do not grant this privilege.
 
-Existing `node_id` requires proof-of-possession of the registered key (Core node token). Bootstrap cannot reset an existing node's public key.
-
-## Location binding
-
-Bootstrap tokens may constrain `allowed_location`. Nodes register into a **`location_id`** that participates in catalog and ticket scope.
-
-## After registration
-
-- Heartbeats update health/metrics (Core `nodeauth` anti-replay via `LastCoreTokenUnix`)
-- Config pull respects enabled / draining / maintenance / test_only
-- Test-only nodes are hidden from normal users; master/test entitlements may see them per policy
+See [NODE-API.md](NODE-API.md) for exact request-signing bytes, replay rules and
+the heartbeat → config → atomic apply flow for the future VPN server.

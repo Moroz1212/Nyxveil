@@ -1,50 +1,172 @@
 @page "/admin/metrics"
 @attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
 @rendermode InteractiveServer
-@inject ControlPlaneDbContext Db
+@inject IServiceScopeFactory ScopeFactory
+@inject ILogger<Metrics> Logger
+@inject IClock Clock
 
+<PageTitle>Метрики серверов — Nyxveil</PageTitle>
 <div class="page-header">
-    <div>
-        <h1>Metrics</h1>
-        <div class="sub">Recent node metric snapshots (UTC).</div>
+    <div><h1>Метрики серверов</h1><div class="sub">Последние показания каждого сервера и история нагрузки. Время указано в UTC.</div></div>
+    <button class="btn" @onclick="ReloadAsync" disabled="@_loading">@(_loading ? "Загрузка…" : "Обновить")</button>
+</div>
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+@if (_loading)
+{
+    <p role="status" class="muted">Загрузка метрик…</p>
+}
+@if (_loaded)
+{
+    <div class="toolbar">
+        <label>Поиск сервера<input placeholder="Имя, идентификатор или локация" @bind="_filter" @bind:event="oninput" /></label>
+        <span class="muted">Обновлено: @_until.ToString("dd.MM.yyyy HH:mm:ss") UTC</span>
     </div>
-</div>
+    <div class="table-wrap">
+        <table class="data">
+            <caption class="sr-only">Последний снимок каждого сервера. Нажмите заголовок для сортировки, имя сервера — для графиков.</caption>
+            <thead><tr>
+                @foreach (var column in Columns)
+                {
+                    <th aria-sort="@(_sort == column.Key ? (_descending ? "descending" : "ascending") : "none")">
+                        <button class="sort-button" @onclick="() => SortBy(column.Key)">@column.Label @(_sort == column.Key ? (_descending ? "↓" : "↑") : "↕")</button>
+                    </th>
+                }
+            </tr></thead>
+            <tbody>
+            @foreach (var server in VisibleServers())
+            {
+                var latest = server.Latest;
+                <tr class="@(server.NodeId == _selected ? "selected-row" : "")">
+                    <td><button class="server-select" disabled="@_loading" aria-pressed="@(server.NodeId == _selected)" @onclick="() => SelectAsync(server.NodeId)">@server.Name</button><div class="mono muted">@server.NodeId</div></td>
+                    <td>@server.Location</td>
+                    <td><StatusBadge Status="@server.Status.ToString()" /></td>
+                    <td>@UiText.Number(latest?.CpuPercent)</td>
+                    <td>@UiText.Number(latest?.MemoryPercent)</td>
+                    <td>@UiText.Number(latest?.ActiveSessions, "0")</td>
+                    <td>@UiText.Number(latest?.NetworkRxRate)</td>
+                    <td>@UiText.Number(latest?.NetworkTxRate)</td>
+                    <td>@(latest?.Timestamp.ToString("dd.MM.yyyy HH:mm:ss") ?? "Нет данных")</td>
+                </tr>
+            }
+            @if (!VisibleServers().Any())
+            {
+                <tr><td colspan="9">@(_servers.Count == 0 ? "Серверы ещё не зарегистрированы. Метрики появятся после подключения серверов." : "Серверы по этому запросу не найдены.")</td></tr>
+            }
+            </tbody>
+        </table>
+    </div>
+    <p class="muted">Значения в таблице — последний полученный снимок, а не измерение в реальном времени. «—» означает отсутствие данных. Сеть: единицы, переданные сервером.</p>
 
-<div class="toolbar">
-    <input placeholder="Filter by node id" @bind="_filter" @bind:event="oninput" />
-</div>
-
-<div class="table-wrap">
-    <table class="data">
-        <thead><tr><th>Time</th><th>Node</th><th>CPU</th><th>RAM</th><th>Sessions</th><th>Rx</th><th>Tx</th></tr></thead>
-        <tbody>
-        @foreach (var m in Filtered())
-        {
-            <tr>
-                <td>@m.Timestamp.ToString("u")</td>
-                <td class="mono">@m.NodeId</td>
-                <td>@m.CpuPercent.ToString("0.0")%</td>
-                <td>@m.MemoryPercent.ToString("0.0")%</td>
-                <td>@m.ActiveSessions</td>
-                <td>@(m.NetworkRxRate?.ToString("0.0") ?? "—")</td>
-                <td>@(m.NetworkTxRate?.ToString("0.0") ?? "—")</td>
-            </tr>
-        }
-        </tbody>
-    </table>
-</div>
+    @if (_servers.Any(s => s.NodeId == _selected))
+    {
+        <div class="panel metrics-controls">
+            <label>Сервер для графиков
+                <select @bind="_selected" @bind:after="ReloadAsync" disabled="@_loading">
+                    @foreach (var server in _servers.OrderBy(s => s.Name, StringComparer.Create(UiText.Culture, true)))
+                    {
+                        <option value="@server.NodeId">@server.Name · @server.NodeId</option>
+                    }
+                </select>
+            </label>
+            <label>Период
+                <select @bind="_hours" @bind:after="ReloadAsync" disabled="@_loading">
+                    <option value="1">Последний час</option><option value="6">6 часов</option>
+                    <option value="24">24 часа</option><option value="168">7 дней</option>
+                </select>
+            </label>
+            <a href="@($"/admin/nodes/{Uri.EscapeDataString(_selected)}")">Открыть сервер →</a>
+        </div>
+        <h2>Нагрузка: @_servers.First(s => s.NodeId == _selected).Name</h2>
+        <p class="muted">Интервал: @MetricsQuery.BucketMinutes(_hours) мин. Получено измерений: @_points.Sum(p => p.Samples). Наведите указатель на точку для значения. Разрывы означают отсутствие данных.</p>
+        <div class="charts-grid" aria-busy="@_loading">
+            <MetricChart Title="Процессор" Unit="%" Points="_points" Value="p => p.Cpu" From="_from" Until="_until" Maximum="100" />
+            <MetricChart Title="Оперативная память" Unit="%" Points="_points" Value="p => p.Memory" From="_from" Until="_until" Maximum="100" Color="#79dcb5" />
+            <MetricChart Title="Активные сеансы" Unit="сеансов" Aggregation="Максимум за интервал" Points="_points" Value="p => p.Sessions" From="_from" Until="_until" Color="#f0c66a" />
+            <MetricChart Title="Приём данных" Unit="единицы сервера" Points="_points" Value="p => p.Rx" From="_from" Until="_until" />
+            <MetricChart Title="Передача данных" Unit="единицы сервера" Points="_points" Value="p => p.Tx" From="_from" Until="_until" Color="#c9a7ff" />
+        </div>
+        <details class="panel">
+            <summary>Данные графиков — таблица интервалов</summary>
+            <div class="table-wrap">
+                <table class="data">
+                    <thead><tr><th>Начало интервала (UTC)</th><th>Процессор, %</th><th>Память, %</th><th>Сеансы (макс.)</th><th>Приём</th><th>Передача</th><th>Измерений</th></tr></thead>
+                    <tbody>
+                        @foreach (var p in _points)
+                        {
+                            <tr><td>@p.Time.ToString("dd.MM.yyyy HH:mm")</td><td>@UiText.Number(p.Cpu)</td><td>@UiText.Number(p.Memory)</td><td>@UiText.Number(p.Sessions, "0")</td><td>@UiText.Number(p.Rx)</td><td>@UiText.Number(p.Tx)</td><td>@p.Samples</td></tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    }
+}
 
 @code {
-    private List<NodeMetric> _metrics = new();
-    private string _filter = "";
-
-    protected override async Task OnInitializedAsync() =>
-        _metrics = await Db.NodeMetrics.OrderByDescending(m => m.Timestamp).Take(300).ToListAsync();
-
-    private IEnumerable<NodeMetric> Filtered()
+    [SupplyParameterFromQuery(Name = "node")] public string? NodeId { get; set; }
+    private static readonly (string Key, string Label)[] Columns =
+    [ ("name", "Сервер"), ("location", "Локация"), ("status", "Статус"), ("cpu", "Процессор, %"),
+      ("memory", "Память, %"), ("sessions", "Сеансы"), ("rx", "Приём"), ("tx", "Передача"), ("time", "Снимок (UTC)") ];
+    private List<ServerMetricRow> _servers = new();
+    private List<MetricPoint> _points = new();
+    private string _selected = "", _filter = "", _sort = "name";
+    private int _hours = 24;
+    private bool _descending, _loading, _loaded;
+    private string? _error;
+    private DateTime _from, _until;
+    protected override async Task OnParametersSetAsync()
     {
-        if (string.IsNullOrWhiteSpace(_filter)) return _metrics;
-        var f = _filter.Trim();
-        return _metrics.Where(m => m.NodeId.Contains(f, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(NodeId)) _selected = NodeId;
+        await ReloadAsync();
+    }
+    private IEnumerable<ServerMetricRow> VisibleServers() => MetricsQuery.Sort(_servers.Where(s =>
+        string.IsNullOrWhiteSpace(_filter) || s.Name.Contains(_filter.Trim(), StringComparison.OrdinalIgnoreCase) ||
+        s.NodeId.Contains(_filter.Trim(), StringComparison.OrdinalIgnoreCase) ||
+        s.Location.Contains(_filter.Trim(), StringComparison.OrdinalIgnoreCase)), _sort, _descending);
+    private void SortBy(string column)
+    {
+        _descending = _sort == column ? !_descending : column is not ("name" or "location" or "status");
+        _sort = column;
+    }
+    private async Task SelectAsync(string id)
+    {
+        if (_loading) return;
+        _selected = id;
+        await ReloadAsync();
+    }
+    private async Task ReloadAsync()
+    {
+        if (_loading) return;
+        _loading = true;
+        _loaded = false;
+        _error = null;
+        try
+        {
+            // A new scope prevents overlapping Blazor/layout queries from sharing a DbContext.
+            await using var scope = ScopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<ControlPlaneDbContext>();
+            var until = Clock.UtcNow;
+            var from = until.AddHours(-_hours);
+            var servers = await MetricsQuery.OverviewAsync(db, until);
+            if (!servers.Any(s => s.NodeId == _selected))
+                _selected = MetricsQuery.Sort(servers, "name", false).FirstOrDefault()?.NodeId ?? "";
+            var minutes = MetricsQuery.BucketMinutes(_hours);
+            var buckets = string.IsNullOrEmpty(_selected) ? new List<MetricBucket>() :
+                await MetricsQuery.History(db, _selected, from, until, minutes).ToListAsync();
+            _servers = servers;
+            _points = MetricsQuery.Points(buckets, from, until, minutes);
+            _from = from;
+            _until = until;
+            _loaded = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load metrics for node {NodeId}", _selected);
+            _error = "Не удалось загрузить метрики. Нажмите «Обновить» для повторной попытки.";
+        }
+        finally { _loading = false; }
     }
 }

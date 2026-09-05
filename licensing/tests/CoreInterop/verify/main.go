@@ -14,6 +14,7 @@ import (
 	"github.com/nyxveil/nvp/core/auth/nodeauth"
 	"github.com/nyxveil/nvp/core/auth/ticket"
 	"github.com/nyxveil/nvp/core/controlplane/catalog"
+	"github.com/nyxveil/nvp/core/failover"
 )
 
 func main() {
@@ -111,6 +112,7 @@ func verifyCatalog(args []string) error {
 	kid := fs.String("kid", "", "")
 	expectedNode := fs.String("expected-node-id", "node-ams-1", "")
 	expectedLoc := fs.String("expected-location-id", "loc-ams", "")
+	noCandidates := fs.Bool("expect-no-candidates", false, "")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -132,6 +134,18 @@ func verifyCatalog(args []string) error {
 	v := catalog.VerifyKeys{Keys: map[string]ed25519.PublicKey{*kid: ed25519.PublicKey(pub)}}
 	if err := catalog.Verify(v, signed); err != nil {
 		return fmt.Errorf("catalog verify failed: %w", err)
+	}
+	selector := failover.Selector{Catalog: signed.Catalog, Role: "user", LocationID: *expectedLoc}
+	candidates := selector.CandidateNodes()
+	if *noCandidates {
+		if len(candidates) != 0 {
+			return fmt.Errorf("Frozen selector accepted a managed unavailable node: %v", candidates)
+		}
+		fmt.Println("FROZEN_SELECTOR_NO_CANDIDATES=PASS")
+		return nil
+	}
+	if len(candidates) != 1 || candidates[0].NodeID != *expectedNode {
+		return fmt.Errorf("Frozen selector did not select the healthy production node")
 	}
 
 	var node *struct {

@@ -34,8 +34,47 @@ public static class Program
             "issue-ticket" => await IssueTicketAsync(args),
             "sign-catalog" => await SignCatalogAsync(args),
             "verify-node-token" => await VerifyNodeTokenAsync(args),
+            "verify-management-request" => await VerifyManagementRequestAsync(args),
             _ => Fail("unknown command")
         };
+    }
+
+    private static async Task<int> VerifyManagementRequestAsync(string[] args)
+    {
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(RequireArg(args, "--vectors")));
+        await using var fx = await BuildFixtureAsync();
+        foreach (var vector in document.RootElement.EnumerateArray())
+        {
+            string Field(string name) => vector.GetProperty(name).GetString()!;
+            var nodeId = Field("NodeId");
+            if (!await fx.Db.NodeCredentials.AnyAsync(c => c.NodeId == nodeId))
+            {
+                fx.Db.NodeCredentials.Add(new NodeCredential
+                {
+                    NodeId = nodeId,
+                    PublicKey = Convert.FromBase64String(Field("PublicKey")),
+                    CredentialIssuedAt = DateTime.UtcNow
+                });
+                await fx.Db.SaveChangesAsync();
+            }
+            var actual = new NodeRequestData(Field("Method"), Field("PathAndQuery"),
+                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Field("Body")))).ToLowerInvariant());
+            var headers = new Dictionary<string, string>
+            {
+                ["X-Node-Timestamp"] = Field("Timestamp"),
+                ["X-Node-Nonce"] = Field("Nonce"),
+                ["X-Node-Signature"] = Field("Signature")
+            };
+            await fx.NodeAuth.ValidateNodeRequestAsync(nodeId, headers, actual);
+            try
+            {
+                await fx.NodeAuth.ValidateNodeRequestAsync(nodeId, headers, actual with { BodySha256 = new string('0', 64) });
+                throw new InvalidOperationException("modified body accepted");
+            }
+            catch (Nyxveil.ControlPlane.Application.Exceptions.UnauthorizedException) { }
+            Console.WriteLine("MANAGEMENT_VECTOR_CS_VERIFY=PASS " + actual.Method + " " + actual.PathAndQuery);
+        }
+        return 0;
     }
 
     private static async Task<int> IssueTicketAsync(string[] args)
@@ -125,7 +164,24 @@ public static class Program
             master_sees_testonly = masterHasTest
         }));
 
-        Console.WriteLine("signed production catalog");
+        var clock = new SystemClock();
+        var management = new NodeManagementService(fx.Db, clock, new AuditService(fx.Db, clock));
+        foreach (var state in new[] { "maintenance", "draining", "disabled" })
+        {
+            if (state == "maintenance") await management.EnterMaintenanceAsync("node-ams-1", "interop");
+            if (state == "draining")
+            {
+                await management.ExitMaintenanceAsync("node-ams-1", "interop");
+                await management.SetDrainingAsync("node-ams-1", true, "interop");
+            }
+            if (state == "disabled") await management.SetEnabledAsync("node-ams-1", false, "interop");
+            await new NodeHeartbeatService(fx.Db, clock).ProcessHeartbeatAsync(new NodeHeartbeatRequest
+            { NodeId = "node-ams-1", Healthy = true, CurrentSessions = 1 });
+            var unavailable = await fx.Catalog.GetSignedCatalogForCallerAsync(null, fx.LicenseToken);
+            await File.WriteAllTextAsync(Path.Combine(outDir, state + ".json"), JsonSerializer.Serialize(unavailable, options));
+        }
+
+        Console.WriteLine("signed production catalog and managed selection states");
         return 0;
     }
 
@@ -180,10 +236,7 @@ public static class Program
         });
         await fx.Db.SaveChangesAsync();
 
-        await fx.NodeAuth.ValidateNodeRequestAsync(nodeId, new Dictionary<string, string>
-        {
-            ["Authorization"] = "Bearer " + token
-        });
+        await fx.NodeAuth.VerifyCoreNodeTokenV1Async(nodeId, token);
         Console.WriteLine("OK node token verified by C#");
         return 0;
     }

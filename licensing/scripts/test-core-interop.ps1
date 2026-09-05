@@ -80,6 +80,7 @@ $modBackup = $null
 try {
     Write-Host "Extracting to $extract ..."
     tar -xf $FrozenZip -C $extract
+    if ($LASTEXITCODE -ne 0) { Fail 'Frozen archive extraction failed' }
     $goMod = Join-Path $extract 'go.mod'
     if (-not (Test-Path -LiteralPath $goMod)) {
         Fail "Extracted archive missing go.mod at $goMod"
@@ -158,6 +159,17 @@ try {
     Write-Host 'CATALOG_NODE_MAPPING=PASS'
     Ok 'Production CatalogService -> Frozen catalog.Verify'
 
+    Push-Location $verifyDir
+    try {
+        foreach ($state in @('maintenance', 'draining', 'disabled')) {
+            & go run . verify-catalog --catalog-file (Join-Path $artifacts ($state + '.json')) `
+                --pubkey-hex $cmeta.pubkey_hex --kid $cmeta.kid --expected-location-id $cmeta.expected_location_id --expect-no-candidates
+            if ($LASTEXITCODE -ne 0) { Fail "Frozen selector accepted $state node" }
+            Write-Host "FROZEN_SELECTOR_$($state.ToUpperInvariant())=PASS"
+        }
+    }
+    finally { Pop-Location }
+
     $tometa = Get-Content (Join-Path $artifacts 'testonly.meta.json') -Raw | ConvertFrom-Json
     if ($tometa.user_sees_testonly -eq $true) { Fail 'TESTONLY_ROLE_SEMANTICS: user saw test_only nodes' }
     if ($tometa.master_sees_testonly -ne $true) { Fail 'TESTONLY_ROLE_SEMANTICS: master did not see test_only nodes' }
@@ -206,5 +218,10 @@ finally {
         $utf8NoBom = New-Object System.Text.UTF8Encoding $false
         [System.IO.File]::WriteAllText($modPath, $modBackup, $utf8NoBom)
     }
-    try { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    $workFull = [IO.Path]::GetFullPath($work)
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    if ($workFull.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and
+        [IO.Path]::GetFileName($workFull) -match '^nyxveil-core-interop-[a-f0-9]{32}$') {
+        try { Remove-Item -LiteralPath $workFull -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    }
 }

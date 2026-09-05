@@ -1,24 +1,24 @@
 @page "/account/login"
 @layout EmptyLayout
-@inject UserManager<ApplicationUser> UserManager
+@inject IServiceScopeFactory Scopes
 @inject NavigationManager Nav
 @inject IConfiguration Configuration
 
 <div class="auth-page">
     <div class="auth-card">
-        <h1>Sign in</h1>
-        <p class="muted">Nyxveil Control Plane admin</p>
+        <h1>Войти</h1>
+        <p class="muted">Панель управления Nyxveil</p>
 
         @if (_needsSetup)
         {
             @if (_allowWebBootstrap)
             {
-                <div class="alert alert-warn">No SuperAdmin exists yet. <a href="/setup">Run first-time setup</a>.</div>
+                <div class="alert alert-warn">Главный администратор ещё не создан. <a href="/setup">Выполнить первоначальную настройку</a>.</div>
             }
             else
             {
                 <div class="alert alert-warn">
-                    No SuperAdmin exists yet. Use the installer CLI:
+                    Главный администратор ещё не создан. Выполните команду установщика:
                     <span class="mono">admin create --username &lt;email&gt;</span>
                 </div>
             }
@@ -27,18 +27,18 @@
         {
             @if (_error)
             {
-                <div class="alert alert-error">Invalid email or password.</div>
+                <div class="alert alert-error">Неверная почта или пароль.</div>
             }
             @if (_setupOk)
             {
-                <div class="alert alert-ok">SuperAdmin created. Sign in to continue.</div>
+                <div class="alert alert-ok">Главный администратор создан. Войдите, чтобы продолжить.</div>
             }
 
             <form method="post" action="/account/login">
                 <input type="hidden" name="returnUrl" value="@ReturnUrl" />
-                <label>Email<input name="email" type="email" required autocomplete="username" /></label>
-                <label>Password<input name="password" type="password" required autocomplete="current-password" /></label>
-                <button class="btn" type="submit">Sign in</button>
+                <label>Электронная почта<input name="email" type="email" required autocomplete="username" /></label>
+                <label>Пароль<input name="password" type="password" required autocomplete="current-password" /></label>
+                <button class="btn" type="submit">Войти</button>
             </form>
         }
     </div>
@@ -61,8 +61,13 @@
         var setup = WebBootstrapGuard.ReadSetupOptions(Configuration);
         _allowWebBootstrap = setup.AllowWebBootstrap;
 
-        var admins = await UserManager.GetUsersInRoleAsync(AdminRole.SuperAdmin);
-        _needsSetup = admins.Count == 0;
+        var adminCount = await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            var userManager = sp.GetRequiredService<UserManager<ApplicationUser>>();
+            var admins = await userManager.GetUsersInRoleAsync(AdminRole.SuperAdmin);
+            return admins.Count;
+        });
+        _needsSetup = adminCount == 0;
         if (_needsSetup && _allowWebBootstrap)
         {
             Nav.NavigateTo("/setup");

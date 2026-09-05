@@ -20,11 +20,9 @@ function Ok([string]$Msg) { Write-Host "[PASS] $Msg" -ForegroundColor Green }
 
 Write-Host '=== test-powershell.ps1 ==='
 
-$files = @(Get-ChildItem -LiteralPath $scriptRoot -Include *.ps1, *.psm1 -File)
-if ($files.Count -eq 0) {
-    # -Include with -LiteralPath on directory can be quirky; fallback
-    $files = @(Get-ChildItem -Path (Join-Path $scriptRoot '*') -Include *.ps1, *.psm1 -File)
-}
+# Windows PowerShell 5.1 can ignore -Include together with -LiteralPath.
+$files = @(Get-ChildItem -LiteralPath $scriptRoot -File |
+    Where-Object { $_.Extension -in @('.ps1', '.psm1') })
 
 Write-Host "Parsing $($files.Count) script(s)..."
 foreach ($f in $files) {
@@ -55,7 +53,67 @@ else {
     }
 }
 
+# The prepared SQL must honor the chosen DB even when source has a default :setvar.
+$preparedSql = $null
+try {
+    $preparedSql = New-CreateDatabaseScriptCopy -SourcePath (Join-Path $scriptRoot '..\database\create_database.sql') -DatabaseName 'Nyxveil_Test_Target'
+    $preparedText = Get-Content -LiteralPath $preparedSql -Raw
+    if ($preparedText -notmatch '(?m)^:setvar DatabaseName Nyxveil_Test_Target\s*$') {
+        Fail 'Prepared SQL did not bind the selected database'
+    }
+    else { Ok 'Prepared SQL binds the selected database' }
+}
+catch { Fail "Prepare SQL: $($_.Exception.Message)" }
+finally { if ($preparedSql -and (Test-Path -LiteralPath $preparedSql)) { Remove-Item -LiteralPath $preparedSql -Force } }
+
 # Duplicate parameter name AST check for each script
+try {
+    $sqlBuilt = Get-NyxveilSqlcmdArgs -Server 'localhost' -Query 'SELECT DB_NAME()' -DatabaseName 'Nyxveil_Test_Target'
+    $dbArg = [Array]::IndexOf($sqlBuilt.Arguments, '-d')
+    if ($dbArg -lt 0 -or $sqlBuilt.Arguments[$dbArg + 1] -ne 'Nyxveil_Test_Target') {
+        Fail 'sqlcmd does not connect to the selected database'
+    }
+    else { Ok 'sqlcmd connects to the selected database' }
+}
+catch { Fail "sqlcmd DB arguments: $($_.Exception.Message)" }
+
+# Regression: uppercase -I is distinct from lowercase -i (SQL input file).
+try {
+    $sqlSource = Join-Path $scriptRoot '..\database\create_database.sql'
+    foreach ($auth in @('Windows', 'Sql')) {
+        foreach ($mode in @('Query', 'InputFile')) {
+            $sqlCase = @{
+                Server = 'localhost'
+                DatabaseAuth = $auth
+                DatabaseUser = 'argument_test_only'
+            }
+            if ($mode -eq 'Query') { $sqlCase.Query = 'SELECT SESSIONPROPERTY(''QUOTED_IDENTIFIER'')' }
+            else { $sqlCase.InputFile = $sqlSource }
+            $builtCase = Get-NyxveilSqlcmdArgs @sqlCase
+            if (@($builtCase.Arguments | Where-Object { $_ -ceq '-I' }).Count -ne 1) {
+                Fail "sqlcmd $auth/$mode must enable QUOTED_IDENTIFIER with uppercase -I"
+            }
+            elseif ($mode -eq 'InputFile' -and $builtCase.Arguments -cnotcontains '-i') {
+                Fail 'sqlcmd input file argument was lost'
+            }
+            else { Ok "sqlcmd $auth/$mode enables QUOTED_IDENTIFIER" }
+        }
+    }
+    $bootstrap = Get-Content -LiteralPath $sqlSource -Raw -Encoding UTF8
+    $useOffset = $bootstrap.IndexOf('USE [$(DatabaseName)];')
+    $ddlOffset = $bootstrap.IndexOf('-- BEGIN EF GENERATED BASELINE')
+    $settings = $bootstrap.Substring($useOffset, $ddlOffset - $useOffset)
+    foreach ($option in @('QUOTED_IDENTIFIER', 'ANSI_NULLS', 'ANSI_PADDING', 'ANSI_WARNINGS',
+            'ARITHABORT', 'CONCAT_NULL_YIELDS_NULL', 'NUMERIC_ROUNDABORT')) {
+        $value = if ($option -eq 'NUMERIC_ROUNDABORT') { 'OFF' } else { 'ON' }
+        if ($settings -notmatch "(?im)^SET $option $value;") {
+            Fail "Bootstrap must set $option $value after USE and before generated DDL"
+        }
+        else { Ok "Bootstrap session: $option $value" }
+    }
+}
+catch { Fail "SQL session options: $($_.Exception.Message)" }
+
 foreach ($f in $files) {
     $tokens = $null
     $errors = $null
@@ -93,7 +151,8 @@ $helpTargets = @(
     'pack-release.ps1',
     'backup-recovery.ps1',
     'restore-recovery.ps1',
-    'test-core-interop.ps1'
+    'test-core-interop.ps1',
+    'test-management-interop.ps1'
 )
 foreach ($name in $helpTargets) {
     $path = Join-Path $scriptRoot $name

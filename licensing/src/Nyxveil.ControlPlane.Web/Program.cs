@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Components.Server.Circuits;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.RateLimiting;
@@ -21,6 +22,7 @@ using Nyxveil.ControlPlane.Infrastructure.Logging;
 using Nyxveil.ControlPlane.Web.Cli;
 using Nyxveil.ControlPlane.Web.Components;
 using Nyxveil.ControlPlane.Web.Health;
+using Nyxveil.ControlPlane.Web.Hosting;
 using Nyxveil.ControlPlane.Web.Hubs;
 using Nyxveil.ControlPlane.Web.Security;
 using Nyxveil.ControlPlane.Worker.DependencyInjection;
@@ -89,6 +91,7 @@ builder.Services.AddAuthorization(options =>
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<AuthenticationStateProvider, IdentityRevalidatingAuthenticationStateProvider>();
 builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<CircuitHandler, LoggingCircuitHandler>();
 
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
@@ -162,11 +165,23 @@ if (app.Environment.IsDevelopment())
 }
 else
 {
-    // Production: never return stack traces to clients.
+    // Production: never return stack traces to clients; always log server-side with TraceId.
     app.UseExceptionHandler(exceptionApp =>
     {
         exceptionApp.Run(async context =>
         {
+            var feature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerPathFeature>();
+            var ex = feature?.Error;
+            var logger = context.RequestServices
+                .GetRequiredService<ILoggerFactory>()
+                .CreateLogger("Nyxveil.UnhandledException");
+            logger.LogError(
+                ex,
+                "Unhandled exception TraceId={TraceId} Method={Method} Path={Path}",
+                context.TraceIdentifier,
+                context.Request.Method,
+                feature?.Path ?? context.Request.Path.Value);
+
             context.Response.StatusCode = StatusCodes.Status500InternalServerError;
             context.Response.ContentType = "application/problem+json";
             var problem = new
@@ -312,7 +327,7 @@ PreferMinimalApiOverBlazor(
         var create = await userManager.CreateAsync(user, password).ConfigureAwait(false);
         if (!create.Succeeded)
         {
-            var msg = string.Join("; ", create.Errors.Select(e => e.Description));
+            var msg = string.Join("; ", create.Errors.Select(Nyxveil.ControlPlane.Web.Presentation.UiText.IdentityError));
             return Results.Redirect($"/setup?error={Uri.EscapeDataString(msg)}");
         }
 
@@ -393,6 +408,34 @@ static void PreferMinimalApiOverBlazor(IEndpointConventionBuilder endpoint) =>
 static void ConfigureFileLogging(WebApplicationBuilder builder)
 {
     builder.Services.Configure<FileLoggingOptions>(builder.Configuration.GetSection(FileLoggingOptions.SectionName));
+
+    // Production Windows Service must always write rotating files under ProgramData
+    // so TraceId from JSON error responses can be correlated without an interactive console.
+    if (builder.Environment.IsProduction())
+    {
+        builder.Services.PostConfigure<FileLoggingOptions>(opts =>
+        {
+            opts.Enabled = true;
+            if (string.IsNullOrWhiteSpace(opts.Directory))
+            {
+                opts.Directory = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    "Nyxveil",
+                    "ControlPlane",
+                    "logs");
+            }
+
+            if (string.IsNullOrWhiteSpace(opts.FilePrefix))
+                opts.FilePrefix = "controlplane";
+            if (opts.MaxFileSizeMB <= 0)
+                opts.MaxFileSizeMB = 10;
+            if (opts.MaxRetainedFiles <= 0)
+                opts.MaxRetainedFiles = 14;
+        });
+        builder.Services.AddSingleton<ILoggerProvider, RotatingFileLoggerProvider>();
+        return;
+    }
+
     var opts = builder.Configuration.GetSection(FileLoggingOptions.SectionName).Get<FileLoggingOptions>();
     if (opts?.Enabled == true)
         builder.Services.AddSingleton<ILoggerProvider, RotatingFileLoggerProvider>();
@@ -413,9 +456,6 @@ static void ConfigureKestrelHttps(WebApplicationBuilder builder, ref X509Certifi
         throw new InvalidOperationException(
             $"Hosting:Port must be 1-65535 (got {hosting.Port}).");
     }
-
-    if (hosting.Port > 0)
-        ClearKestrelEndpoints(builder);
 
     var certOptions = CertificateLoader.Bind(builder.Configuration);
     var isProduction = builder.Environment.IsProduction();
@@ -448,28 +488,7 @@ static void ConfigureKestrelHttps(WebApplicationBuilder builder, ref X509Certifi
         ip = IPAddress.Any;
 
     var port = hosting.Port <= 0 ? HostingOptions.DefaultPort : hosting.Port;
-    var captured = cert;
-
-    builder.WebHost.ConfigureKestrel(options =>
-    {
-        options.Listen(ip, port, listen => listen.UseHttps(captured));
-    });
-}
-
-/// <summary>
-/// Nulls out Kestrel:Endpoints keys from older installers so only ConfigureKestrel Listen is used.
-/// </summary>
-static void ClearKestrelEndpoints(WebApplicationBuilder builder)
-{
-    builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
-    {
-        ["Kestrel:Endpoints:Https:Url"] = null,
-        ["Kestrel:Endpoints:Https:Certificate:Thumbprint"] = null,
-        ["Kestrel:Endpoints:Https:Certificate:Subject"] = null,
-        ["Kestrel:Endpoints:Https:Certificate:Store"] = null,
-        ["Kestrel:Endpoints:Https:Certificate:Location"] = null,
-        ["Kestrel:Endpoints:Http:Url"] = null
-    });
+    KestrelEndpointConfiguration.Configure(builder.WebHost, builder.Configuration.GetSection("Kestrel"), ip, port, cert);
 }
 
 static async Task SeedRolesAsync(IServiceProvider services)

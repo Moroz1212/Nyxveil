@@ -1,32 +1,31 @@
 @page "/admin/admin-users"
 @attribute [Authorize(Policy = AuthPolicies.SuperAdminOnly)]
 @rendermode InteractiveServer
-@inject UserManager<ApplicationUser> UserManager
+@inject IServiceScopeFactory Scopes
 @inject AuthenticationStateProvider AuthState
-@inject IAuditService Audit
 
 <div class="page-header">
     <div>
-        <h1>Admin users</h1>
-        <div class="sub">Identity accounts for the Control Plane console. SuperAdmin only.</div>
+        <h1>Администраторы</h1>
+        <div class="sub">Учётные записи администраторов панели. Управление доступно только главному администратору.</div>
     </div>
-    <button class="btn" @onclick="() => _showCreate = !_showCreate">@(_showCreate ? "Close" : "Invite admin")</button>
+    <button class="btn" @onclick="() => _showCreate = !_showCreate" disabled="@_busy">@(_showCreate ? "Закрыть" : "Добавить администратора")</button>
 </div>
 
 @if (_showCreate)
 {
     <div class="panel form-grid">
-        <label>Email<input @bind="_email" type="email" /></label>
-        <label>Display name<input @bind="_displayName" /></label>
-        <label>Password<input @bind="_password" type="password" /></label>
-        <label>Role
+        <label>Электронная почта<input @bind="_email" type="email" /></label>
+        <label>Отображаемое имя<input @bind="_displayName" /></label>
+        <label>Пароль<input @bind="_password" type="password" /></label>
+        <label>Роль
             <select @bind="_role">
-                <option value="@AdminRole.ReadOnly">ReadOnly</option>
-                <option value="@AdminRole.Operator">Operator</option>
-                <option value="@AdminRole.SuperAdmin">SuperAdmin</option>
+                <option value="@AdminRole.ReadOnly">Только просмотр</option>
+                <option value="@AdminRole.Operator">Оператор</option>
+                <option value="@AdminRole.SuperAdmin">Главный администратор</option>
             </select>
         </label>
-        <div class="actions" style="align-self:end"><button class="btn" @onclick="CreateAsync">Create</button></div>
+        <div class="actions" style="align-self:end"><button class="btn" @onclick="CreateAsync" disabled="@_busy">Создать</button></div>
     </div>
     @if (!string.IsNullOrEmpty(_error))
     {
@@ -36,14 +35,14 @@
 
 <div class="table-wrap">
     <table class="data">
-        <thead><tr><th>Email</th><th>Name</th><th>Roles</th></tr></thead>
+        <thead><tr><th>Электронная почта</th><th>Название</th><th>Роли</th></tr></thead>
         <tbody>
         @foreach (var row in _rows)
         {
             <tr>
                 <td>@row.Email</td>
                 <td>@(row.DisplayName ?? "—")</td>
-                <td>@string.Join(", ", row.Roles)</td>
+                <td>@string.Join(", ", row.Roles.Select(UiText.Role))</td>
             </tr>
         }
         </tbody>
@@ -55,6 +54,7 @@
 
     private List<Row> _rows = new();
     private bool _showCreate;
+    private bool _busy;
     private string _email = "";
     private string _displayName = "";
     private string _password = "";
@@ -65,45 +65,74 @@
 
     private async Task ReloadAsync()
     {
-        var users = UserManager.Users.ToList();
-        var rows = new List<Row>();
-        foreach (var u in users)
+        _rows = await BlazorWork.RunAsync(Scopes, async sp =>
         {
-            var roles = await UserManager.GetRolesAsync(u);
-            rows.Add(new Row(u.Email ?? u.UserName ?? u.Id, u.DisplayName, roles.ToList()));
-        }
-        _rows = rows.OrderBy(r => r.Email).ToList();
+            var userManager = sp.GetRequiredService<UserManager<ApplicationUser>>();
+            var users = userManager.Users.ToList();
+            var rows = new List<Row>();
+            foreach (var u in users)
+            {
+                var roles = await userManager.GetRolesAsync(u);
+                rows.Add(new Row(u.Email ?? u.UserName ?? u.Id, u.DisplayName, roles.ToList()));
+            }
+            return rows.OrderBy(r => r.Email).ToList();
+        });
     }
 
     private async Task CreateAsync()
     {
+        if (_busy) return;
+        _busy = true;
         _error = null;
-        var user = new ApplicationUser
+        try
         {
-            UserName = _email.Trim(),
-            Email = _email.Trim(),
-            EmailConfirmed = true,
-            DisplayName = string.IsNullOrWhiteSpace(_displayName) ? null : _displayName.Trim()
-        };
-        var result = await UserManager.CreateAsync(user, _password);
-        if (!result.Succeeded)
-        {
-            _error = string.Join("; ", result.Errors.Select(e => e.Description));
-            return;
-        }
+            var state = await AuthState.GetAuthenticationStateAsync();
+            var actor = state.User.Identity?.Name ?? "admin";
+            var email = _email.Trim();
+            var displayName = string.IsNullOrWhiteSpace(_displayName) ? null : _displayName.Trim();
+            var password = _password;
+            var role = _role;
 
-        await UserManager.AddToRoleAsync(user, _role);
-        var state = await AuthState.GetAuthenticationStateAsync();
-        await Audit.WriteAsync(new AuditWriteRequest
+            var error = await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var userManager = sp.GetRequiredService<UserManager<ApplicationUser>>();
+                var audit = sp.GetRequiredService<IAuditService>();
+                var user = new ApplicationUser
+                {
+                    UserName = email,
+                    Email = email,
+                    EmailConfirmed = true,
+                    DisplayName = displayName
+                };
+                var result = await userManager.CreateAsync(user, password);
+                if (!result.Succeeded)
+                    return string.Join("; ", result.Errors.Select(UiText.IdentityError));
+
+                await userManager.AddToRoleAsync(user, role);
+                await audit.WriteAsync(new AuditWriteRequest
+                {
+                    Actor = actor,
+                    Action = "admin_user.created",
+                    EntityType = "AdminUser",
+                    EntityId = user.Id,
+                    Detail = $"role={role}"
+                });
+                return null;
+            });
+
+            if (error is not null)
+            {
+                _error = error;
+                return;
+            }
+
+            _showCreate = false;
+            _password = "";
+            await ReloadAsync();
+        }
+        finally
         {
-            Actor = state.User.Identity?.Name ?? "admin",
-            Action = "admin_user.created",
-            EntityType = "AdminUser",
-            EntityId = user.Id,
-            Detail = $"role={_role}"
-        });
-        _showCreate = false;
-        _password = "";
-        await ReloadAsync();
+            _busy = false;
+        }
     }
 }

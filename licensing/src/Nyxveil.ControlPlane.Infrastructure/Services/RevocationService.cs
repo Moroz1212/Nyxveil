@@ -26,7 +26,6 @@ public sealed class RevocationService : IRevocationService
         _ = nodeId;
         var rows = await _db.Revocations.AsNoTracking()
             .OrderByDescending(r => r.Version)
-            .Take(10_000)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 

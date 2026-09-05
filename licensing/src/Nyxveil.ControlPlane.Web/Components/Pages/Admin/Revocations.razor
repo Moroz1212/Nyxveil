@@ -1,32 +1,32 @@
 @page "/admin/revocations"
 @attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
 @rendermode InteractiveServer
-@inject ControlPlaneDbContext Db
+@inject IServiceScopeFactory Scopes
 
 <div class="page-header">
     <div>
-        <h1>Revocations</h1>
-        <div class="sub">Ticket / license / device revocation entries (versioned).</div>
+        <h1>Список отзывов</h1>
+        <div class="sub">Отозванные билеты доступа, лицензии и устройства с версиями изменений.</div>
     </div>
 </div>
 
 <div class="toolbar">
-    <input placeholder="Search target id" @bind="_filter" @bind:event="oninput" />
+    <input placeholder="Поиск по идентификатору объекта" @bind="_filter" @bind:event="oninput" />
 </div>
 
 <div class="table-wrap">
     <table class="data">
-        <thead><tr><th>Version</th><th>Type</th><th>Target</th><th>Reason</th><th>By</th><th>Created</th></tr></thead>
+        <thead><tr><th>Версия</th><th>Тип</th><th>Объект отзыва</th><th>Причина</th><th>Автор</th><th>Создано (UTC)</th></tr></thead>
         <tbody>
         @foreach (var r in Filtered())
         {
             <tr>
                 <td>@r.Version</td>
-                <td>@r.Type</td>
+                <td>@UiText.Revocation(r.Type)</td>
                 <td class="mono">@r.TargetId</td>
                 <td>@(r.Reason ?? "—")</td>
                 <td>@r.CreatedBy</td>
-                <td>@r.CreatedAt.ToString("u")</td>
+                <td>@r.CreatedAt.ToString("dd.MM.yyyy HH:mm:ss 'UTC'")</td>
             </tr>
         }
         </tbody>
@@ -37,8 +37,14 @@
     private List<Revocation> _rows = new();
     private string _filter = "";
 
-    protected override async Task OnInitializedAsync() =>
-        _rows = await Db.Revocations.OrderByDescending(r => r.Version).Take(500).ToListAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        _rows = await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            var db = sp.GetRequiredService<ControlPlaneDbContext>();
+            return await db.Revocations.OrderByDescending(r => r.Version).Take(500).ToListAsync();
+        });
+    }
 
     private IEnumerable<Revocation> Filtered()
     {

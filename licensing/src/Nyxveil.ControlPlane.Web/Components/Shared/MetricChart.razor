@@ -1,0 +1,45 @@
+<section class="panel metric-chart">
+    <h3>@Title</h3>
+    <div class="muted">@Unit · @Aggregation</div>
+    @if (_geometry.Dots.Count == 0)
+    {
+        <div class="chart-empty">Нет данных за выбранный период</div>
+    }
+    else
+    {
+        <svg viewBox="0 0 640 230" role="img" aria-label="@($"{Title}. {Unit}. Время UTC. {Aggregation}")">
+            <title>@Title — @Unit</title>
+            @for (var i = 0; i <= 4; i++)
+            {
+                var y = 190 - i * 41;
+                <g>
+                    <line x1="52" x2="616" y1="@y" y2="@y" class="chart-grid" />
+                    <text x="46" y="@(y + 4)" text-anchor="end">@UiText.Number(_geometry.Maximum * i / 4, "0.#")</text>
+                </g>
+            }
+            <path d="@_geometry.Path" fill="none" stroke="@Color" stroke-width="2.5" />
+            @foreach (var dot in _geometry.Dots)
+            {
+                <circle cx="@ChartGeometry.Svg(dot.X)" cy="@ChartGeometry.Svg(dot.Y)" r="3" fill="@Color">
+                    <title>@dot.Time.ToString("dd.MM.yyyy HH:mm") UTC: @UiText.Number(dot.Value) @Unit</title>
+                </circle>
+            }
+            <text x="52" y="216">@From.ToString("dd.MM HH:mm")</text>
+            <text x="616" y="216" text-anchor="end">@Until.ToString("dd.MM HH:mm") UTC</text>
+        </svg>
+    }
+</section>
+
+@code {
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public string Unit { get; set; } = "";
+    [Parameter] public string Aggregation { get; set; } = "Среднее за интервал";
+    [Parameter] public string Color { get; set; } = "#69a9ff";
+    [Parameter] public IReadOnlyList<MetricPoint> Points { get; set; } = Array.Empty<MetricPoint>();
+    [Parameter, EditorRequired] public Func<MetricPoint, double?> Value { get; set; } = _ => null;
+    [Parameter] public DateTime From { get; set; }
+    [Parameter] public DateTime Until { get; set; }
+    [Parameter] public double? Maximum { get; set; }
+    private ChartGeometry _geometry = new("", Array.Empty<ChartDot>(), 1);
+    protected override void OnParametersSet() => _geometry = ChartGeometry.Create(Points, Value, From, Until, Maximum);
+}

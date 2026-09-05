@@ -83,7 +83,10 @@ $PublishDir = Get-PublishedBuildDir -PublishDir $PublishDir
 if (-not (Test-Path $InstallDir)) { throw "InstallDir not found: $InstallDir" }
 
 Write-Host "Pre-update health check ($publicHostname :$port)..."
-if (-not (Test-HttpsHealthLocal -Port $port -PublicHostname $publicHostname -InstallDir $InstallDir -CertificateMode $certMode)) {
+$certValidationMode = ''
+if ($op.PSObject.Properties.Name -contains 'CertificateValidationMode') { $certValidationMode = [string]$op.CertificateValidationMode }
+if (-not (Test-HttpsHealthLocal -Port $port -PublicHostname $publicHostname -InstallDir $InstallDir `
+            -CertificateMode $certMode -CertificateValidationMode $certValidationMode)) {
     Write-Warning 'Pre-update health failed. Continuing only if you still intend to update.'
 }
 
@@ -172,7 +175,7 @@ try {
     Write-Host 'Starting service...'
     Start-Service -Name $ServiceName
     if (-not (Wait-HttpsHealthy -Port $port -PublicHostname $publicHostname -InstallDir $InstallDir `
-            -CertificateMode $certMode -TimeoutSec 60)) {
+            -CertificateMode $certMode -CertificateValidationMode $certValidationMode -TimeoutSec 60)) {
         throw "Post-update health failed at $publicHostname :$port"
     }
     Write-Host "Update complete. Backup: $backupDir"

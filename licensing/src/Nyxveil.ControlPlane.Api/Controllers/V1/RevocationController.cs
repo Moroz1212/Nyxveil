@@ -19,7 +19,7 @@ public sealed class RevocationController : ControllerBase
     }
 
     /// <summary>
-    /// GET /api/v1/revocation — NODE ONLY (X-Node-Id + Bearer).
+    /// GET /api/v1/revocation — NODE ONLY (X-Node-Id + req-v2 signature).
     /// User license tokens are rejected with 403 by <see cref="NodeAuthAttribute"/>.
     /// </summary>
     [HttpGet("revocation")]

@@ -1,0 +1,87 @@
+﻿ M licensing/database/README.md
+ M licensing/database/create_database.sql
+ M licensing/docs/NODE-API.md
+ M licensing/docs/NODE-REGISTRATION.md
+ M licensing/scripts/Nyxveil.ControlPlane.Deploy.psm1
+ M licensing/scripts/install-windows.ps1
+ M licensing/scripts/pack-release.ps1
+ M licensing/scripts/self-test.ps1
+ M licensing/scripts/test-core-interop.ps1
+ M licensing/scripts/test-database.ps1
+ M licensing/scripts/test-powershell.ps1
+ M licensing/scripts/update-windows.ps1
+ M licensing/src/Nyxveil.ControlPlane.Api/Auth/NodeAuthAttribute.cs
+ M licensing/src/Nyxveil.ControlPlane.Api/Controllers/V1/NodesController.cs
+ M licensing/src/Nyxveil.ControlPlane.Api/Controllers/V1/RevocationController.cs
+ M licensing/src/Nyxveil.ControlPlane.Application/Abstractions/INodeAuthenticator.cs
+ M licensing/src/Nyxveil.ControlPlane.Application/Contracts/V1/NodeContracts.cs
+ M licensing/src/Nyxveil.ControlPlane.Application/Options/NodeAuthOptions.cs
+ M licensing/src/Nyxveil.ControlPlane.Infrastructure/Persistence/ControlPlaneDbContext.cs
+ M licensing/src/Nyxveil.ControlPlane.Infrastructure/Persistence/Migrations/20260904155703_InitialCreate.Designer.cs
+ M licensing/src/Nyxveil.ControlPlane.Infrastructure/Persistence/Migrations/20260904155703_InitialCreate.cs
+ M licensing/src/Nyxveil.ControlPlane.Infrastructure/Persistence/Migrations/ControlPlaneDbContextModelSnapshot.cs
+ M licensing/src/Nyxveil.ControlPlane.Infrastructure/Security/AccessTicketService.cs
+ M licensing/src/Nyxveil.ControlPlane.Infrastructure/Security/NodeAuthService.cs
+ M licensing/src/Nyxveil.ControlPlane.Infrastructure/Services/CatalogService.cs
+ M licensing/src/Nyxveil.ControlPlane.Infrastructure/Services/NodeHeartbeatService.cs
+ M licensing/src/Nyxveil.ControlPlane.Infrastructure/Services/NodeManagementService.cs
+ M licensing/src/Nyxveil.ControlPlane.Infrastructure/Services/NodeRegistrationService.cs
+ M licensing/src/Nyxveil.ControlPlane.Infrastructure/Services/RevocationService.cs
+ M licensing/src/Nyxveil.ControlPlane.Infrastructure/Services/TicketService.cs
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/App.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Layout/MainLayout.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Layout/NavMenu.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Layout/ReconnectModal.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Account/AccessDenied.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Account/Login.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/AdminUsers.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/AuditLog.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/BootstrapTokens.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/Dashboard.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/Devices.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/Licenses.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/Locations.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/Metrics.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/NodeDetails.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/Nodes.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/Plans.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/Revocations.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/SigningKeys.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/SystemSettings.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/Users.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Error.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/NotFound.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Setup.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Routes.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Shared/ConfirmDialog.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/Shared/StatusBadge.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Components/_Imports.razor
+ M licensing/src/Nyxveil.ControlPlane.Web/Program.cs
+ M licensing/src/Nyxveil.ControlPlane.Web/wwwroot/app.css
+ M licensing/src/Nyxveil.ControlPlane.Worker/HostedServices/MetricsRetentionWorker.cs
+ M licensing/tests/CoreInterop/CsEmit/Program.cs
+ M licensing/tests/CoreInterop/verify/main.go
+ M licensing/tests/Nyxveil.ControlPlane.IntegrationTests/CustomWebApplicationFactory.cs
+ M licensing/tests/Nyxveil.ControlPlane.IntegrationTests/Nyxveil.ControlPlane.IntegrationTests.csproj
+ M licensing/tests/Nyxveil.ControlPlane.UnitTests/ConcurrencyGuardTests.cs
+ M licensing/tests/Nyxveil.ControlPlane.UnitTests/ControlPlaneServiceTests.cs
+ M licensing/tests/Nyxveil.ControlPlane.UnitTests/FrozenCoreInteropTests.cs
+ M licensing/tests/Nyxveil.ControlPlane.UnitTests/SchemaAlignmentTests.cs
+?? _handoff_diagnostics/
+?? licensing/docs/RELEASE-GATE.md
+?? licensing/scripts/check-bootstrap-retry.sql
+?? licensing/scripts/repair-self-test-metadata.ps1
+?? licensing/scripts/test-admin-create.ps1
+?? licensing/scripts/test-certificate-acls.ps1
+?? licensing/scripts/test-directory-acls.ps1
+?? licensing/scripts/test-management-interop.ps1
+?? licensing/scripts/test-self-test-regressions.ps1
+?? licensing/src/Nyxveil.ControlPlane.Domain/Entities/NodeRequestNonce.cs
+?? licensing/src/Nyxveil.ControlPlane.Web/Components/Shared/MetricChart.razor
+?? licensing/src/Nyxveil.ControlPlane.Web/Hosting/
+?? licensing/src/Nyxveil.ControlPlane.Web/Metrics/
+?? licensing/src/Nyxveil.ControlPlane.Web/Presentation/
+?? licensing/tests/ManagementInterop/
+?? licensing/tests/Nyxveil.ControlPlane.IntegrationTests/KestrelStartupTests.cs
+?? licensing/tests/Nyxveil.ControlPlane.IntegrationTests/MetricsTests.cs
+?? licensing/tests/Nyxveil.ControlPlane.IntegrationTests/NodeRequestSecurityTests.cs

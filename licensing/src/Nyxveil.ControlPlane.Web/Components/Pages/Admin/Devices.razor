@@ -1,31 +1,29 @@
 @page "/admin/devices"
 @attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
 @rendermode InteractiveServer
-@inject ControlPlaneDbContext Db
-@inject IDeviceService DeviceService
-@inject AuthenticationStateProvider AuthState
+@inject IServiceScopeFactory Scopes
 
 <div class="page-header">
     <div>
-        <h1>Devices</h1>
-        <div class="sub">Activated client devices bound to licenses.</div>
+        <h1>Устройства</h1>
+        <div class="sub">Активированные клиентские устройства, привязанные к лицензиям.</div>
     </div>
 </div>
 
 <div class="toolbar">
-    <input placeholder="Search device / license / platform" @bind="_filter" @bind:event="oninput" />
+    <input placeholder="Поиск по устройству, лицензии или платформе" @bind="_filter" @bind:event="oninput" />
 </div>
 
 <div class="table-wrap">
     <table class="data">
         <thead>
             <tr>
-                <th>Device</th>
-                <th>License</th>
-                <th>Platform</th>
-                <th>Name</th>
-                <th>Status</th>
-                <th>Last seen</th>
+                <th>Устройство</th>
+                <th>Лицензия</th>
+                <th>Платформа</th>
+                <th>Название</th>
+                <th>Статус</th>
+                <th>Последняя связь (UTC)</th>
                 <th></th>
             </tr>
         </thead>
@@ -38,12 +36,12 @@
                 <td>@(d.Platform ?? "—")</td>
                 <td>@(d.DeviceName ?? "—")</td>
                 <td><StatusBadge Status="@d.Status.ToString()" /></td>
-                <td>@(d.LastSeenAt?.ToString("u") ?? "—")</td>
+                <td>@(d.LastSeenAt?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? "—")</td>
                 <td>
                     <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
                         @if (d.Status == DeviceStatus.Active)
                         {
-                            <button class="btn btn-danger btn-sm" @onclick="() => AskRevoke(d.ClientDeviceId)">Revoke</button>
+                            <button class="btn btn-danger btn-sm" @onclick="() => AskRevoke(d.ClientDeviceId)" disabled="@_busy">Отозвать</button>
                         }
                     </AuthorizeView>
                 </td>
@@ -54,19 +52,28 @@
 </div>
 
 <ConfirmDialog @bind-Visible="_confirm"
-               Title="Revoke device"
-               Message="Revoke this device and add it to the revocation list?"
-               ConfirmText="Revoke"
+               Title="Отозвать устройство"
+               Message="Отозвать доступ этого устройства и добавить его в список отзывов?"
+               ConfirmText="Отозвать"
                OnConfirm="ConfirmRevokeAsync" />
 
 @code {
     private List<Device> _devices = new();
     private string _filter = "";
     private bool _confirm;
+    private bool _busy;
     private string _revokeId = "";
 
-    protected override async Task OnInitializedAsync() =>
-        _devices = await Db.Devices.OrderByDescending(d => d.CreatedAt).Take(500).ToListAsync();
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _devices = await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            var db = sp.GetRequiredService<ControlPlaneDbContext>();
+            return await db.Devices.OrderByDescending(d => d.CreatedAt).Take(500).ToListAsync();
+        });
+    }
 
     private IEnumerable<Device> Filtered()
     {
@@ -81,13 +88,28 @@
 
     private void AskRevoke(string id)
     {
+        if (_busy) return;
         _revokeId = id;
         _confirm = true;
     }
 
     private async Task ConfirmRevokeAsync()
     {
-        await DeviceService.RevokeAsync(_revokeId);
-        _devices = await Db.Devices.OrderByDescending(d => d.CreatedAt).Take(500).ToListAsync();
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            var revokeId = _revokeId;
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var deviceService = sp.GetRequiredService<IDeviceService>();
+                await deviceService.RevokeAsync(revokeId);
+            });
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
     }
 }

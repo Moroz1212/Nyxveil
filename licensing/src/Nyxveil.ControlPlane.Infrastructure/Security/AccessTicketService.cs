@@ -133,8 +133,8 @@ public sealed class AccessTicketService : IAccessTicketIssuer
         if (!string.Equals(claims.ProtocolVersion, "NVP/1", StringComparison.Ordinal))
             throw new UnauthorizedAccessException("invalid protocol_version");
 
-        if (claims.Permissions is null)
-            throw new UnauthorizedAccessException("missing permissions");
+        if (claims.Permissions is null || !claims.HasPermission("connect"))
+            throw new UnauthorizedAccessException("missing connect permission");
 
         if (claims.DevicePub is null || claims.DevicePub.Length != 32)
             throw new UnauthorizedAccessException("device_pub must be 32 bytes");

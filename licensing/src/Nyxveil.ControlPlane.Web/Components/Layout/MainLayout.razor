@@ -1,8 +1,8 @@
-﻿@inherits LayoutComponentBase
+@inherits LayoutComponentBase
 @using Microsoft.AspNetCore.Components.Authorization
 @inject AuthenticationStateProvider AuthState
 @inject NavigationManager Nav
-@inject UserManager<ApplicationUser> UserManager
+@inject IServiceScopeFactory Scopes
 
 <div class="admin-shell">
     @if (_showNav)
@@ -12,14 +12,14 @@
                 <span class="brand-mark">NV</span>
                 <div>
                     <div class="brand-title">Nyxveil</div>
-                    <div class="brand-sub">Control Plane</div>
+                    <div class="brand-sub">Панель управления</div>
                 </div>
             </div>
             <NavMenu />
             <div class="nav-footer">
                 <div class="user-chip">@_userLabel</div>
                 <form method="post" action="/account/logout">
-                    <button type="submit" class="btn btn-ghost btn-sm">Sign out</button>
+                    <button type="submit" class="btn btn-ghost btn-sm">Выйти</button>
                 </form>
             </div>
         </aside>
@@ -33,9 +33,9 @@
 </div>
 
 <div id="blazor-error-ui" data-nosnippet>
-    An unhandled error has occurred.
-    <a href="." class="reload">Reload</a>
-    <span class="dismiss">Dismiss</span>
+    Произошла ошибка. Перезагрузите страницу.
+    <a href="." class="reload">Перезагрузить</a>
+    <span class="dismiss">Закрыть</span>
 </div>
 
 @code {
@@ -53,8 +53,12 @@
         var user = state.User;
         if (user.Identity?.IsAuthenticated == true)
         {
-            var appUser = await UserManager.GetUserAsync(user);
-            _userLabel = appUser?.DisplayName ?? appUser?.Email ?? user.Identity.Name ?? "Admin";
+            _userLabel = await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var userManager = sp.GetRequiredService<UserManager<ApplicationUser>>();
+                var appUser = await userManager.GetUserAsync(user);
+                return appUser?.DisplayName ?? appUser?.Email ?? user.Identity?.Name ?? "Администратор";
+            });
         }
     }
 }

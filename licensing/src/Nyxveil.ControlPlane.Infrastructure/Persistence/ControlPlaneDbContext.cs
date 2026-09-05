@@ -12,6 +12,8 @@ public class ControlPlaneDbContext : IdentityDbContext<ApplicationUser>
     {
     }
 
+    protected ControlPlaneDbContext(DbContextOptions options) : base(options) { }
+
     public DbSet<UserAccount> UserAccounts => Set<UserAccount>();
     public DbSet<Plan> Plans => Set<Plan>();
     public DbSet<License> Licenses => Set<License>();
@@ -25,6 +27,7 @@ public class ControlPlaneDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<NodeMetric> NodeMetrics => Set<NodeMetric>();
     public DbSet<NodeCredential> NodeCredentials => Set<NodeCredential>();
     public DbSet<NodeConfig> NodeConfigs => Set<NodeConfig>();
+    public DbSet<NodeRequestNonce> NodeRequestNonces => Set<NodeRequestNonce>();
     public DbSet<BootstrapToken> BootstrapTokens => Set<BootstrapToken>();
     public DbSet<TicketAudit> TicketAudits => Set<TicketAudit>();
     public DbSet<Revocation> Revocations => Set<Revocation>();
@@ -238,12 +241,23 @@ public class ControlPlaneDbContext : IdentityDbContext<ApplicationUser>
             e.ToTable(t => t.HasCheckConstraint("CK_NodeCredentials_PublicKeyLen", "DATALENGTH([PublicKey]) = 32"));
         });
 
+        builder.Entity<NodeRequestNonce>(e =>
+        {
+            e.ToTable("NodeRequestNonces");
+            e.HasKey(x => new { x.NodeId, x.NonceHash });
+            e.Property(x => x.NodeId).HasMaxLength(128);
+            e.Property(x => x.NonceHash).HasMaxLength(64).IsUnicode(false);
+            e.HasIndex(x => x.ExpiresAt);
+            e.HasOne<Node>().WithMany().HasForeignKey(x => x.NodeId).OnDelete(DeleteBehavior.Cascade);
+        });
+
         builder.Entity<NodeConfig>(e =>
         {
             e.ToTable("NodeConfigs");
             e.HasKey(x => x.NodeId);
             e.Property(x => x.NodeId).HasMaxLength(128);
             e.Property(x => x.TransportPolicyJson).IsRequired();
+            e.Property(x => x.ConfigVersion).IsConcurrencyToken();
             e.Property(x => x.MinimumServerVersion).HasMaxLength(64);
             e.HasOne(x => x.Node).WithOne().HasForeignKey<NodeConfig>(x => x.NodeId)
                 .OnDelete(DeleteBehavior.Cascade);

@@ -1,91 +1,46 @@
-# Nyxveil Control Plane — Database
+# Nyxveil Control Plane database
 
-SQL Server schema for the Nyxveil Licensing / Control Plane (`NyxveilControlPlane`).
+Production target: Microsoft SQL Server on Windows. `create_database.sql` is the
+fresh-install bootstrap. Its generated section exactly matches EF InitialCreate
+`20260904155703_InitialCreate`, including types, lengths, nullability, defaults,
+PK/FK/check constraints, unique keys and indexes. The ConfigVersion bigint is an
+optimistic concurrency token; no SQL rowversion column is required.
 
-| File | Purpose |
-|------|---------|
-| `create_database.sql` | Idempotent create: database, tables, constraints, indexes, sanity checks |
-| `seed_dev.sql` | **Development only** — sample plans + `fi-helsinki` location |
-| `../VERSION` | Control Plane package version (`1.0.0`) |
+The script creates a missing database, then runs the EF idempotent baseline and
+records the matching migration marker. Re-running after success is safe. It must
+not be used to stamp an earlier or partially created schema as current. No live
+production database existed when this InitialCreate was finalized.
 
-## Prerequisites
-
-- Microsoft SQL Server 2019+ or Azure SQL Database
-- `sqlcmd` (SQL Server command-line tools) **or** SQL Server Management Studio (SSMS)
-- Login with permission to `CREATE DATABASE` (first run) and to create objects in the target DB
-
-## Connection
-
-Typical local connection string (ADO.NET / EF Core):
-
-```text
-Server=localhost;Database=NyxveilControlPlane;Trusted_Connection=True;TrustServerCertificate=True;Encrypt=True
-```
-
-SQL authentication example:
-
-```text
-Server=localhost,1433;Database=NyxveilControlPlane;User Id=sa;Password=<secret>;TrustServerCertificate=True;Encrypt=True
-```
-
-All `datetime2(7)` columns are **UTC** (documented in `create_database.sql`).
-
-## Run with sqlcmd
-
-From the repository root or this folder:
+Use the installer for a custom database name. It validates and binds the chosen
+name into a temporary SQL copy; an in-script `:setvar` otherwise takes precedence
+over sqlcmd `-v`. For a manual install edit `:setvar DatabaseName` near the top,
+then use sqlcmd (or enable SQLCMD Mode in SSMS):
 
 ```powershell
-# Windows Authentication (local default instance)
-sqlcmd -S localhost -E -i "d:\Nyxveil\licensing\database\create_database.sql"
-
-# Named instance
-sqlcmd -S localhost\SQLEXPRESS -E -i "d:\Nyxveil\licensing\database\create_database.sql"
-
-# SQL login
-sqlcmd -S localhost -U sa -P "<password>" -i "d:\Nyxveil\licensing\database\create_database.sql"
+sqlcmd -S localhost -E -b -I -i .\database\create_database.sql
 ```
 
-Development seed (after create; **never in production**):
+Use an appropriately privileged installation identity to create the database and
+schema. Runtime SQL permissions are granted to the service identity by the
+installer. Remote SQL uses certificate validation by default; store SQL passwords
+through the DPAPI deployment flow, not in scripts or connection string files.
+All datetime2 values represent UTC. `seed_dev.sql` is development-only.
 
-```powershell
-sqlcmd -S localhost -E -i "d:\Nyxveil\licensing\database\seed_dev.sql"
-```
+The bootstrap explicitly sets the seven session options required by filtered
+indexes after selecting the database, including QUOTED_IDENTIFIER ON. The shared
+sqlcmd helper also passes uppercase `-I` for both file and query execution.
+These are connection-local settings; no server or database defaults are changed.
+After a failed first bootstrap, preserve the database and the DPAPI secrets.
+Use `scripts/check-bootstrap-retry.sql` against the chosen database to check for
+the expected empty state (at most an empty dbo.__EFMigrationsHistory table) before
+retrying Fresh. If it reports a partial schema, inspect it instead of dropping
+tables or adding a migration marker manually.
 
-The script is idempotent: re-running `create_database.sql` does not drop existing tables.
+The new NodeRequestNonces composite PK `(NodeId, NonceHash)` prevents concurrent
+replay across service processes. ExpiresAt is indexed for retention cleanup.
 
-## Run with SSMS
-
-1. Open `create_database.sql` in SSMS.
-2. Connect to the target server.
-3. Optionally change the database name at the top (`@DatabaseName`) **and** the matching `USE [...]` statement.
-4. Execute (F5).
-5. Review Messages for sanity-check output (expected tables + row counts).
-6. For local/dev only, open and execute `seed_dev.sql`.
-
-## Database name
-
-Default name: **`NyxveilControlPlane`**.
-
-To rename, edit **both** places in `create_database.sql`:
-
-1. `DECLARE @DatabaseName sysname = N'NyxveilControlPlane';`
-2. `USE [NyxveilControlPlane];`
-
-Keep `seed_dev.sql` `USE` in sync if you rename.
-
-## Migrations note
-
-`create_database.sql` is the **bootstrap / greenfield** schema. Day-to-day schema evolution should go through **EF Core migrations** in `Nyxveil.ControlPlane.Infrastructure` so the application model and database stay aligned.
-
-Recommended workflow:
-
-1. Apply `create_database.sql` once on a new environment (or use EF to create the DB from migrations).
-2. Prefer a single source of truth going forward: **EF Core migrations** for additive changes (new columns, indexes).
-3. Do not hand-edit production tables outside migrations except for emergency hotfix with a follow-up migration.
-4. If both bootstrap SQL and EF migrations exist, generate an initial migration that matches this schema (`dotnet ef migrations add InitialCreate`) and baseline existing databases so EF history (`__EFMigrationsHistory`) stays consistent.
-
-Identity tables (`AspNetUsers`, `AspNetRoles`, …) match the standard ASP.NET Core Identity EF model.
-
-## Tables (domain)
-
-Users, Plans, Licenses, LicenseAllowedLocations, Devices, Locations, Nodes, NodeEndpoints, NodeTransports, NodeHealth, NodeMetrics, NodeCredentials, NodeConfigs, BootstrapTokens, TicketAudits, Revocations, CatalogVersions, SigningKeysMetadata, AuditLog, SystemSettings, PaymentEvents — plus ASP.NET Identity tables.
+Local verification: `dotnet test -c Release` compares the complete bootstrap
+generated section to EF's generated idempotent DDL and checks the model snapshot.
+`scripts/compare-schema.ps1` additionally checks table coverage and migration ID.
+Live DDL: run `scripts/test-database.ps1` on the isolated deployment VM. Local
+SQLite transaction tests do not count as live SQL Server verification.

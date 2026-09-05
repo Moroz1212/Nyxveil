@@ -24,6 +24,96 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
     public ValueTask DisposeAsync() => _fx.DisposeAsync();
 
     [Fact]
+    public async Task TestRefreshDoesNotAddNewPlanPermissions()
+    {
+        var (token, deviceId, _) = await CreateLicensedDeviceAsync();
+        var issued = await _fx.Tickets.IssueAsync(new TicketIssueRequest { LicenseToken = token, DeviceId = deviceId });
+        var old = _fx.TicketIssuer.VerifyAccessTicket(issued.AccessTicket);
+        var plan = await _fx.Db.Plans.SingleAsync(p => p.PlanId == _fx.StandardPlanId);
+        plan.Permissions = "[\"connect\",\"new-privilege\"]";
+        await _fx.Db.SaveChangesAsync();
+        var refreshed = await _fx.Tickets.RefreshAsync(new TicketRefreshRequest { LicenseToken = token, DeviceId = deviceId, AccessTicket = issued.AccessTicket });
+        var grant = _fx.TicketIssuer.VerifyAccessTicket(refreshed.AccessTicket);
+        Assert.DoesNotContain("new-privilege", grant.Permissions);
+        Assert.All(grant.Permissions, permission => Assert.Contains(permission, old.Permissions));
+    }
+
+    [Fact]
+    public async Task TestRefreshCannotElevateRoleToMaster()
+    {
+        var (token, deviceId, licenseId) = await CreateLicensedDeviceAsync();
+        var issued = await _fx.Tickets.IssueAsync(new TicketIssueRequest { LicenseToken = token, DeviceId = deviceId });
+        (await _fx.Db.Licenses.SingleAsync(l => l.LicenseId == licenseId)).Role = "master";
+        await _fx.Db.SaveChangesAsync();
+        await Assert.ThrowsAsync<ForbiddenException>(() => _fx.Tickets.RefreshAsync(new TicketRefreshRequest
+        { LicenseToken = token, DeviceId = deviceId, AccessTicket = issued.AccessTicket }));
+    }
+
+    [Theory]
+    [InlineData("disabled")]
+    [InlineData("revoked")]
+    [InlineData("expired")]
+    public async Task TestCatalogTicketRechecksCurrentLicense(string state)
+    {
+        var (token, deviceId, licenseId) = await CreateLicensedDeviceAsync(role: "master");
+        var issued = await _fx.Tickets.IssueAsync(new TicketIssueRequest { LicenseToken = token, DeviceId = deviceId });
+        var claims = _fx.TicketIssuer.VerifyAccessTicket(issued.AccessTicket);
+        var license = await _fx.Db.Licenses.SingleAsync(l => l.LicenseId == licenseId);
+        if (state == "expired") license.ExpiresAt = DateTime.UtcNow.AddSeconds(-1);
+        else license.Status = state == "disabled" ? Domain.Enums.LicenseStatus.Disabled : Domain.Enums.LicenseStatus.Revoked;
+        await _fx.Db.SaveChangesAsync();
+        await Assert.ThrowsAsync<ForbiddenException>(() => _fx.Catalog.GetSignedCatalogForCallerAsync(claims, null));
+    }
+
+    [Fact]
+    public async Task TestOldMasterTicketCannotSeeTestNodeAfterRoleDowngrade()
+    {
+        var nodeId = (await RegisterNodeAsync("master-test-node")).NodeId;
+        await _fx.NodeManagement.SetTestOnlyAsync(nodeId, true, "admin");
+        var (token, deviceId, licenseId) = await CreateLicensedDeviceAsync(role: "master");
+        var issued = await _fx.Tickets.IssueAsync(new TicketIssueRequest { LicenseToken = token, DeviceId = deviceId });
+        var claims = _fx.TicketIssuer.VerifyAccessTicket(issued.AccessTicket);
+        Assert.Contains((await _fx.Catalog.GetSignedCatalogForCallerAsync(claims, null)).Catalog.Nodes, n => n.TestOnly);
+        (await _fx.Db.Licenses.SingleAsync(l => l.LicenseId == licenseId)).Role = "user";
+        await _fx.Db.SaveChangesAsync();
+        Assert.DoesNotContain((await _fx.Catalog.GetSignedCatalogForCallerAsync(claims, null)).Catalog.Nodes, n => n.TestOnly);
+    }
+
+    [Fact]
+    public async Task TestDisabledLocationExcludedForUnrestrictedLicense()
+    {
+        await RegisterNodeAsync("disabled-location-node");
+        var (token, _, licenseId) = await CreateLicensedDeviceAsync();
+        _fx.Db.LicenseAllowedLocations.RemoveRange(await _fx.Db.LicenseAllowedLocations.Where(l => l.LicenseId == licenseId).ToListAsync());
+        (await _fx.Db.Locations.SingleAsync(l => l.LocationId == _fx.LocationId)).Enabled = false;
+        await _fx.Db.SaveChangesAsync();
+        Assert.DoesNotContain((await _fx.Catalog.GetSignedCatalogForCallerAsync(null, token)).Catalog.Nodes, n => n.NodeId == "disabled-location-node");
+    }
+
+    [Fact]
+    public async Task TestHeartbeatAndCatalogRespectZeroAdminCapacity()
+    {
+        var id = (await RegisterNodeAsync("zero-capacity-node")).NodeId;
+        await _fx.NodeManagement.SetCapacityAsync(id, 0, "admin");
+        await _fx.Heartbeats.ProcessHeartbeatAsync(new NodeHeartbeatRequest { NodeId = id, Capacity = 999 });
+        Assert.Equal(0, (await _fx.Db.Nodes.SingleAsync(n => n.NodeId == id)).Capacity);
+        var (token, _, _) = await CreateLicensedDeviceAsync();
+        Assert.Equal(0, Assert.Single((await _fx.Catalog.GetSignedCatalogForCallerAsync(null, token)).Catalog.Nodes, n => n.NodeId == id).Capacity);
+    }
+
+    [Fact]
+    public async Task TestRevocationSnapshotNeverDropsOlderRevocations()
+    {
+        for (var i = 0; i < 10001; i++)
+            _fx.Db.Revocations.Add(new Revocation { Id = Guid.NewGuid(), Type = Domain.Enums.RevocationType.Ticket, TargetId = "ticket-" + i, Version = i + 1 });
+        await _fx.Db.SaveChangesAsync();
+        var snapshot = await new RevocationService(_fx.Db, _fx.Clock).GetSnapshotForNodeAsync("node");
+        Assert.Equal(10001, snapshot.RevokedJtis.Count);
+        Assert.Contains("ticket-0", snapshot.RevokedJtis);
+        Assert.Contains("ticket-10000", snapshot.RevokedJtis);
+    }
+
+    [Fact]
     public async Task TestDefaultTicketAudienceMatchesFrozenCore()
     {
         var (token, deviceId, _) = await CreateLicensedDeviceAsync();
@@ -240,13 +330,15 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
     public async Task TestExistingNodeCannotReplacePublicKey()
     {
         var boot = await CreateBootstrapAsync(maxUses: 3);
+        var (seed, pub) = GenerateEd25519();
         var req = NewNodeRequest(boot.BootstrapToken, "node-key");
+        req.PublicKey = pub;
         var first = await _fx.Nodes.RegisterWithBootstrapAsync(req);
 
         var retry = NewNodeRequest(boot.BootstrapToken, "node-key");
         retry.PublicIdentity = req.PublicIdentity;
         retry.PublicKey = ControlPlaneTestFixture.RandomKey32();
-        retry.NodeToken = first.NodeToken;
+        retry.NodeToken = CoreNodeToken.Sign(req.NodeId, seed, _fx.Clock.UtcNow);
 
         await Assert.ThrowsAsync<ForbiddenException>(() => _fx.Nodes.RegisterWithBootstrapAsync(retry));
     }
@@ -275,13 +367,15 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
     public async Task TestExistingNodeProofOfPossessionAllowsIdempotentRetry()
     {
         var boot = await CreateBootstrapAsync(maxUses: 3);
+        var (seed, pub) = GenerateEd25519();
         var req = NewNodeRequest(boot.BootstrapToken, "node-retry");
+        req.PublicKey = pub;
         var first = await _fx.Nodes.RegisterWithBootstrapAsync(req);
 
         var retry = NewNodeRequest(boot.BootstrapToken, "node-retry");
         retry.PublicIdentity = req.PublicIdentity;
         retry.PublicKey = req.PublicKey;
-        retry.NodeToken = first.NodeToken;
+        retry.NodeToken = CoreNodeToken.Sign(req.NodeId, seed, _fx.Clock.UtcNow);
         var second = await _fx.Nodes.RegisterWithBootstrapAsync(retry);
 
         Assert.True(second.Registered);
@@ -311,7 +405,7 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task TestFrozenCoreNodeTokenHeartbeatSucceeds()
+    public async Task TestFrozenCoreNodeTokenCompatibilityProofSucceeds()
     {
         var (seed, pub) = GenerateEd25519();
         var boot = await CreateBootstrapAsync();
@@ -322,9 +416,7 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
         var unix = new DateTimeOffset(_fx.Clock.UtcNow).ToUnixTimeSeconds();
         var token = NodeAuthService.SignCoreNodeTokenV1("node-core-tok", seed, unix);
 
-        await _fx.NodeAuth.ValidateNodeRequestAsync(
-            "node-core-tok",
-            new Dictionary<string, string> { ["Authorization"] = "Bearer " + token });
+        await _fx.NodeAuth.VerifyCoreNodeTokenV1Async("node-core-tok", token);
 
         var hb = await _fx.Heartbeats.ProcessHeartbeatAsync(new NodeHeartbeatRequest
         {
@@ -335,18 +427,14 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
 
         // Replay rejected.
         await Assert.ThrowsAsync<UnauthorizedException>(() =>
-            _fx.NodeAuth.ValidateNodeRequestAsync(
-                "node-core-tok",
-                new Dictionary<string, string> { ["Authorization"] = "Bearer " + token }));
+            _fx.NodeAuth.VerifyCoreNodeTokenV1Async("node-core-tok", token));
     }
 
     [Fact]
     public async Task TestHeartbeatDoesNotAuthenticateTwice()
     {
         var (nodeId, token, _, _) = await RegisterNodeAsync("node-once");
-        await _fx.NodeAuth.ValidateNodeRequestAsync(
-            nodeId,
-            new Dictionary<string, string> { ["Authorization"] = "Bearer " + token });
+        await _fx.NodeAuth.VerifyCoreNodeTokenV1Async(nodeId, token);
 
         // Service accepts without NodeToken — auth already done at boundary.
         var hb = await _fx.Heartbeats.ProcessHeartbeatAsync(new NodeHeartbeatRequest
@@ -364,9 +452,7 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
         await RegisterNodeAsync("node-y");
 
         await Assert.ThrowsAsync<UnauthorizedException>(() =>
-            _fx.NodeAuth.ValidateNodeRequestAsync(
-                "node-y",
-                new Dictionary<string, string> { ["Authorization"] = "Bearer " + tokenA }));
+            _fx.NodeAuth.VerifyCoreNodeTokenV1Async("node-y", tokenA));
     }
 
     [Fact]
@@ -419,13 +505,16 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
     public async Task TestRefreshDropsRemovedPermission()
     {
         var (token, deviceId, _) = await CreateLicensedDeviceAsync();
+        var plan = await _fx.Db.Plans.SingleAsync(p => p.PlanId == _fx.StandardPlanId);
+        plan.Permissions = "[\"connect\",\"extra\"]";
+        await _fx.Db.SaveChangesAsync();
         var issued = await _fx.Tickets.IssueAsync(new TicketIssueRequest
         {
             LicenseToken = token,
             DeviceId = deviceId
         });
 
-        var plan = await _fx.Db.Plans.SingleAsync(p => p.PlanId == _fx.StandardPlanId);
+        plan = await _fx.Db.Plans.SingleAsync(p => p.PlanId == _fx.StandardPlanId);
         plan.Permissions = """["connect","extra"]""";
         await _fx.Db.SaveChangesAsync();
         _fx.Db.ChangeTracker.Clear();
@@ -553,8 +642,11 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
     {
         var boot = await CreateBootstrapAsync(maxUses: 3);
         var req = NewNodeRequest(boot.BootstrapToken, nodeId);
+        var seed = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        using var key = NSec.Cryptography.Key.Import(NSec.Cryptography.SignatureAlgorithm.Ed25519, seed, NSec.Cryptography.KeyBlobFormat.RawPrivateKey);
+        req.PublicKey = key.Export(NSec.Cryptography.KeyBlobFormat.RawPublicKey);
         var registered = await _fx.Nodes.RegisterWithBootstrapAsync(req);
-        return (registered.NodeId, registered.NodeToken, req.PublicIdentity, req.SpkiPin);
+        return (registered.NodeId, Nyxveil.ControlPlane.Infrastructure.Security.CoreNodeToken.Sign(req.NodeId, seed, _fx.Clock.UtcNow), req.PublicIdentity, req.SpkiPin);
     }
 
     private async Task SeedTestNodesAsync()

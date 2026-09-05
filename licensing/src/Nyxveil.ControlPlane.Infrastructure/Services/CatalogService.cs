@@ -5,6 +5,8 @@ using Nyxveil.ControlPlane.Application.Common;
 using Nyxveil.ControlPlane.Application.Contracts.V1;
 using Nyxveil.ControlPlane.Application.Exceptions;
 using Nyxveil.ControlPlane.Domain.Entities;
+using Nyxveil.ControlPlane.Domain.Enums;
+using Nyxveil.ControlPlane.Application.Tickets;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
 using Nyxveil.ControlPlane.Infrastructure.Security;
 
@@ -36,17 +38,35 @@ public sealed class CatalogService : ICatalogService
     {
         string role;
         IReadOnlyList<string> allowedLocations;
+        bool masterActive;
 
         if (ticketClaims is not null)
         {
+            if (!LicenseIdFormat.TryParse(ticketClaims.LicenseId, out var licenseId))
+                throw new UnauthorizedException("invalid license identity");
+            var lic = await _db.Licenses.AsNoTracking().Include(l => l.AllowedLocations)
+                .SingleOrDefaultAsync(l => l.LicenseId == licenseId, cancellationToken)
+                ?? throw new UnauthorizedException("unknown license");
+            LicenseTokenHelper.EnsureUsable(lic);
+            if (await _db.Revocations.AnyAsync(r =>
+                    (r.Type == RevocationType.Ticket && r.TargetId == ticketClaims.Jti) ||
+                    (r.Type == RevocationType.License && r.TargetId == ticketClaims.LicenseId) ||
+                    (r.Type == RevocationType.Device && r.TargetId == ticketClaims.DeviceId), cancellationToken) ||
+                !await _db.Devices.AnyAsync(d => d.LicenseId == licenseId && d.ClientDeviceId == ticketClaims.DeviceId &&
+                    d.Status == DeviceStatus.Active, cancellationToken))
+                throw new ForbiddenException("revoked or disabled caller");
             role = ticketClaims.Role;
-            allowedLocations = ticketClaims.Locations ?? Array.Empty<string>();
+            masterActive = lic.Status == LicenseStatus.Active && lic.Role == "master" && role == "master";
+            if (!TicketScopeCalculator.TryRefreshLocations(ticketClaims.Locations,
+                    lic.AllowedLocations.Select(a => a.LocationId).ToList(), out allowedLocations, out var error))
+                throw new ForbiddenException(error!);
         }
         else if (!string.IsNullOrWhiteSpace(licenseToken))
         {
             var lic = await LicenseTokenHelper.LoadUsableAsync(_db, _hasher, licenseToken, cancellationToken)
                 .ConfigureAwait(false);
             role = lic.Role;
+            masterActive = lic.Status == LicenseStatus.Active && role == "master";
             allowedLocations = lic.AllowedLocations.Select(a => a.LocationId).ToList();
         }
         else
@@ -87,8 +107,11 @@ public sealed class CatalogService : ICatalogService
             nodes = nodes.Where(n => locIds.Contains(n.LocationId)).ToList();
         }
 
+        var enabledLocationIds = locations.Select(l => l.LocationId).ToHashSet(StringComparer.Ordinal);
+        nodes = nodes.Where(n => enabledLocationIds.Contains(n.LocationId)).ToList();
+
         // Frozen Core: TestOnly visible/selectable ONLY when role == master.
-        var canSeeTest = string.Equals(role, "master", StringComparison.OrdinalIgnoreCase);
+        var canSeeTest = masterActive;
         if (!canSeeTest)
             nodes = nodes.Where(n => !n.TestOnly).ToList();
 
@@ -143,7 +166,7 @@ public sealed class CatalogService : ICatalogService
                     ServerVersion = n.ServerVersion ?? string.Empty,
                     ServerName = n.ServerName,
                     SpkiPin = n.SpkiPin,
-                    Capacity = cfg?.Capacity > 0 ? Math.Min(n.Capacity, cfg.Capacity) : n.Capacity,
+                    Capacity = cfg is not null ? Math.Min(n.Capacity, cfg.Capacity) : n.Capacity,
                     CurrentSessions = n.CurrentSessions,
                     LastSeen = n.LastSeenAt ?? default,
                     Endpoints = n.Endpoints.Where(e => e.Enabled).OrderBy(e => e.Priority)

@@ -17,7 +17,7 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.0")
+                .HasAnnotation("ProductVersion", "10.0.11")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -595,6 +595,7 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                         .HasColumnType("int");
 
                     b.Property<long>("ConfigVersion")
+                        .IsConcurrencyToken()
                         .HasColumnType("bigint");
 
                     b.Property<bool>("Draining")
@@ -812,6 +813,30 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("CK_NodeMetrics_ActiveSessions", "[ActiveSessions] >= 0");
                         });
+                });
+
+            modelBuilder.Entity("Nyxveil.ControlPlane.Domain.Entities.NodeRequestNonce", b =>
+                {
+                    b.Property<string>("NodeId")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("NonceHash")
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("Timestamp")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("NodeId", "NonceHash");
+
+                    b.HasIndex("ExpiresAt");
+
+                    b.ToTable("NodeRequestNonces", (string)null);
                 });
 
             modelBuilder.Entity("Nyxveil.ControlPlane.Domain.Entities.NodeTransport", b =>
@@ -1392,6 +1417,15 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Node");
+                });
+
+            modelBuilder.Entity("Nyxveil.ControlPlane.Domain.Entities.NodeRequestNonce", b =>
+                {
+                    b.HasOne("Nyxveil.ControlPlane.Domain.Entities.Node", null)
+                        .WithMany()
+                        .HasForeignKey("NodeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Nyxveil.ControlPlane.Domain.Entities.NodeTransport", b =>

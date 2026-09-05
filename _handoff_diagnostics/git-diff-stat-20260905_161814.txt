@@ -1,0 +1,116 @@
+﻿git : warning: in the working copy of 'licensing/database/README.md', LF will be replaced by CRLF the next time Git tou
+ches it
+C:\Users\letos\AppData\Local\Temp\ps-script-b128618c-58fd-4946-b3e6-b24f0c900fd2.ps1:13 знак:1
++ git diff --stat 2>&1 | Out-File -Encoding utf8 "$diagDir\git-diff-sta ...
++ ~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: in the... Git touches it:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+warning: in the working copy of 'licensing/database/create_database.sql', LF will be replaced by CRLF the next time Git
+ touches it
+warning: in the working copy of 'licensing/scripts/Nyxveil.ControlPlane.Deploy.psm1', LF will be replaced by CRLF the n
+ext time Git touches it
+warning: in the working copy of 'licensing/scripts/install-windows.ps1', LF will be replaced by CRLF the next time Git 
+touches it
+warning: in the working copy of 'licensing/scripts/pack-release.ps1', LF will be replaced by CRLF the next time Git tou
+ches it
+warning: in the working copy of 'licensing/scripts/self-test.ps1', LF will be replaced by CRLF the next time Git touche
+s it
+warning: in the working copy of 'licensing/scripts/test-core-interop.ps1', LF will be replaced by CRLF the next time Gi
+t touches it
+warning: in the working copy of 'licensing/scripts/test-database.ps1', LF will be replaced by CRLF the next time Git to
+uches it
+warning: in the working copy of 'licensing/scripts/test-powershell.ps1', LF will be replaced by CRLF the next time Git 
+touches it
+warning: in the working copy of 'licensing/scripts/update-windows.ps1', LF will be replaced by CRLF the next time Git t
+ouches it
+warning: in the working copy of 'licensing/src/Nyxveil.ControlPlane.Infrastructure/Security/NodeAuthService.cs', LF wil
+l be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/Dashboard.razor', LF wil
+l be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/Licenses.razor', LF will
+ be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/Metrics.razor', LF will 
+be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/NodeDetails.razor', LF w
+ill be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Error.razor', LF will be repla
+ced by CRLF the next time Git touches it
+warning: in the working copy of 'licensing/src/Nyxveil.ControlPlane.Web/Program.cs', LF will be replaced by CRLF the ne
+xt time Git touches it
+warning: in the working copy of 'licensing/src/Nyxveil.ControlPlane.Web/wwwroot/app.css', LF will be replaced by CRLF t
+he next time Git touches it
+warning: in the working copy of 'licensing/tests/CoreInterop/CsEmit/Program.cs', LF will be replaced by CRLF the next t
+ime Git touches it
+warning: in the working copy of 'licensing/tests/CoreInterop/verify/main.go', LF will be replaced by CRLF the next time
+ Git touches it
+ licensing/database/README.md                       |  123 +-
+ licensing/database/create_database.sql             | 1849 ++++++++++----------
+ licensing/docs/NODE-API.md                         |  170 +-
+ licensing/docs/NODE-REGISTRATION.md                |   37 +-
+ licensing/scripts/Nyxveil.ControlPlane.Deploy.psm1 |  223 ++-
+ licensing/scripts/install-windows.ps1              |   25 +-
+ licensing/scripts/pack-release.ps1                 |    2 +-
+ licensing/scripts/self-test.ps1                    |   31 +-
+ licensing/scripts/test-core-interop.ps1            |   19 +-
+ licensing/scripts/test-database.ps1                |   13 +-
+ licensing/scripts/test-powershell.ps1              |   68 +-
+ licensing/scripts/update-windows.ps1               |    7 +-
+ .../Auth/NodeAuthAttribute.cs                      |  197 +--
+ .../Controllers/V1/NodesController.cs              |   17 +-
+ .../Controllers/V1/RevocationController.cs         |    2 +-
+ .../Abstractions/INodeAuthenticator.cs             |    9 +-
+ .../Contracts/V1/NodeContracts.cs                  |    5 +-
+ .../Options/NodeAuthOptions.cs                     |    4 +-
+ .../Persistence/ControlPlaneDbContext.cs           |   14 +
+ .../20260904155703_InitialCreate.Designer.cs       |   38 +-
+ .../Migrations/20260904155703_InitialCreate.cs     |   28 +-
+ .../ControlPlaneDbContextModelSnapshot.cs          |   36 +-
+ .../Security/AccessTicketService.cs                |    4 +-
+ .../Security/NodeAuthService.cs                    |  165 +-
+ .../Services/CatalogService.cs                     |   29 +-
+ .../Services/NodeHeartbeatService.cs               |    4 +-
+ .../Services/NodeManagementService.cs              |   81 +-
+ .../Services/NodeRegistrationService.cs            |   31 +-
+ .../Services/RevocationService.cs                  |    1 -
+ .../Services/TicketService.cs                      |    5 +-
+ .../Nyxveil.ControlPlane.Web/Components/App.razor  |    4 +-
+ .../Components/Layout/MainLayout.razor             |   14 +-
+ .../Components/Layout/NavMenu.razor                |   28 +-
+ .../Components/Layout/ReconnectModal.razor         |   16 +-
+ .../Components/Pages/Account/AccessDenied.razor    |    6 +-
+ .../Components/Pages/Account/Login.razor           |   18 +-
+ .../Components/Pages/Admin/AdminUsers.razor        |   28 +-
+ .../Components/Pages/Admin/AuditLog.razor          |   10 +-
+ .../Components/Pages/Admin/BootstrapTokens.razor   |   26 +-
+ .../Components/Pages/Admin/Dashboard.razor         |   31 +-
+ .../Components/Pages/Admin/Devices.razor           |   28 +-
+ .../Components/Pages/Admin/Licenses.razor          |   68 +-
+ .../Components/Pages/Admin/Locations.razor         |   26 +-
+ .../Components/Pages/Admin/Metrics.razor           |  198 ++-
+ .../Components/Pages/Admin/NodeDetails.razor       |   87 +-
+ .../Components/Pages/Admin/Nodes.razor             |   38 +-
+ .../Components/Pages/Admin/Plans.razor             |   22 +-
+ .../Components/Pages/Admin/Revocations.razor       |   12 +-
+ .../Components/Pages/Admin/SigningKeys.razor       |   18 +-
+ .../Components/Pages/Admin/SystemSettings.razor    |   16 +-
+ .../Components/Pages/Admin/Users.razor             |   20 +-
+ .../Components/Pages/Error.razor                   |   41 +-
+ .../Components/Pages/NotFound.razor                |    6 +-
+ .../Components/Pages/Setup.razor                   |   28 +-
+ .../Components/Routes.razor                        |    4 +-
+ .../Components/Shared/ConfirmDialog.razor          |    8 +-
+ .../Components/Shared/StatusBadge.razor            |    2 +-
+ .../Components/_Imports.razor                      |    5 +-
+ licensing/src/Nyxveil.ControlPlane.Web/Program.cs  |   29 +-
+ .../src/Nyxveil.ControlPlane.Web/wwwroot/app.css   |   25 +
+ .../HostedServices/MetricsRetentionWorker.cs       |    2 +
+ licensing/tests/CoreInterop/CsEmit/Program.cs      |   63 +-
+ licensing/tests/CoreInterop/verify/main.go         |   14 +
+ .../CustomWebApplicationFactory.cs                 |   24 +-
+ .../Nyxveil.ControlPlane.IntegrationTests.csproj   |    3 +-
+ .../ConcurrencyGuardTests.cs                       |    9 +-
+ .../ControlPlaneServiceTests.cs                    |   24 +-
+ .../FrozenCoreInteropTests.cs                      |  126 +-
+ .../SchemaAlignmentTests.cs                        |   20 +-
+ 69 files changed, 2383 insertions(+), 2001 deletions(-)

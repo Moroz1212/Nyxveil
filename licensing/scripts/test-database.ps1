@@ -45,17 +45,18 @@ $prepared = New-CreateDatabaseScriptCopy -SourcePath $sqlSource -DatabaseName $t
 $dropped = $false
 try {
     Write-Host 'Applying create_database.sql to temp database...'
-    Invoke-SqlCmdFailClosed -Server $SqlServer -InputFile $prepared -DatabaseName $testDb `
+    Invoke-SqlCmdFailClosed -Server $SqlServer -InputFile $prepared -DatabaseName 'master' `
         -DatabaseAuth $DatabaseAuth -DatabaseUser $DatabaseUser -DatabasePassword $DatabasePassword
 
     # Literal here-string + -f avoids PowerShell parsing SQL IF/THROW as script.
     $verify = @'
 USE [{0}];
 SET NOCOUNT ON;
-IF OBJECT_ID(N''dbo.AspNetUsers'', N''U'') IS NULL RAISERROR(''AspNetUsers missing'', 16, 1);
-IF OBJECT_ID(N''dbo.Licenses'', N''U'') IS NULL RAISERROR(''Licenses missing'', 16, 1);
-IF OBJECT_ID(N''dbo.__EFMigrationsHistory'', N''U'') IS NULL RAISERROR(''EFMigrationsHistory missing'', 16, 1);
-IF NOT EXISTS (SELECT 1 FROM dbo.__EFMigrationsHistory) RAISERROR(''EFMigrationsHistory empty'', 16, 1);
+IF OBJECT_ID(N'dbo.AspNetUsers', N'U') IS NULL RAISERROR('AspNetUsers missing', 16, 1);
+IF OBJECT_ID(N'dbo.Licenses', N'U') IS NULL RAISERROR('Licenses missing', 16, 1);
+IF OBJECT_ID(N'dbo.NodeRequestNonces', N'U') IS NULL RAISERROR('NodeRequestNonces missing', 16, 1);
+IF OBJECT_ID(N'dbo.__EFMigrationsHistory', N'U') IS NULL RAISERROR('EFMigrationsHistory missing', 16, 1);
+IF NOT EXISTS (SELECT 1 FROM dbo.__EFMigrationsHistory WHERE MigrationId = N'20260904155703_InitialCreate') RAISERROR('EFMigrationsHistory mismatch', 16, 1);
 SELECT MigrationId FROM dbo.__EFMigrationsHistory;
 '@ -f $testDb
 
@@ -70,7 +71,7 @@ finally {
     try {
         $safeName = $testDb.Replace("'", "''")
         $drop = @'
-IF DB_ID(N''{0}'') IS NOT NULL
+IF DB_ID(N'{0}') IS NOT NULL
 BEGIN
     ALTER DATABASE [{1}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
     DROP DATABASE [{1}];

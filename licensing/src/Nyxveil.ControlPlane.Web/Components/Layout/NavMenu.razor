@@ -2,20 +2,20 @@
 @using Nyxveil.ControlPlane.Web.Security
 
 <nav class="nav-links">
-    <NavLink href="/" Match="NavLinkMatch.All">Dashboard</NavLink>
-    <NavLink href="/admin/licenses">Licenses</NavLink>
-    <NavLink href="/admin/users">Users</NavLink>
-    <NavLink href="/admin/devices">Devices</NavLink>
-    <NavLink href="/admin/plans">Plans</NavLink>
-    <NavLink href="/admin/locations">Locations</NavLink>
-    <NavLink href="/admin/nodes">Nodes</NavLink>
-    <NavLink href="/admin/metrics">Metrics</NavLink>
-    <NavLink href="/admin/revocations">Revocations</NavLink>
-    <NavLink href="/admin/bootstrap-tokens">Bootstrap Tokens</NavLink>
+    <NavLink href="/" Match="NavLinkMatch.All">Обзор</NavLink>
+    <NavLink href="/admin/licenses">Лицензии</NavLink>
+    <NavLink href="/admin/users">Пользователи</NavLink>
+    <NavLink href="/admin/devices">Устройства</NavLink>
+    <NavLink href="/admin/plans">Тарифы</NavLink>
+    <NavLink href="/admin/locations">Локации</NavLink>
+    <NavLink href="/admin/nodes">Серверы</NavLink>
+    <NavLink href="/admin/metrics">Метрики</NavLink>
+    <NavLink href="/admin/revocations">Список отзывов</NavLink>
+    <NavLink href="/admin/bootstrap-tokens">Токены регистрации</NavLink>
     <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
-        <NavLink href="/admin/signing-keys">Signing Keys</NavLink>
-        <NavLink href="/admin/admin-users">Admin Users</NavLink>
+        <NavLink href="/admin/signing-keys">Ключи подписи</NavLink>
+        <NavLink href="/admin/admin-users">Администраторы</NavLink>
     </AuthorizeView>
-    <NavLink href="/admin/settings">System Settings</NavLink>
-    <NavLink href="/admin/audit">Audit Log</NavLink>
+    <NavLink href="/admin/settings">Настройки системы</NavLink>
+    <NavLink href="/admin/audit">Журнал действий</NavLink>
 </nav>

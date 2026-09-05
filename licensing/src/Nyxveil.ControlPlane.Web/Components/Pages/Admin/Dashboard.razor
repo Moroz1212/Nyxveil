@@ -1,9 +1,8 @@
 @page "/"
 @attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
 @rendermode InteractiveServer
-@inject IDashboardQueryService DashboardQuery
+@inject IServiceScopeFactory Scopes
 @inject NavigationManager Nav
-@inject UserManager<ApplicationUser> UserManager
 @inject IConfiguration Configuration
 
 @if (_needsSetup)
@@ -12,40 +11,48 @@
 }
 else if (_summary is null)
 {
-    <p class="muted">Loading dashboard…</p>
+    <p class="muted">Загрузка обзора…</p>
 }
 else
 {
     <div class="page-header">
         <div>
-            <h1>Dashboard</h1>
-            <div class="sub">Operational overview · UTC @DateTime.UtcNow.ToString("u")</div>
+            <h1>Обзор</h1>
+            <div class="sub">Состояние системы · @DateTime.UtcNow.ToString("dd.MM.yyyy HH:mm:ss 'UTC'")</div>
         </div>
     </div>
 
+    <p><a class="btn" href="/admin/metrics">Метрики и графики серверов</a></p>
     <div class="stats-grid">
-        <div class="stat"><div class="label">Total nodes</div><div class="value">@_summary.TotalNodes</div></div>
-        <div class="stat"><div class="label">Healthy</div><div class="value">@_summary.HealthyNodes</div></div>
-        <div class="stat"><div class="label">Degraded</div><div class="value">@_summary.DegradedNodes</div></div>
-        <div class="stat"><div class="label">Offline</div><div class="value">@_summary.OfflineNodes</div></div>
-        <div class="stat"><div class="label">Active sessions</div><div class="value">@_summary.ActiveSessions</div></div>
-        <div class="stat"><div class="label">Active licenses</div><div class="value">@_summary.ActiveLicenses</div></div>
-        <div class="stat"><div class="label">Expiring (14d)</div><div class="value">@_summary.ExpiringLicenses</div></div>
-        <div class="stat"><div class="label">Revoked licenses</div><div class="value">@_summary.RevokedLicenses</div></div>
-        <div class="stat"><div class="label">Active devices</div><div class="value">@_summary.ActiveDevices</div></div>
-        <div class="stat"><div class="label">Bootstrap pending</div><div class="value">@_summary.PendingBootstrapTokens</div></div>
+        <div class="stat"><div class="label">Всего серверов</div><div class="value">@_summary.TotalNodes</div></div>
+        <div class="stat"><div class="label">Работают штатно</div><div class="value">@_summary.HealthyNodes</div></div>
+        <div class="stat"><div class="label">Работают с ограничениями</div><div class="value">@_summary.DegradedNodes</div></div>
+        <div class="stat"><div class="label">Не в сети</div><div class="value">@_summary.OfflineNodes</div></div>
+        <div class="stat"><div class="label">Активные сеансы</div><div class="value">@_summary.ActiveSessions</div></div>
+        <div class="stat"><div class="label">Активные лицензии</div><div class="value">@_summary.ActiveLicenses</div></div>
+        <div class="stat"><div class="label">Истекают за 14 дней</div><div class="value">@_summary.ExpiringLicenses</div></div>
+        <div class="stat"><div class="label">Отозванные лицензии</div><div class="value">@_summary.RevokedLicenses</div></div>
+        <div class="stat"><div class="label">Активные устройства</div><div class="value">@_summary.ActiveDevices</div></div>
+        <div class="stat"><div class="label">Активные токены регистрации</div><div class="value">@_summary.PendingBootstrapTokens</div></div>
     </div>
 }
 
 @code {
     private DashboardSummary? _summary;
     private bool _needsSetup;
-    private string _setupMessage = "Redirecting to setup…";
+    private string _setupMessage = "Переход к первоначальной настройке…";
 
     protected override async Task OnInitializedAsync()
     {
-        var admins = await UserManager.GetUsersInRoleAsync(AdminRole.SuperAdmin);
-        if (admins.Count == 0)
+        // Short-lived scope: never share circuit-scoped UserManager/DbContext with MainLayout.
+        var adminCount = await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            var userManager = sp.GetRequiredService<UserManager<ApplicationUser>>();
+            var admins = await userManager.GetUsersInRoleAsync(AdminRole.SuperAdmin);
+            return admins.Count;
+        });
+
+        if (adminCount == 0)
         {
             _needsSetup = true;
             var setup = WebBootstrapGuard.ReadSetupOptions(Configuration);
@@ -55,11 +62,13 @@ else
             }
             else
             {
-                _setupMessage = "No SuperAdmin exists. Use the installer CLI: admin create --username <email>";
+                _setupMessage = "Главный администратор не создан. Выполните команду установщика: admin create --username <email>";
             }
             return;
         }
 
-        _summary = await DashboardQuery.GetSummaryAsync();
+        // DashboardQueryService uses IDbContextFactory (isolated context); still sequential.
+        _summary = await BlazorWork.RunAsync(Scopes, sp =>
+            sp.GetRequiredService<IDashboardQueryService>().GetSummaryAsync());
     }
 }

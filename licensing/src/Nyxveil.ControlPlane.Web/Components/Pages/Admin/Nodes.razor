@@ -1,34 +1,34 @@
 @page "/admin/nodes"
 @attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
 @rendermode InteractiveServer
-@inject ControlPlaneDbContext Db
+@inject IServiceScopeFactory Scopes
 
 <div class="page-header">
     <div>
-        <h1>Nodes</h1>
-        <div class="sub">VPN nodes with health and capacity.</div>
+        <h1>Серверы</h1>
+        <div class="sub">VPN-серверы: состояние, нагрузка и доступная ёмкость. Время указано в UTC.</div>
     </div>
 </div>
 
 <div class="toolbar">
-    <input placeholder="Search node / location / name" @bind="_filter" @bind:event="oninput" />
-    <label><input type="checkbox" @bind="_showTest" /> Show test-only</label>
+    <input placeholder="Поиск по серверу, локации или имени" @bind="_filter" @bind:event="oninput" />
+    <label><input type="checkbox" @bind="_showTest" /> Показывать тестовые</label>
 </div>
 
 <div class="table-wrap">
     <table class="data">
         <thead>
             <tr>
-                <th>Node</th>
-                <th>Location</th>
-                <th>Status</th>
+                <th>Сервер</th>
+                <th>Локация</th>
+                <th>Статус</th>
                 <th>CPU</th>
-                <th>RAM</th>
-                <th>Sessions</th>
-                <th>Version</th>
-                <th>Proto</th>
-                <th>Last seen</th>
-                <th>Flags</th>
+                <th>Память</th>
+                <th>Сеансы</th>
+                <th>Версия</th>
+                <th>Протокол</th>
+                <th>Последняя связь (UTC)</th>
+                <th>Режимы</th>
             </tr>
         </thead>
         <tbody>
@@ -38,16 +38,16 @@
                 <td><a href="@($"/admin/nodes/{Uri.EscapeDataString(n.Node.NodeId)}")">@n.Node.DisplayName</a><div class="mono muted">@n.Node.NodeId</div></td>
                 <td>@n.Node.LocationId</td>
                 <td><StatusBadge Status="@n.Node.Status.ToString()" /></td>
-                <td>@(n.Health?.CpuPercent.ToString("0.0") ?? "—")%</td>
-                <td>@(n.Health?.MemoryPercent.ToString("0.0") ?? "—")%</td>
+                <td>@(n.Health?.CpuPercent.ToString("0.0", UiText.Culture) ?? "—")%</td>
+                <td>@(n.Health?.MemoryPercent.ToString("0.0", UiText.Culture) ?? "—")%</td>
                 <td>@n.Node.CurrentSessions / @n.Node.Capacity</td>
                 <td>@(n.Node.ServerVersion ?? "—")</td>
                 <td>@n.Node.ProtocolVersion</td>
-                <td>@(n.Node.LastSeenAt?.ToString("u") ?? "—")</td>
+                <td>@(n.Node.LastSeenAt?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? "—")</td>
                 <td>
-                    @(n.Node.Enabled ? "" : "disabled ")
-                    @(n.Node.Draining ? "drain " : "")
-                    @(n.Node.TestOnly ? "test" : "")
+                    @(n.Node.Enabled ? "" : "отключён ")
+                    @(n.Node.Draining ? "завершение сеансов " : "")
+                    @(n.Node.TestOnly ? "тестовый" : "")
                 </td>
             </tr>
         }
@@ -64,9 +64,13 @@
 
     protected override async Task OnInitializedAsync()
     {
-        var nodes = await Db.Nodes.OrderBy(n => n.LocationId).ThenBy(n => n.DisplayName).ToListAsync();
-        var health = await Db.NodeHealth.ToDictionaryAsync(h => h.NodeId);
-        _rows = nodes.Select(n => new Row(n, health.GetValueOrDefault(n.NodeId))).ToList();
+        await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            var db = sp.GetRequiredService<ControlPlaneDbContext>();
+            var nodes = await db.Nodes.OrderBy(n => n.LocationId).ThenBy(n => n.DisplayName).ToListAsync();
+            var health = await db.NodeHealth.ToDictionaryAsync(h => h.NodeId);
+            _rows = nodes.Select(n => new Row(n, health.GetValueOrDefault(n.NodeId))).ToList();
+        });
     }
 
     private IEnumerable<Row> Filtered()

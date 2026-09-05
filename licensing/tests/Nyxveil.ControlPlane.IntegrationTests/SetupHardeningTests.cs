@@ -200,6 +200,7 @@ public sealed class SetupHardeningTests
                 foreach (var d in services.Where(d =>
                              d.ServiceType == typeof(ControlPlaneDbContext) ||
                              d.ServiceType == typeof(DbContextOptions<ControlPlaneDbContext>) ||
+                             d.ServiceType == typeof(IDbContextFactory<ControlPlaneDbContext>) ||
                              d.ImplementationType == typeof(ControlPlaneDbContext) ||
                              d.ServiceType.FullName?.Contains("ControlPlaneDbContext", StringComparison.Ordinal) == true)
                              .ToList())
@@ -207,10 +208,14 @@ public sealed class SetupHardeningTests
                     services.Remove(d);
                 }
 
-                services.AddDbContext<ControlPlaneDbContext>(options =>
+                void ConfigureInMemory(DbContextOptionsBuilder options) =>
                     options.UseInMemoryDatabase(_dbName)
                         .ConfigureWarnings(w => w.Ignore(
-                            Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning)));
+                            Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning));
+
+                services.AddDbContextFactory<ControlPlaneDbContext>(ConfigureInMemory);
+                services.AddScoped(sp =>
+                    sp.GetRequiredService<IDbContextFactory<ControlPlaneDbContext>>().CreateDbContext());
 
                 foreach (var d in services.Where(d =>
                              d.ServiceType == typeof(IHostedService) &&
