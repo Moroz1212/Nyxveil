@@ -9,6 +9,9 @@
 # Secrets (release signing private keys — never commit)
 .secrets/
 
+# Local test tooling
+.tools/
+
 # IDE
 .idea/
 .vscode/

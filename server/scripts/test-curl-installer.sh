@@ -131,6 +131,20 @@ else
   fail "systemd/ sibling present unexpectedly"
 fi
 
+echo "== curl|bash pipe --help (BASH_SOURCE unbound) =="
+PIPE_OUT="$(mktemp)"
+set +e
+cat "${TMP}/alone/install.sh" | bash -s -- --help >"${PIPE_OUT}" 2>&1
+pipe_rc=$?
+set -e
+if [[ "${pipe_rc}" -eq 0 ]] && ! grep -q 'BASH_SOURCE' "${PIPE_OUT}"; then
+  pass "curl pipe --help exit 0 without BASH_SOURCE noise"
+else
+  fail "curl pipe --help rc=${pipe_rc}"
+  cat "${PIPE_OUT}" >&2 || true
+fi
+rm -f "${PIPE_OUT}"
+
 echo "== mock fail-closed: unsigned download manifest =="
 MOCK_ROOT2="$(mktemp -d /tmp/nyxveil-mock-root2.XXXXXX)"
 set +e

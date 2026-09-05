@@ -33,6 +33,8 @@ jobs:
         run: bash scripts/test-install.sh
       - name: Curl|bash self-contained installer mock
         run: bash scripts/test-curl-installer.sh
+      - name: Manifest shell↔Go interop + curl pipe
+        run: bash scripts/test-manifest-interop.sh
       - name: Linux permission / ownership regression
         run: bash scripts/test-linux-permissions.sh
       - name: Race tests (Linux)

@@ -36,7 +36,10 @@ CONFIG_FILE=""
 NODE_KEY=""
 MOCK=0
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]:-}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 
 COMMITTED=0
 CREATED_USER=0
@@ -609,24 +612,50 @@ write_update_pubkey_pem() {
 }
 
 # Canonical signed payload: same shape as Go updater.CanonicalManifestBytes.
+# Must match json.Marshal output EXACTLY (no trailing LF). Command substitution
+# strips jq's trailing newline; printf '%s' must not add one back.
 canonical_manifest_bytes() {
   local manifest="$1"
-  command -v jq >/dev/null 2>&1 || die "jq required to verify release manifest"
-  jq -c '
-    {
-      version: .version,
-      arch: .arch
-    }
-    + (if (.sha256 | type) == "string" and .sha256 != "" then {sha256: .sha256} else {} end)
-    + (if (.url | type) == "string" and .url != "" then {url: .url} else {} end)
-    + {
-      min_core: .min_core,
-      min_protocol: .min_protocol
-    }
-    + (if (.assets | type) == "array" and (.assets | length) > 0
-       then {assets: [.assets[] | {name: .name, sha256: .sha256, url: .url}]}
-       else {} end)
-  ' "${manifest}"
+  local canonical
+
+  command -v jq >/dev/null 2>&1 ||
+    die "jq required to verify release manifest"
+
+  canonical="$(
+    jq -c '
+      {
+        version: .version,
+        arch: .arch
+      }
+      + (if (.sha256 | type) == "string" and .sha256 != ""
+         then {sha256: .sha256}
+         else {}
+         end)
+      + (if (.url | type) == "string" and .url != ""
+         then {url: .url}
+         else {}
+         end)
+      + {
+        min_core: .min_core,
+        min_protocol: .min_protocol
+      }
+      + (if (.assets | type) == "array" and (.assets | length) > 0
+         then {
+           assets: [
+             .assets[] |
+             {
+               name: .name,
+               sha256: .sha256,
+               url: .url
+             }
+           ]
+         }
+         else {}
+         end)
+    ' "${manifest}"
+  )"
+
+  printf '%s' "${canonical}"
 }
 
 verify_manifest_signature() {
@@ -1098,13 +1127,15 @@ start_and_test() {
 }
 
 install_serv_wrappers() {
-  local wrap cmds cmd
-  wrap="${SCRIPT_DIR}/../scripts/serv_wrappers.sh"
+  local wrap="" cmds cmd
+  if [[ -n "${SCRIPT_DIR}" ]]; then
+    wrap="${SCRIPT_DIR}/../scripts/serv_wrappers.sh"
+  fi
   cmds=(status health start stop restart logs version config update uninstall)
   mkdir -p "${LINK_DIR}"
 
   # Prefer repo script when present (offline tarball). curl|bash uses embedded list.
-  if [[ "${MOCK}" -eq 0 && -f "${wrap}" ]]; then
+  if [[ "${MOCK}" -eq 0 && -n "${wrap}" && -f "${wrap}" ]]; then
     if NYXVEIL_BIN_DIR="${BIN_DIR}" NYXVEIL_LINK_DIR="${LINK_DIR}" bash "${wrap}" install; then
       return 0
     fi
@@ -1149,6 +1180,18 @@ EOF
 }
 
 main() {
+  # CI / interop helpers (no root, no install side effects).
+  if [[ "${1:-}" == "--verify-manifest" ]]; then
+    [[ -n "${2:-}" && -f "${2}" ]] || die "usage: install.sh --verify-manifest PATH"
+    verify_manifest_signature "$2"
+    exit 0
+  fi
+  if [[ "${1:-}" == "--dump-canonical" ]]; then
+    [[ -n "${2:-}" && -f "${2}" ]] || die "usage: install.sh --dump-canonical PATH"
+    canonical_manifest_bytes "$2"
+    exit 0
+  fi
+
   parse_args "$@"
   init_paths
   require_root
