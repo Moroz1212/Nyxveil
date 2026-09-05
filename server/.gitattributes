@@ -1,0 +1,5 @@
+# Force LF for shell packaging scripts (Windows checkouts / CI).
+installer/*.sh text eol=lf
+scripts/*.sh text eol=lf
+firewall/*.conf text eol=lf
+systemd/*.service text eol=lf

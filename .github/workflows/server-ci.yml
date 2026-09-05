@@ -1,0 +1,76 @@
+name: Server CI
+
+on:
+  push:
+    paths:
+      - 'server/**'
+      - '.github/workflows/server-ci.yml'
+  pull_request:
+    paths:
+      - 'server/**'
+      - '.github/workflows/server-ci.yml'
+
+defaults:
+  run:
+    working-directory: server
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: server/go.sum
+      - name: Format check
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -timeout 120s ./...
+      - name: Installer structure checks
+        run: bash scripts/test-install.sh
+      - name: Curl|bash self-contained installer mock
+        run: bash scripts/test-curl-installer.sh
+      - name: Linux permission / ownership regression
+        run: bash scripts/test-linux-permissions.sh
+      - name: Race tests (Linux)
+        run: go test -race -timeout 300s ./internal/runtime ./internal/updater ./internal/listeners ./internal/netcfg
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: server/go.sum
+      - name: Cross-compile amd64/arm64
+        run: bash scripts/build-release.sh
+      - name: Package and sign release manifests
+        env:
+          NYXVEIL_RELEASE_SIGNING_KEY: ${{ secrets.NYXVEIL_RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "${NYXVEIL_RELEASE_SIGNING_KEY}" ]; then
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo "::warning::NYXVEIL_RELEASE_SIGNING_KEY unset on PR — packaging unsigned (SKIP_SIGN=1)"
+              SKIP_SIGN=1 bash scripts/package-release.sh
+            else
+              echo "::error::NYXVEIL_RELEASE_SIGNING_KEY secret is required to sign release manifests"
+              exit 1
+            fi
+          else
+            bash scripts/package-release.sh
+          fi
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nyxveil-server-binaries
+          path: |
+            server/dist/bin/**
+            server/dist/release/SHA256SUMS
+            server/dist/release/release-manifest-linux-*.json
+            server/dist/release/nyxveil-*-linux-*
+            server/dist/release/*.tar.gz

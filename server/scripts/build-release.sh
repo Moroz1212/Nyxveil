@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Cross-compile nyxveil-server and nyxveilctl for linux-amd64 and linux-arm64.
+# Canonical staging: dist/bin/  (wiped each run — never reuse stale binaries).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
+bash "${ROOT}/scripts/assert-frozen-core.sh"
+
 VERSION="$(tr -d '[:space:]' < VERSION)"
+# Wipe entire dist/ so stale SHA256SUMS / legacy manifests cannot ship.
+rm -rf "${ROOT}/dist"
 OUT="${ROOT}/dist/bin"
 mkdir -p "${OUT}"
 

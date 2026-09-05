@@ -1,0 +1,89 @@
+name: Server Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'server-v*'
+
+defaults:
+  run:
+    working-directory: server
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: server/go.sum
+
+      - name: Assert Frozen Core SHA
+        run: bash scripts/assert-frozen-core.sh
+
+      - name: Format check
+        run: test -z "$(gofmt -l .)"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -timeout 180s ./...
+
+      - name: Race tests
+        run: go test -race -timeout 300s ./internal/updater ./internal/runtime ./internal/listeners ./internal/netcfg
+
+      - name: Wipe stale dist and rebuild
+        run: |
+          rm -rf dist
+          bash scripts/build-release.sh
+          if [ -z "${{ secrets.NYXVEIL_RELEASE_SIGNING_KEY }}" ]; then
+            echo "::error::NYXVEIL_RELEASE_SIGNING_KEY secret is required (do not generate keys in CI)"
+            exit 1
+          fi
+          export NYXVEIL_RELEASE_SIGNING_KEY="${{ secrets.NYXVEIL_RELEASE_SIGNING_KEY }}"
+          bash scripts/package-release.sh
+          bash scripts/verify-release.sh
+
+      - name: Create GitHub Release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          TAG="server-v${VERSION}"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          DIST=dist/release
+          # Exact asset names — must match installer download + updater manifests.
+          ASSETS=(
+            "${DIST}/nyxveil-server-linux-amd64"
+            "${DIST}/nyxveilctl-linux-amd64"
+            "${DIST}/nyxveil-server-linux-arm64"
+            "${DIST}/nyxveilctl-linux-arm64"
+            "${DIST}/release-manifest-linux-amd64.json"
+            "${DIST}/release-manifest-linux-arm64.json"
+            "${DIST}/SHA256SUMS"
+          )
+          for a in "${ASSETS[@]}"; do
+            [[ -f "${a}" ]] || { echo "missing ${a}"; exit 1; }
+          done
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${ASSETS[@]}" --clobber
+          else
+            NOTES="${DIST}/NOTES.txt"
+            [[ -f "${NOTES}" ]] || NOTES=""
+            gh release create "${TAG}" "${ASSETS[@]}" \
+              --title "Nyxveil Server ${TAG}" \
+              ${NOTES:+--notes-file "${NOTES}"} \
+              --verify-tag || gh release create "${TAG}" "${ASSETS[@]}" \
+              --title "Nyxveil Server ${TAG}" \
+              ${NOTES:+--notes-file "${NOTES}"}
+          fi

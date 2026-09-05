@@ -1,9 +1,11 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using Nyxveil.ControlPlane.Api.Auth;
 using Nyxveil.ControlPlane.Api.RateLimiting;
 using Nyxveil.ControlPlane.Application.Abstractions;
 using Nyxveil.ControlPlane.Application.Contracts.V1;
+using Nyxveil.ControlPlane.Application.Options;
 
 namespace Nyxveil.ControlPlane.Api.Controllers.V1;
 
@@ -14,13 +16,19 @@ public sealed class NodesController : ControllerBase
 {
     private readonly INodeRegistrationService _registration;
     private readonly INodeHeartbeatService _heartbeat;
+    private readonly ISigningKeyService _signingKeys;
+    private readonly SigningOptions _signing;
 
     public NodesController(
         INodeRegistrationService registration,
-        INodeHeartbeatService heartbeat)
+        INodeHeartbeatService heartbeat,
+        ISigningKeyService signingKeys,
+        IOptions<SigningOptions> signing)
     {
         _registration = registration;
         _heartbeat = heartbeat;
+        _signingKeys = signingKeys;
+        _signing = signing.Value;
     }
 
     /// <summary>
@@ -106,4 +114,30 @@ public sealed class NodesController : ControllerBase
         return Ok(result);
     }
 
+    /// <summary>
+    /// GET /api/v1/node/ticket-keys — Access Ticket verification public keys
+    /// (never private keys); compatible with Go ticketkeys.File.
+    /// </summary>
+    [HttpGet("node/ticket-keys")]
+    [NodeAuth]
+    [RateLimit]
+    public async Task<ActionResult<NodeTicketKeysResponse>> GetTicketKeys(CancellationToken cancellationToken)
+    {
+        _ = AuthTokenExtractor.GetNodeId(HttpContext)
+            ?? throw new InvalidOperationException("node id missing after NodeAuth");
+
+        var verificationKeys = await _signingKeys.GetVerificationKeysAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        var keys = new Dictionary<string, string>(verificationKeys.Count);
+        foreach (var k in verificationKeys)
+            keys[k.KeyId] = Convert.ToBase64String(k.PublicKey);
+
+        return Ok(new NodeTicketKeysResponse
+        {
+            Issuer = _signing.Issuer,
+            Keys = keys,
+            UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        });
+    }
 }

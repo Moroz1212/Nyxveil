@@ -5,7 +5,7 @@ transport and failover contracts remain unchanged.
 
 ## Signed requests
 
-Normal heartbeat, config and revocation calls require Ed25519 request signatures.
+Normal heartbeat, config, ticket-keys and revocation calls require Ed25519 request signatures.
 Reusable bearers, timestamp-only Core tokens and req-v1 signatures are rejected.
 Send exactly one of each header:
 
@@ -53,6 +53,9 @@ multiple Control Plane instances does not reset replay state.
 - `POST /api/v1/nodes/{nodeId}/health`: req-v2 heartbeat.
 - `POST /api/v1/node/heartbeat`: req-v2 heartbeat alias.
 - `GET /api/v1/node/config`: req-v2 authoritative config.
+- `GET /api/v1/node/ticket-keys`: req-v2 Access Ticket verification public keys
+  (`issuer`, `keys` kid→standard Base64 Ed25519 pubkey, `updated_at` Unix seconds).
+  Never returns private keys. Compatible with Go `ticketkeys.File`.
 - `GET /api/v1/revocation`: req-v2 complete revocation snapshot; never truncated.
 
 ## Registration and compatibility PoP

@@ -1,0 +1,15 @@
+[Unit]
+Description=Nyxveil nftables firewall (table inet nyxveil)
+Documentation=https://github.com/Moroz1212/Nyxveil/tree/main/server/docs/FIREWALL.md
+Before=nyxveil-server.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/nyxveil.conf
+ExecStop=/usr/sbin/nft delete table inet nyxveil
+
+[Install]
+WantedBy=multi-user.target

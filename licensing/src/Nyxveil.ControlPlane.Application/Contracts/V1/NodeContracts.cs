@@ -127,3 +127,20 @@ public sealed class NodeConfigResponse
     [JsonPropertyName("updated_at")]
     public DateTime UpdatedAt { get; set; }
 }
+
+/// <summary>
+/// Access-ticket verification public keys for nodes (never private keys).
+/// Compatible with Go <c>ticketkeys.File</c> plus <c>updated_at</c>.
+/// </summary>
+public sealed class NodeTicketKeysResponse
+{
+    [JsonPropertyName("issuer")]
+    public string Issuer { get; set; } = string.Empty;
+
+    /// <summary>kid → standard Base64 of 32-byte Ed25519 public key.</summary>
+    [JsonPropertyName("keys")]
+    public Dictionary<string, string> Keys { get; set; } = new();
+
+    [JsonPropertyName("updated_at")]
+    public long UpdatedAt { get; set; }
+}

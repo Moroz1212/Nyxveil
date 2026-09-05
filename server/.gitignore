@@ -1,0 +1,18 @@
+# Binaries / local build
+/bin/
+/dist/
+/artifacts/
+*.exe
+*.test
+*.out
+
+# Secrets (release signing private keys — never commit)
+.secrets/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

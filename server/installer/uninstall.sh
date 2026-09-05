@@ -8,6 +8,7 @@ RUN_DIR="/run/nyxveil"
 BIN_DIR="/usr/local/sbin"
 SYSCTL_FILE="/etc/sysctl.d/99-nyxveil.conf"
 SERVICE_UNIT="/etc/systemd/system/nyxveil-server.service"
+FIREWALL_UNIT="/etc/systemd/system/nyxveil-firewall.service"
 NFT_FILE="/etc/nftables.d/nyxveil.conf"
 
 PURGE_STATE=0
@@ -43,9 +44,11 @@ done
 if command -v systemctl >/dev/null 2>&1; then
   systemctl stop nyxveil-server 2>/dev/null || true
   systemctl disable nyxveil-server 2>/dev/null || true
+  systemctl stop nyxveil-firewall 2>/dev/null || true
+  systemctl disable nyxveil-firewall 2>/dev/null || true
 fi
 
-rm -f "${SERVICE_UNIT}"
+rm -f "${SERVICE_UNIT}" "${FIREWALL_UNIT}"
 systemctl daemon-reload 2>/dev/null || true
 
 # Remove only our isolated table — never flush ruleset.

@@ -150,6 +150,53 @@ public sealed class NodeRequestSecurityTests : IClassFixture<CustomWebApplicatio
         Assert.Equal(HttpStatusCode.OK, await Send(Signed("GET", "/api/v1/revocation")));
 
     [Fact]
+    public async Task TestAuthenticatedNodeCanFetchTicketKeys()
+    {
+        using var request = Signed("GET", "/api/v1/node/ticket-keys");
+        using var response = await _client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        Assert.Equal(JsonValueKind.String, root.GetProperty("issuer").ValueKind);
+        Assert.False(string.IsNullOrWhiteSpace(root.GetProperty("issuer").GetString()));
+        Assert.Equal(JsonValueKind.Object, root.GetProperty("keys").ValueKind);
+        Assert.True(root.GetProperty("keys").EnumerateObject().Any());
+        foreach (var prop in root.GetProperty("keys").EnumerateObject())
+        {
+            var raw = Convert.FromBase64String(prop.Value.GetString()!);
+            Assert.Equal(32, raw.Length);
+        }
+        Assert.True(root.GetProperty("updated_at").GetInt64() > 0);
+        Assert.DoesNotContain("private", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ProtectedPrivateKey", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task TestUnauthenticatedCannotFetchTicketKeys()
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/node/ticket-keys");
+        Assert.Equal(HttpStatusCode.Unauthorized, await Send(request));
+    }
+
+    [Fact]
+    public async Task TestTicketKeysRejectsNodeIdentityMismatch()
+    {
+        // Claim node B while signing the nvp-node-req-v2 message as node A.
+        var unix = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var nonce = B64(RandomNumberGenerator.GetBytes(16));
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(""))).ToLowerInvariant();
+        var message = Encoding.UTF8.GetBytes($"nvp-node-req-v2|{_a}|{unix}|{nonce}|GET|/api/v1/node/ticket-keys|{hash}");
+        using var key = Key.Import(SignatureAlgorithm.Ed25519, _seed, KeyBlobFormat.RawPrivateKey);
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/node/ticket-keys");
+        request.Headers.Add("X-Node-Id", _b);
+        request.Headers.Add("X-Node-Timestamp", unix);
+        request.Headers.Add("X-Node-Nonce", nonce);
+        request.Headers.Add("X-Node-Signature", B64(SignatureAlgorithm.Ed25519.Sign(key, message)));
+        Assert.Equal(HttpStatusCode.Unauthorized, await Send(request));
+    }
+
+    [Fact]
     public async Task TestCoreTokenRejectedForNormalNodeApi()
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/node/config");
