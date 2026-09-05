@@ -80,19 +80,19 @@ type RegisterResponse struct {
 }
 
 type NodeConfig struct {
-	NodeID                 string    `json:"node_id"`
-	LocationID             string    `json:"location_id"`
-	Enabled                bool      `json:"enabled"`
-	Draining               bool      `json:"draining"`
-	MaintenanceMode        bool      `json:"maintenance_mode"`
-	TransportPolicyJSON    string    `json:"transport_policy_json"`
-	ECHPolicyJSON          *string   `json:"ech_policy_json"`
-	MTU                    *int      `json:"mtu"`
-	Capacity               int       `json:"capacity"`
-	MinimumServerVersion   *string   `json:"minimum_server_version"`
-	MinimumProtocolVersion *uint16   `json:"minimum_protocol_version"`
-	ConfigVersion          int64     `json:"config_version"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	NodeID                 string  `json:"node_id"`
+	LocationID             string  `json:"location_id"`
+	Enabled                bool    `json:"enabled"`
+	Draining               bool    `json:"draining"`
+	MaintenanceMode        bool    `json:"maintenance_mode"`
+	TransportPolicyJSON    string  `json:"transport_policy_json"`
+	ECHPolicyJSON          *string `json:"ech_policy_json"`
+	MTU                    *int    `json:"mtu"`
+	Capacity               int     `json:"capacity"`
+	MinimumServerVersion   *string `json:"minimum_server_version"`
+	MinimumProtocolVersion *uint16 `json:"minimum_protocol_version"`
+	ConfigVersion          int64   `json:"config_version"`
+	UpdatedAt              APITime `json:"updated_at"`
 }
 
 type HeartbeatRequest struct {
@@ -236,7 +236,16 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, sign
 	if out == nil || len(respBody) == 0 {
 		return nil
 	}
-	return json.Unmarshal(respBody, out)
+	if err := json.Unmarshal(respBody, out); err != nil {
+		return &AcceptedLocalError{
+			Method: method,
+			Path:   path,
+			Status: resp.StatusCode,
+			Body:   append([]byte(nil), respBody...),
+			Err:    err,
+		}
+	}
+	return nil
 }
 
 func truncate(s string, n int) string {

@@ -124,8 +124,12 @@ public sealed class NodeConfigResponse
     [JsonPropertyName("config_version")]
     public long ConfigVersion { get; set; }
 
+    /// <summary>
+    /// Config revision wall time. Serialized as UTC RFC3339 with trailing Z.
+    /// Stored DB column remains DateTime; this DTO uses DateTimeOffset for unambiguous UTC.
+    /// </summary>
     [JsonPropertyName("updated_at")]
-    public DateTime UpdatedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
 }
 
 /// <summary>

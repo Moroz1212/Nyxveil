@@ -177,6 +177,8 @@ public sealed class NodeRegistrationService : INodeRegistrationService
 
         // Bootstrap already atomically consumed in FindAndConsumeBootstrapAsync.
 
+        // Commit before response serialization. Clients that fail to decode the HTTP 200
+        // body must treat the node as registered and retry with the same identity + PoP.
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
 

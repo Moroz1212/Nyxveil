@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Nyxveil.ControlPlane.Api.Auth;
 using Nyxveil.ControlPlane.Api.Filters;
+using Nyxveil.ControlPlane.Application.Serialization;
 
 namespace Nyxveil.ControlPlane.Api.DependencyInjection;
 
@@ -21,6 +22,14 @@ public static class ApiServiceCollectionExtensions
         services
             .AddControllers()
             .AddApplicationPart(typeof(ApiServiceCollectionExtensions).Assembly)
+            .AddJsonOptions(options =>
+            {
+                // External API timestamps must be unambiguous UTC with trailing Z.
+                options.JsonSerializerOptions.Converters.Add(new UtcDateTimeJsonConverter());
+                options.JsonSerializerOptions.Converters.Add(new UtcNullableDateTimeJsonConverter());
+                options.JsonSerializerOptions.Converters.Add(new UtcDateTimeOffsetJsonConverter());
+                options.JsonSerializerOptions.Converters.Add(new UtcNullableDateTimeOffsetJsonConverter());
+            })
             .AddMvcOptions(options =>
             {
                 options.Filters.Add<ApplicationExceptionFilter>();

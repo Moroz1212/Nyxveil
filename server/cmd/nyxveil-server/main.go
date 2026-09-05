@@ -100,6 +100,8 @@ func doRegister(ctx context.Context, configPath, token string, testMode bool) er
 	}
 	resp, err := node.Register(ctx, token)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "nyxveil-server: registration failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nyxveil-server: if Control Plane returned success, local node.key must be kept for PoP retry — do not delete identity\n")
 		return err
 	}
 	fmt.Printf("registered node_id=%s config_version=%d\n", resp.NodeID, resp.ConfigVersion)

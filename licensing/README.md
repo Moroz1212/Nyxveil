@@ -2,7 +2,7 @@
 
 Central **Licensing / Control Plane** for Nyxveil VPN (Windows, .NET 10, SQL Server, Blazor admin, HTTPS API).
 
-- **Version:** see [`VERSION`](VERSION) (`1.0.2`)
+- **Version:** see [`VERSION`](VERSION) (`1.0.3`)
 - **Protocol:** NVP/1 (frozen Core contracts)
 
 ## Requirements

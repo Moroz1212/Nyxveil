@@ -182,6 +182,10 @@ public sealed class NodeManagementService : INodeManagementService
         MinimumServerVersion = cfg.MinimumServerVersion,
         MinimumProtocolVersion = cfg.MinimumProtocolVersion,
         ConfigVersion = cfg.ConfigVersion,
-        UpdatedAt = cfg.UpdatedAt
+        // Treat unspecified DB DateTime as UTC wall time (no host-local conversion).
+        UpdatedAt = new DateTimeOffset(
+            cfg.UpdatedAt.Kind == DateTimeKind.Unspecified
+                ? DateTime.SpecifyKind(cfg.UpdatedAt, DateTimeKind.Utc)
+                : cfg.UpdatedAt.ToUniversalTime())
     };
 }

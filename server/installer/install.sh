@@ -14,7 +14,7 @@
 # Local --binary-dir / --skip-download skips remote verify.
 set -euo pipefail
 
-readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.0.0}"
+readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.0.1}"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 # Same Ed25519 public key as internal/updater.UpdatePublicKey
 readonly PUB_HEX="f63d2c8001df3d7b2efdd171a16463260cb7190d61ef564419cc0836777d176f"
@@ -1034,11 +1034,22 @@ generate_identity_and_register() {
   if [[ "${REPAIR_MODE}" -eq 1 ]]; then
     # Empty bootstrap: Register uses PoP NodeToken when node.key already exists.
     if ! printf '\n' | run_as_nyxveil "${BIN_DIR}/nyxveil-server" "${reg_flags[@]}"; then
-      die "Control Plane repair re-registration (PoP) failed"
+      if [[ -f "${NODE_KEY}" ]]; then
+        PRESERVE_HAD_KEY=1
+        warn "repair registration failed but node.key exists — preserving identity (Control Plane may already know this node)"
+      fi
+      die "Control Plane repair re-registration (PoP) failed — keep node.key; retry with same identity/PoP"
     fi
   else
     if ! printf '%s\n' "${BOOTSTRAP_TOKEN}" | run_as_nyxveil "${BIN_DIR}/nyxveil-server" "${reg_flags[@]}"; then
-      die "Control Plane registration failed"
+      # HTTP 200 + local decode/persist failure still leaves a CP-side node + consumed bootstrap.
+      # Never delete the freshly written node.key on rollback — retry must use PoP.
+      if [[ -f "${NODE_KEY}" ]]; then
+        PRESERVE_HAD_KEY=1
+        warn "registration failed locally but node.key exists — Control Plane may already have registered this node"
+        warn "preserving ${NODE_KEY}; retry with the SAME node_id/public key (PoP), do not mint a new identity"
+      fi
+      die "Control Plane registration failed — if CP accepted the node, keep node.key and retry with PoP (empty bootstrap)"
     fi
   fi
   fix_state_ownership

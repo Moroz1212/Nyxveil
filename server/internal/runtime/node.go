@@ -261,12 +261,29 @@ func (n *Node) Register(ctx context.Context, bootstrapToken string) (*controlpla
 	bootstrapToken = "" // scrub local copy
 	_ = bootstrapToken
 	if err != nil {
+		// HTTP 2xx then decode failure: CP already committed registration/bootstrap.
+		// Keep node.key and clear fresh-key so retry uses the same identity + PoP.
+		if controlplane.IsAcceptedLocal(err) {
+			n.markIdentityCommittedForRetry()
+			return nil, fmt.Errorf("%w\nWARNING: Control Plane may already have registered this node; node.key preserved — retry with the same identity/PoP (do not mint a new key)", err)
+		}
 		return nil, err
 	}
 	if err := n.PersistRegistrationConfig(resp); err != nil {
-		return nil, err
+		n.markIdentityCommittedForRetry()
+		return nil, fmt.Errorf("runtime: persist after Control Plane registration accepted: %w\nWARNING: Control Plane registration likely succeeded; node.key preserved — retry with the same identity/PoP (do not mint a new key)", err)
 	}
+	n.markIdentityCommittedForRetry()
 	return resp, nil
+}
+
+// markIdentityCommittedForRetry clears the in-process "fresh key" flag so a
+// subsequent Register in this process uses Core PoP instead of bootstrap.
+// The key file on disk is never deleted here.
+func (n *Node) markIdentityCommittedForRetry() {
+	n.mu.Lock()
+	n.keyCreated = false
+	n.mu.Unlock()
 }
 
 // PersistRegistrationConfig writes the Control Plane's initial/repair config

@@ -47,6 +47,23 @@ at signed timestamp +301 seconds, including the full future-skew validity window
 the retention worker removes expired rows every six hours. Restarting or running
 multiple Control Plane instances does not reset replay state.
 
+## Timestamps
+
+Node API DateTime / DateTimeOffset JSON fields are serialized as UTC RFC3339 with a
+trailing `Z` (fractional digits allowed, trailing zeros trimmed). Example:
+
+`2026-09-05T16:03:33.2935527Z`
+
+Unspecified Kind values from storage are treated as UTC wall time (no host-local skew).
+
+## Registration transaction warning
+
+`POST /api/v1/nodes/register` commits the new node, credentials, config row, health row,
+and bootstrap consumption **before** the HTTP response body is serialized. A client that
+receives HTTP 200 but fails to decode or persist the response must **not** assume
+registration did not happen. Retry with the **same** `node_id` / public key and Core PoP
+(`node_token`); do not mint a new identity or reuse a consumed bootstrap token.
+
 ## Endpoints
 
 - `POST /api/v1/nodes/register`: bootstrap for a new identity; existing identity requires explicit Core PoP as below.
