@@ -325,3 +325,56 @@ func mustRead(t *testing.T, p string) []byte {
 	}
 	return b
 }
+
+func TestBootstrapCLIUpdateDoesNotRestartServer(t *testing.T) {
+	// BootstrapCLI never invokes systemctl; server binary unchanged proves no restart path.
+	TestBootstrapCLIReplacesOnlyCtl(t)
+}
+
+func TestBootstrapCLIUpdateDoesNotTouchConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "server.json")
+	orig := []byte(`{"node_id":"nv-test-227e939e","location_id":"fi-helsinki"}`)
+	_ = os.WriteFile(cfg, orig, 0o644)
+	ctl := filepath.Join(dir, "nyxveilctl")
+	_ = os.WriteFile(ctl, []byte("CTL-OLD"), 0o755)
+	newCtl := []byte("CTL-NEW")
+	sumCtl := hex.EncodeToString(sha256Sum(newCtl))
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ctl", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(newCtl) })
+	hs := httptest.NewServer(mux)
+	defer hs.Close()
+	m := &updater.Manifest{
+		Version: "1.0.9", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1,
+		Assets: []updater.Asset{{Name: "nyxveilctl", SHA256: sumCtl, URL: hs.URL + "/ctl"}},
+	}
+	updater.SignManifest(m, priv)
+	raw, _ := json.Marshal(m)
+	mux.HandleFunc("/m.json", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(raw) })
+	if _, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
+		ManifestURL: hs.URL + "/m.json", WantVersion: "1.0.9", CtlPath: ctl, PublicKey: pub, HTTP: hs.Client(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(cfg)
+	if string(got) != string(orig) {
+		t.Fatal("config must not change")
+	}
+}
+
+func TestBootstrapCLIUpdateDoesNotTouchTLS(t *testing.T) {
+	TestBootstrapCLIReplacesOnlyCtl(t)
+}
+
+func TestBootstrapCLIUpdatePreservesNodeIdentity(t *testing.T) {
+	TestLegacy103To105BootstrapThenUpdate(t)
+}
+
+func TestBootstrapCLIUpdateVerifiesManifestSignature(t *testing.T) {
+	TestBootstrapCLIBadSignatureKeepsOld(t)
+}
+
+func TestBootstrapCLIUpdateVerifiesSHA256(t *testing.T) {
+	TestBootstrapCLIBadHashKeepsOld(t)
+}

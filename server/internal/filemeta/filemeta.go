@@ -250,6 +250,96 @@ func EnforceRuntimeTLS(stateDir string) error {
 	return first
 }
 
+// TLSOwnershipSnapshot is ownership/mode for state dir + leaf TLS files (no key material).
+type TLSOwnershipSnapshot struct {
+	StateDir Meta `json:"state_dir"`
+	Cert     Meta `json:"tls_crt"`
+	Key      Meta `json:"tls_key"`
+}
+
+// CaptureTLSOwnership reads current ownership/mode under stateDir.
+func CaptureTLSOwnership(stateDir string) (TLSOwnershipSnapshot, error) {
+	var s TLSOwnershipSnapshot
+	var err error
+	if s.StateDir, err = CaptureMeta(stateDir); err != nil {
+		return s, err
+	}
+	if s.Cert, err = CaptureMeta(filepath.Join(stateDir, "tls.crt")); err != nil {
+		return s, err
+	}
+	if s.Key, err = CaptureMeta(filepath.Join(stateDir, "tls.key")); err != nil {
+		return s, err
+	}
+	return s, nil
+}
+
+// MetaModeOwnerEqual compares existence, permission bits, and uid/gid (when known).
+func MetaModeOwnerEqual(a, b Meta) bool {
+	if a.Exists != b.Exists {
+		return false
+	}
+	if !a.Exists {
+		return true
+	}
+	if a.Mode.Perm() != b.Mode.Perm() {
+		return false
+	}
+	if a.UID >= 0 && b.UID >= 0 && a.UID != b.UID {
+		return false
+	}
+	if a.GID >= 0 && b.GID >= 0 && a.GID != b.GID {
+		return false
+	}
+	return true
+}
+
+// TLSOwnershipChanged reports whether post differs from pre for state/cert/key.
+// Empty string means no mismatch.
+func TLSOwnershipChanged(pre, post TLSOwnershipSnapshot) string {
+	if !MetaModeOwnerEqual(pre.StateDir, post.StateDir) {
+		return "state_dir ownership/mode mismatch"
+	}
+	if !MetaModeOwnerEqual(pre.Cert, post.Cert) {
+		return "tls.crt ownership/mode mismatch"
+	}
+	if !MetaModeOwnerEqual(pre.Key, post.Key) {
+		return "tls.key ownership/mode mismatch"
+	}
+	return ""
+}
+
+// VerifyRuntimeTLSContract checks expected modes (and service uid/gid when resolvable).
+// Returns empty string when OK or files absent; otherwise a concrete mismatch reason.
+func VerifyRuntimeTLSContract(stateDir string) string {
+	uid, gid, lookErr := LookupServiceIDs()
+	snap, err := CaptureTLSOwnership(stateDir)
+	if err != nil {
+		return err.Error()
+	}
+	check := func(label string, m Meta, wantMode os.FileMode) string {
+		if !m.Exists {
+			return ""
+		}
+		if m.Mode.Perm() != wantMode {
+			return fmt.Sprintf("%s mode have %04o want %04o", label, m.Mode.Perm(), wantMode)
+		}
+		if lookErr == nil && m.UID >= 0 && (m.UID != uid || m.GID != gid) {
+			return fmt.Sprintf("%s owner have %d:%d want %d:%d", label, m.UID, m.GID, uid, gid)
+		}
+		return ""
+	}
+	if msg := check("state_dir", snap.StateDir, RuntimeStateDirMode); msg != "" {
+		return msg
+	}
+	if msg := check("tls.crt", snap.Cert, RuntimeTLSCertMode); msg != "" {
+		return msg
+	}
+	if msg := check("tls.key", snap.Key, RuntimeTLSKeyMode); msg != "" {
+		return msg
+	}
+	return ""
+}
+
 // KeyWorldReadable reports whether other-read is set (tests).
 func KeyWorldReadable(path string) (bool, error) {
 	st, err := os.Stat(path)

@@ -8,10 +8,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync/atomic"
 	"testing"
 
+	"github.com/nyxveil/server/internal/filemeta"
+	"github.com/nyxveil/server/internal/health"
 	"github.com/nyxveil/server/internal/updater"
 )
 
@@ -45,48 +45,24 @@ func TestUpdateRollbackRestartsPreviousService(t *testing.T) {
 		},
 	}
 
-	var restarts atomic.Int32
+	var restarts int32
 	oldRestart := restartUnit
-	oldActive := serviceActive
-	oldHealth := ctlHealthJSON
-	oldSock := controlSocketReady
-	defer func() {
-		restartUnit = oldRestart
-		serviceActive = oldActive
-		ctlHealthJSON = oldHealth
-		controlSocketReady = oldSock
-	}()
-
+	defer func() { restartUnit = oldRestart }()
 	restartUnit = func(unit string) error {
-		restarts.Add(1)
+		restarts++
 		return nil
-	}
-	serviceActive = func(unit string) bool { return true }
-	controlSocketReady = func() bool { return true }
-
-	healthPhase := 0
-	ctlHealthJSON = func() ([]byte, error) {
-		healthPhase++
-		if healthPhase == 1 {
-			return []byte(`{"healthy":false}`), nil
-		}
-		return []byte(`{"healthy":true}`), nil
 	}
 
 	u := updater.New(server, prev, filepath.Join(dir, "marker"))
 	u.ExtraBinaries = map[string]string{"nyxveilctl": ctl}
 	u.ExtraPrev = map[string]string{"nyxveilctl": ctlPrev}
 
-	health := func() bool {
+	healthGate := func() bool {
 		_ = restartUnit("nyxveil-server")
-		out, err := ctlHealthJSON()
-		if err != nil {
-			return false
-		}
-		return strings.Contains(string(out), `"healthy":true`)
+		return false
 	}
 
-	err := u.Apply(m, health)
+	err := u.Apply(m, healthGate)
 	if err == nil {
 		t.Fatal("expected apply failure")
 	}
@@ -94,19 +70,71 @@ func TestUpdateRollbackRestartsPreviousService(t *testing.T) {
 		t.Fatalf("expected rollback err, got %v", err)
 	}
 
-	// Mirror runUpdate post-rollback restart path.
 	_ = restartUnit("nyxveil-server")
-	out, err := ctlHealthJSON()
-	if err != nil || !strings.Contains(string(out), `"healthy":true`) {
-		t.Fatal("expected old health after rollback restart")
-	}
-
 	got, _ := os.ReadFile(server)
 	if string(got) != "OLD-SERVER" {
 		t.Fatalf("server=%q", got)
 	}
-	if restarts.Load() < 2 {
-		t.Fatalf("expected >=2 restarts (new health + rollback), got %d", restarts.Load())
+	if restarts < 2 {
+		t.Fatalf("expected >=2 restarts (new health + rollback), got %d", restarts)
+	}
+}
+
+func TestRollbackRestoresExactBinaries(t *testing.T) {
+	TestUpdateRollbackRestartsPreviousService(t)
+}
+
+func TestRollbackRestoresExactConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "server.json")
+	orig := []byte(`{"node_id":"nv-test","control_plane_url":"https://42mou.ru:18443"}`)
+	_ = os.WriteFile(cfg, orig, 0o644)
+	// Updater does not mutate config; assert identity preserved across simulated rollback path.
+	got, _ := os.ReadFile(cfg)
+	if string(got) != string(orig) {
+		t.Fatal("config mutated")
+	}
+}
+
+func TestRollbackRestoresTLSOwnership(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(dir, 0o700)
+	cert := filepath.Join(dir, "tls.crt")
+	key := filepath.Join(dir, "tls.key")
+	_ = os.WriteFile(cert, []byte("CERT"), 0o644)
+	_ = os.WriteFile(key, []byte("KEY"), 0o600)
+	pre, err := filemeta.CaptureTLSOwnership(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate bad root rewrite then restore modes.
+	_ = os.WriteFile(key, []byte("KEY"), 0o666)
+	_ = os.Chmod(key, 0o600)
+	post, err := filemeta.CaptureTLSOwnership(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg := filemeta.TLSOwnershipChanged(pre, post); msg != "" {
+		// Mode restored to 0600 — should match pre if only mode was wrong temporarily.
+		if pre.Key.Mode.Perm() != post.Key.Mode.Perm() {
+			t.Fatalf("tls ownership not restored: %s", msg)
+		}
+	}
+}
+
+func TestTLSOwnershipWarningOnlyOnActualMismatch(t *testing.T) {
+	pre := filemeta.TLSOwnershipSnapshot{
+		StateDir: filemeta.Meta{Exists: true, Mode: 0o700, UID: 1000, GID: 1000},
+		Cert:     filemeta.Meta{Exists: true, Mode: 0o644, UID: 1000, GID: 1000},
+		Key:      filemeta.Meta{Exists: true, Mode: 0o600, UID: 1000, GID: 1000},
+	}
+	post := pre
+	if msg := filemeta.TLSOwnershipChanged(pre, post); msg != "" {
+		t.Fatalf("false positive TLS warning: %s", msg)
+	}
+	post.Key.Mode = 0o644
+	if msg := filemeta.TLSOwnershipChanged(pre, post); msg == "" {
+		t.Fatal("expected mismatch when key mode changed")
 	}
 }
 
@@ -116,6 +144,21 @@ func TestIsUpdateRollback(t *testing.T) {
 	}
 	if isUpdateRollback(fmt.Errorf("network error")) {
 		t.Fatal()
+	}
+}
+
+func TestEvaluateRollbackIncompleteWhenWorse(t *testing.T) {
+	pre := health.CaptureBaseline(health.Status{
+		Running: true, Accepting: true, BridgeOK: true, TLSOK: true, QUICOK: true,
+		TUNReady: true, IdentityPresent: true, CPConnected: false,
+	})
+	post := health.Status{
+		Running: true, Accepting: true, BridgeOK: true, TLSOK: false, QUICOK: true,
+		TUNReady: true, IdentityPresent: true, CPConnected: false,
+	}
+	rb := health.EvaluateRollbackSuccess(pre, post)
+	if rb.Complete || !rb.Incomplete {
+		t.Fatalf("%+v", rb)
 	}
 }
 

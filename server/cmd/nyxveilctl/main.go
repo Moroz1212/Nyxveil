@@ -17,6 +17,7 @@ import (
 
 	"github.com/nyxveil/server/internal/configure"
 	"github.com/nyxveil/server/internal/filemeta"
+	"github.com/nyxveil/server/internal/health"
 	"github.com/nyxveil/server/internal/localconfig"
 	"github.com/nyxveil/server/internal/paths"
 	"github.com/nyxveil/server/internal/updater"
@@ -217,7 +218,7 @@ func resolveManifestURL(args []string) (string, error) {
 func runBootstrapCLI(args []string) error {
 	fs := flag.NewFlagSet("bootstrap-cli", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	versionFlag := fs.String("version", "1.0.8", "target server-vVERSION release")
+	versionFlag := fs.String("version", "1.0.9", "target server-vVERSION release")
 	manifestURL := fs.String("manifest-url", "", "override signed manifest URL")
 	ctlPath := fs.String("ctl-path", "", "nyxveilctl install path (default beside nyxveil-server)")
 	thenUpdate := fs.Bool("then-update", false, "after CLI replace, run full nyxveilctl update")
@@ -278,6 +279,15 @@ func runUpdate(args []string) error {
 	ctlPath := filepath.Join(filepath.Dir(server), "nyxveilctl")
 	ctlPrev := filepath.Join(paths.StateDir, "nyxveilctl.prev")
 
+	preBaseline, preTLS, err := capturePreUpdateBaseline(15)
+	if err != nil {
+		return fmt.Errorf("updater: capture pre-update baseline: %w", err)
+	}
+	fmt.Printf("pre-update baseline: running=%v accepting=%v bridge_ok=%v tls_ok=%v quic_ok=%v tun_ready=%v cp_connected=%v healthy=%v identity_present=%v version_blocked=%v dataplane_ok=%v\n",
+		preBaseline.Running, preBaseline.Accepting, preBaseline.BridgeOK, preBaseline.TLSOK, preBaseline.QUICOK,
+		preBaseline.TUNReady, preBaseline.CPConnected, preBaseline.Healthy, preBaseline.IdentityPresent,
+		preBaseline.VersionBlocked, preBaseline.DataplaneOK)
+
 	fmt.Printf("fetching update manifest %s\n", manifestURL)
 	resp, err := http.Get(manifestURL)
 	if err != nil {
@@ -303,20 +313,42 @@ func runUpdate(args []string) error {
 			return true
 		}
 		_ = restartUnit("nyxveil-server")
-		return verifyServiceHealth(45)
+		res, ok := verifyPostUpdateHealth(preBaseline, 45)
+		if ok {
+			fmt.Printf("update_success=%v dataplane_healthy=%v management_plane_connected=%v preexisting_management_degradation=%v\n",
+				res.UpdateSuccess, res.DataplaneHealthy, res.ManagementPlaneConnected, res.PreexistingManagementDegradation)
+			if res.Reason != "" {
+				fmt.Printf("update note: %s\n", res.Reason)
+			}
+		}
+		return ok
 	}
 
 	if err := u.Apply(m, health); err != nil {
 		// After Apply rolls binaries + TLS metadata back, restart previous and
-		// require real health (socket + /health), not merely systemctl active.
+		// evaluate against the PRE-UPDATE baseline (not absolute global healthy).
 		if runtime.GOOS != "windows" && isUpdateRollback(err) {
 			fmt.Println("update failed; restoring previous binaries/TLS ownership and restarting service…")
 			_ = filemeta.EnforceRuntimeTLS(paths.StateDir)
 			_ = restartUnit("nyxveil-server")
-			if verifyServiceHealth(45) {
-				return fmt.Errorf("%w; previous version restarted and healthy", err)
+			rb, ok := verifyRollbackHealth(preBaseline, 45)
+			postTLS, _ := filemeta.CaptureTLSOwnership(paths.StateDir)
+			tlsMsg := filemeta.TLSOwnershipChanged(preTLS, postTLS)
+			if tlsMsg == "" {
+				tlsMsg = filemeta.VerifyRuntimeTLSContract(paths.StateDir)
 			}
-			return fmt.Errorf("%w; ROLLBACK INCOMPLETE: previous version restarted but still unhealthy (check TLS ownership under %s)", err, paths.StateDir)
+			if ok {
+				fmt.Printf("rollback_complete=%v baseline_restored=%v\n", rb.Complete, rb.BaselineRestored)
+				if tlsMsg != "" {
+					fmt.Printf("warning: TLS ownership verification failed: %s\n", tlsMsg)
+				}
+				return fmt.Errorf("%w; previous version restarted; baseline restored", err)
+			}
+			msg := fmt.Errorf("%w; ROLLBACK INCOMPLETE: %s", err, rb.Reason)
+			if tlsMsg != "" {
+				msg = fmt.Errorf("%w; TLS ownership: %s", msg, tlsMsg)
+			}
+			return msg
 		}
 		return err
 	}
@@ -334,7 +366,12 @@ var serviceActive = func(unit string) bool {
 	return exec.Command("systemctl", "is-active", "--quiet", unit).Run() == nil
 }
 
-// ctlHealthJSON runs nyxveilctl health and returns stdout (overridable in tests).
+// ctlStatusJSON runs nyxveilctl status and returns stdout (overridable in tests).
+var ctlStatusJSON = func() ([]byte, error) {
+	return exec.Command("nyxveilctl", "status").CombinedOutput()
+}
+
+// ctlHealthJSON retained for configure/tests that still probe /health.
 var ctlHealthJSON = func() ([]byte, error) {
 	return exec.Command("nyxveilctl", "health").CombinedOutput()
 }
@@ -353,40 +390,118 @@ var controlSocketReady = func() bool {
 	return err == nil && !st.IsDir()
 }
 
-func verifyServiceHealth(seconds int) bool {
-	// Require consecutive healthy samples so we do not accept a transient
-	// systemctl "active" during a restart loop before the process dies again.
+func capturePreUpdateBaseline(seconds int) (health.Baseline, filemeta.TLSOwnershipSnapshot, error) {
+	var zero health.Baseline
+	var tls filemeta.TLSOwnershipSnapshot
+	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
+	var last error
+	for time.Now().Before(deadline) {
+		if runtime.GOOS != "windows" {
+			if !serviceActive("nyxveil-server") || !controlSocketReady() {
+				last = fmt.Errorf("service/socket not ready")
+				time.Sleep(time.Second)
+				continue
+			}
+		}
+		out, err := ctlStatusJSON()
+		if err != nil {
+			last = err
+			time.Sleep(time.Second)
+			continue
+		}
+		st, err := health.ParseStatusJSON(out)
+		if err != nil {
+			last = err
+			time.Sleep(time.Second)
+			continue
+		}
+		tls, _ = filemeta.CaptureTLSOwnership(paths.StateDir)
+		return health.CaptureBaseline(st), tls, nil
+	}
+	if last == nil {
+		last = fmt.Errorf("timeout")
+	}
+	return zero, tls, last
+}
+
+func verifyPostUpdateHealth(pre health.Baseline, seconds int) (health.UpdateResult, bool) {
 	const needStable = 3
 	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
 	stable := 0
+	var last health.UpdateResult
 	for time.Now().Before(deadline) {
 		time.Sleep(time.Second)
-		if !serviceActive("nyxveil-server") {
+		if !serviceActive("nyxveil-server") || !controlSocketReady() {
 			stable = 0
 			continue
 		}
-		if !controlSocketReady() {
-			stable = 0
-			continue
-		}
-		out, err := ctlHealthJSON()
+		out, err := ctlStatusJSON()
 		if err != nil {
 			stable = 0
 			continue
 		}
-		var wrap struct {
-			Healthy *bool `json:"healthy"`
+		st, err := health.ParseStatusJSON(out)
+		if err != nil {
+			stable = 0
+			continue
 		}
-		if json.Unmarshal(out, &wrap) != nil || wrap.Healthy == nil || !*wrap.Healthy {
+		last = health.EvaluatePostUpdate(pre, st)
+		if !last.OK {
 			stable = 0
 			continue
 		}
 		stable++
 		if stable >= needStable {
-			return true
+			return last, true
 		}
 	}
-	return false
+	return last, false
+}
+
+func verifyRollbackHealth(pre health.Baseline, seconds int) (health.RollbackResult, bool) {
+	const needStable = 3
+	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
+	stable := 0
+	var last health.RollbackResult
+	for time.Now().Before(deadline) {
+		time.Sleep(time.Second)
+		if !serviceActive("nyxveil-server") || !controlSocketReady() {
+			stable = 0
+			continue
+		}
+		out, err := ctlStatusJSON()
+		if err != nil {
+			stable = 0
+			continue
+		}
+		st, err := health.ParseStatusJSON(out)
+		if err != nil {
+			stable = 0
+			continue
+		}
+		last = health.EvaluateRollbackSuccess(pre, st)
+		if !last.Complete {
+			stable = 0
+			continue
+		}
+		stable++
+		if stable >= needStable {
+			return last, true
+		}
+	}
+	if last.Reason == "" {
+		last.Reason = "could not restore baseline within timeout"
+		last.Incomplete = true
+	}
+	return last, false
+}
+
+// verifyServiceHealth is the strict global-healthy gate (legacy). Prefer baseline-aware
+// verifyPostUpdateHealth / verifyRollbackHealth for updates.
+func verifyServiceHealth(seconds int) bool {
+	pre := health.Baseline{CPConnected: true, Healthy: true, DataplaneOK: true, Running: true, Accepting: true, BridgeOK: true, TLSOK: true, QUICOK: true, TUNReady: true, IdentityPresent: true}
+	_, ok := verifyPostUpdateHealth(pre, seconds)
+	return ok
 }
 
 func showConfig(args []string) error {
