@@ -16,12 +16,16 @@ import (
 //
 // Contract (see docs/NETWORKING.md):
 //
-//	{"vpn_ip":"10.66.0.2","vpn_prefix":24,"mtu":1420,"gateway":"10.66.0.1"}
+//	{"vpn_ip":"10.66.0.2","vpn_prefix":24,"mtu":1420,"gateway":"10.66.0.1","dns_servers":["203.0.113.53"]}
+//
+// dns_servers is required (≥1 IPv4). Values are operator-configured only —
+// never inferred from the TUN gateway and never hardcoded public resolvers.
 type Message struct {
-	VPNIP     string `json:"vpn_ip"`
-	VPNPrefix int    `json:"vpn_prefix"`
-	MTU       int    `json:"mtu"`
-	Gateway   string `json:"gateway"`
+	VPNIP      string   `json:"vpn_ip"`
+	VPNPrefix  int      `json:"vpn_prefix"`
+	MTU        int      `json:"mtu"`
+	Gateway    string   `json:"gateway"`
+	DNSServers []string `json:"dns_servers"`
 }
 
 // Encode marshals a Message to JSON bytes for TypeConfig.
@@ -60,11 +64,21 @@ func (m Message) Validate() error {
 	if err != nil || !gw.Is4() {
 		return fmt.Errorf("netcfg: invalid gateway %q", m.Gateway)
 	}
+	if len(m.DNSServers) == 0 {
+		return fmt.Errorf("netcfg: dns_servers required (operator-configured; fail-closed)")
+	}
+	for _, s := range m.DNSServers {
+		a, err := netip.ParseAddr(s)
+		if err != nil || !a.Is4() {
+			return fmt.Errorf("netcfg: invalid dns_servers entry %q", s)
+		}
+	}
 	return nil
 }
 
 // FromAllocation builds a Message for a client VPN IP within a subnet CIDR.
-func FromAllocation(clientIP netip.Addr, subnetCIDR string, mtu int, gateway netip.Addr) (Message, error) {
+// dnsServers must be a non-empty operator list of IPv4 resolvers.
+func FromAllocation(clientIP netip.Addr, subnetCIDR string, mtu int, gateway netip.Addr, dnsServers []string) (Message, error) {
 	prefix, err := netip.ParsePrefix(subnetCIDR)
 	if err != nil {
 		return Message{}, err
@@ -76,10 +90,16 @@ func FromAllocation(clientIP netip.Addr, subnetCIDR string, mtu int, gateway net
 	if !gateway.IsValid() {
 		gateway = prefix.Addr().Next()
 	}
-	return Message{
-		VPNIP:     clientIP.String(),
-		VPNPrefix: prefix.Bits(),
-		MTU:       mtu,
-		Gateway:   gateway.String(),
-	}, nil
+	dns := append([]string(nil), dnsServers...)
+	m := Message{
+		VPNIP:      clientIP.String(),
+		VPNPrefix:  prefix.Bits(),
+		MTU:        mtu,
+		Gateway:    gateway.String(),
+		DNSServers: dns,
+	}
+	if err := m.Validate(); err != nil {
+		return Message{}, err
+	}
+	return m, nil
 }

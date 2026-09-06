@@ -151,3 +151,21 @@ public sealed class SignedCatalogDto
     [JsonPropertyName("signature")]
     public byte[] Signature { get; set; } = Array.Empty<byte>();
 }
+
+/// <summary>
+/// Catalog Ed25519 verification public keys (never private keys).
+/// Encoding: standard Base64 of 32-byte public key — same as node ticket-keys
+/// and accepted by Frozen Core catalog.VerifyKeys after StdEncoding decode.
+/// </summary>
+public sealed class CatalogKeysResponse
+{
+    [JsonPropertyName("issuer")]
+    public string Issuer { get; set; } = string.Empty;
+
+    /// <summary>kid → standard Base64 of 32-byte Ed25519 public key.</summary>
+    [JsonPropertyName("keys")]
+    public Dictionary<string, string> Keys { get; set; } = new();
+
+    [JsonPropertyName("updated_at")]
+    public long UpdatedAt { get; set; }
+}

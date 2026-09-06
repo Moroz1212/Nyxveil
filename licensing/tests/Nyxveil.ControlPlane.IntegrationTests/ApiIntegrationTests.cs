@@ -87,6 +87,48 @@ public sealed class ApiIntegrationTests : IClassFixture<CustomWebApplicationFact
     }
 
     [Fact]
+    public async Task TestAnonymousCatalogKeysRejected()
+    {
+        var client = _factory.CreateClient();
+        var response = await client.GetAsync("/api/v1/catalog-keys");
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task TestCatalogKeysReturnsStdBase64VerificationPubs()
+    {
+        var client = _factory.CreateClient();
+        var token = await CreateLicenseTokenAsync();
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/catalog-keys");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync();
+        var keys = System.Text.Json.JsonSerializer.Deserialize<CatalogKeysResponse>(body);
+        Assert.NotNull(keys);
+        Assert.NotEmpty(keys!.Keys);
+        Assert.False(string.IsNullOrWhiteSpace(keys.Issuer));
+        foreach (var kv in keys.Keys)
+        {
+            var pub = Convert.FromBase64String(kv.Value);
+            Assert.Equal(32, pub.Length);
+        }
+
+        // Same license can fetch signed catalog that must reference one of these kids.
+        using var catReq = new HttpRequestMessage(HttpMethod.Get, "/api/v1/catalog");
+        catReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var catResp = await client.SendAsync(catReq);
+        Assert.Equal(HttpStatusCode.OK, catResp.StatusCode);
+        var catJson = await catResp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(catJson);
+        var kid = doc.RootElement.GetProperty("key_id").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(kid));
+        Assert.True(keys.Keys.ContainsKey(kid!), $"catalog key_id {kid} missing from catalog-keys");
+    }
+
+    [Fact]
     public async Task TestHealthLive()
     {
         var client = _factory.CreateClient();

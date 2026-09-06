@@ -1,0 +1,44 @@
+<Window x:Class="Nyxveil.App.LicenseWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Nyxveil — Активация"
+        Height="420" Width="420"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource Bg}"
+        Foreground="{StaticResource Fg}"
+        FontFamily="Segoe UI Variable, Segoe UI"
+        ResizeMode="NoResize">
+  <Grid Margin="28">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <TextBlock Grid.Row="0" Text="Nyxveil" FontSize="28" FontWeight="SemiBold" Margin="0,0,0,8"/>
+    <TextBlock Grid.Row="1" Text="Первый запуск — введите лицензию"
+               Opacity="0.75" Margin="0,0,0,24" TextWrapping="Wrap"/>
+
+    <TextBlock Grid.Row="2" Text="Адрес Control Plane" Margin="0,0,0,6" Opacity="0.85"/>
+    <TextBox x:Name="CpUrlBox" Grid.Row="3" Height="36" Margin="0,0,0,16"
+             Padding="8,6" FontSize="14" Background="#1A222C" Foreground="{StaticResource Fg}"
+             BorderBrush="#2A3542" CaretBrush="{StaticResource Fg}"/>
+
+    <TextBlock Grid.Row="4" Text="Лицензионный ключ" Margin="0,0,0,6" Opacity="0.85"/>
+    <TextBox x:Name="LicenseBox" Grid.Row="5" Height="36" Margin="0,0,0,12"
+             Padding="8,6" FontSize="14" Background="#1A222C" Foreground="{StaticResource Fg}"
+             BorderBrush="#2A3542" CaretBrush="{StaticResource Fg}"/>
+
+    <TextBlock x:Name="ErrorText" Grid.Row="6" Foreground="#E57373"
+               TextWrapping="Wrap" VerticalAlignment="Top" FontSize="12"/>
+
+    <Button x:Name="ActivateButton" Grid.Row="7" Content="ПРОДОЛЖИТЬ" Height="44"
+            FontSize="15" FontWeight="SemiBold" Click="ActivateButton_OnClick"
+            Background="{StaticResource Accent}" Foreground="White" BorderThickness="0"/>
+  </Grid>
+</Window>

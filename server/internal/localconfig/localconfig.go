@@ -24,13 +24,16 @@ type File struct {
 	PublicHost          string `json:"public_host,omitempty"`
 	TLSListen           string `json:"tls_listen,omitempty"`
 	QUICListen          string `json:"quic_listen,omitempty"`
-	VPNSubnetCIDR       string `json:"vpn_subnet_cidr,omitempty"`
-	HeartbeatSec        int    `json:"heartbeat_seconds,omitempty"`
-	TLSCertFile         string `json:"tls_cert_file,omitempty"`
-	TLSKeyFile          string `json:"tls_key_file,omitempty"`
-	PinnedCAFile        string `json:"pinned_ca_file,omitempty"`
-	ControlPlaneSPKIPin string `json:"control_plane_spki_pin,omitempty"` // hex SHA-256 of peer SPKI
-	UpdateURL           string `json:"update_url,omitempty"`
+	VPNSubnetCIDR       string   `json:"vpn_subnet_cidr,omitempty"`
+	DNSServers          []string `json:"dns_servers,omitempty"` // operator IPv4 resolvers for TypeConfig; required for production VPN
+	HeartbeatSec        int      `json:"heartbeat_seconds,omitempty"`
+	TLSCertFile         string   `json:"tls_cert_file,omitempty"`
+	TLSKeyFile          string   `json:"tls_key_file,omitempty"`
+	ACMEDomain          string   `json:"acme_domain,omitempty"` // Let's Encrypt FQDN (HTTP-01 on :80)
+	ACMEEmail           string   `json:"acme_email,omitempty"`
+	PinnedCAFile        string   `json:"pinned_ca_file,omitempty"`
+	ControlPlaneSPKIPin string   `json:"control_plane_spki_pin,omitempty"` // hex SHA-256 of peer SPKI
+	UpdateURL           string   `json:"update_url,omitempty"`
 }
 
 func Default() File {

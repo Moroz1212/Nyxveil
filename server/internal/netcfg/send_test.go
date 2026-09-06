@@ -14,6 +14,7 @@ func TestSendConfigLinknameResolves(t *testing.T) {
 	sess := session.New(session.DefaultConfig(false))
 	err := SendConfig(context.Background(), sess, Message{
 		VPNIP: "10.66.0.2", VPNPrefix: 24, MTU: 1420, Gateway: "10.66.0.1",
+		DNSServers: []string{"203.0.113.53"},
 	})
 	if err == nil {
 		t.Fatal("expected auth/session error without established session")

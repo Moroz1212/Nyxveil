@@ -153,6 +153,18 @@ try {
             --expected-location-id $cmeta.expected_location_id
         $catalogGoExit = $LASTEXITCODE
         if ($catalogGoExit -ne 0) { Fail "CATALOG_PRODUCTION_CS_TO_GO failed exit=$catalogGoExit" }
+
+        if (-not (Test-Path -LiteralPath (Join-Path $artifacts 'catalog-keys.json'))) {
+            Fail 'catalog-keys.json missing after CsEmit (GET /api/v1/catalog-keys encoding)'
+        }
+        & go run . verify-catalog `
+            --catalog-file (Join-Path $artifacts 'catalog.json') `
+            --keys-file (Join-Path $artifacts 'catalog-keys.json') `
+            --expected-node-id $cmeta.expected_node_id `
+            --expected-location-id $cmeta.expected_location_id
+        if ($LASTEXITCODE -ne 0) { Fail 'CATALOG_KEYS_ENDPOINT_ENCODING_TO_FROZEN failed' }
+        Write-Host 'CATALOG_KEYS_TO_FROZEN_VERIFY=PASS'
+        Ok 'Production catalog-keys encoding -> Frozen catalog.Verify'
     }
     finally { Pop-Location }
     Write-Host 'CATALOG_PRODUCTION_CS_TO_GO=PASS'

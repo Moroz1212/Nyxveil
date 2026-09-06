@@ -28,7 +28,8 @@ After AUTH succeeds and the node allocates a VPN IP — **before** `ReadLoop` �
   "vpn_ip": "10.66.0.2",
   "vpn_prefix": 24,
   "mtu": 1420,
-  "gateway": "10.66.0.1"
+  "gateway": "10.66.0.1",
+  "dns_servers": ["203.0.113.53"]
 }
 ```
 
@@ -38,8 +39,11 @@ After AUTH succeeds and the node allocates a VPN IP — **before** `ReadLoop` �
 | `vpn_prefix` | Subnet prefix length |
 | `mtu` | Tunnel MTU |
 | `gateway` | Node TUN address (typically `.1`) |
+| `dns_servers` | Operator-configured IPv4 DNS resolvers (**required**, ≥1) |
 
-Implemented in `internal/netcfg` (encode/decode) and delivered via `//go:linkname` to Frozen Core `session.sendControl` without editing `third_party/nvp`. Clients should apply the addresses before forwarding user packets. Source IP spoofing is still enforced against the allocated `vpn_ip`.
+`dns_servers` comes from `server.json` (`dns_servers` string array). It is **not** inferred from the TUN gateway and **never** defaults to public resolvers (8.8.8.8 / 1.1.1.1). Empty `dns_servers` → TypeConfig fail-closed (session not attached). A node-local DNS proxy is a separate future feature.
+
+Implemented in `internal/netcfg` (encode/decode) and delivered via `//go:linkname` to Frozen Core `session.sendControl` without editing `third_party/nvp`. Clients must apply addresses **and** DNS before forwarding user packets. Source IP spoofing is still enforced against the allocated `vpn_ip`.
 
 ## NAT
 

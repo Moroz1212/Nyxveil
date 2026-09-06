@@ -36,7 +36,8 @@ type Config struct {
 	EnableTLS  bool
 	EnableQUIC bool
 	SubnetCIDR string
-	Gateway    string // optional; default node .1 from subnet
+	Gateway    string   // optional; default node .1 from subnet
+	DNSServers []string // operator-configured IPv4 DNS; required when SubnetCIDR set
 }
 
 // Gate decides whether new sessions may be accepted.
@@ -390,10 +391,18 @@ func (s *Server) activateAllocatedSession(ctx context.Context, sess *session.Ses
 	s.mu.Lock()
 	subnet := s.cfg.SubnetCIDR
 	mtu := s.cfg.MTU
+	dnsServers := append([]string(nil), s.cfg.DNSServers...)
 	bridge := s.bridge
 	s.mu.Unlock()
 
 	if subnet != "" {
+		if len(dnsServers) == 0 {
+			err := errors.New("listeners: dns_servers required in server config for TypeConfig (operator-configured; fail-closed)")
+			log.Printf("%v", err)
+			s.mgr.ReleaseBySession(sess)
+			_ = sess.Close(ctx)
+			return err
+		}
 		nodeAddr, err := sessions.NodeAddress(subnet)
 		if err != nil {
 			log.Printf("listeners: TypeConfig node address: %v", err)
@@ -401,7 +410,7 @@ func (s *Server) activateAllocatedSession(ctx context.Context, sess *session.Ses
 			_ = sess.Close(ctx)
 			return err
 		}
-		msg, err := netcfg.FromAllocation(rec.VPNIP, subnet, mtu, nodeAddr.Addr())
+		msg, err := netcfg.FromAllocation(rec.VPNIP, subnet, mtu, nodeAddr.Addr(), dnsServers)
 		if err != nil {
 			log.Printf("listeners: TypeConfig encode: %v", err)
 			s.mgr.ReleaseBySession(sess)

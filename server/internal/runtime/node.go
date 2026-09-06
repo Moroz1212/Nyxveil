@@ -33,6 +33,7 @@ import (
 	"github.com/nyxveil/server/internal/localconfig"
 	"github.com/nyxveil/server/internal/metrics"
 	"github.com/nyxveil/server/internal/nodeauth"
+	"github.com/nyxveil/server/internal/nodetls"
 	"github.com/nyxveil/server/internal/paths"
 	"github.com/nyxveil/server/internal/revocation"
 	"github.com/nyxveil/server/internal/sessions"
@@ -433,6 +434,7 @@ func (n *Node) Start(parent context.Context) error {
 		EnableTLS:  n.enableTLS,
 		EnableQUIC: n.enableQUIC,
 		SubnetCIDR: cfg.VPNSubnetCIDR,
+		DNSServers: append([]string(nil), cfg.DNSServers...),
 	}
 	srv := listeners.New(lnCfg, n, n.sessions, bridge)
 	srv.SetUnknownKIDHook(func(kid string) {
@@ -464,6 +466,10 @@ func (n *Node) Start(parent context.Context) error {
 
 	n.wg.Add(1)
 	go n.loop(ctx)
+	if strings.TrimSpace(cfg.ACMEDomain) != "" {
+		n.wg.Add(1)
+		go n.acmeRenewLoop(ctx)
+	}
 	return nil
 }
 
@@ -877,15 +883,36 @@ func (n *Node) loadTLSCert(cfg localconfig.File) (tls.Certificate, error) {
 	if keyFile == "" {
 		keyFile = paths.TLSKey()
 	}
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err == nil {
+	dest := nodetls.Paths{CertFile: certFile, KeyFile: keyFile}
+
+	if domain := strings.TrimSpace(cfg.ACMEDomain); domain != "" {
+		stateDir := filepath.Join(filepath.Dir(keyFile), "acme")
+		cert, _, _, pinChanged, err := nodetls.IssueOrRenew(context.Background(), nodetls.ACMEConfig{
+			Domain:     domain,
+			Email:      strings.TrimSpace(cfg.ACMEEmail),
+			StateDir:   stateDir,
+			AccountKey: filepath.Join(stateDir, "acme-account.key"),
+			Dest:       dest,
+			Replace:    false,
+		})
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("runtime: ACME TLS for %s: %w", domain, err)
+		}
+		if pinChanged {
+			log.Printf("runtime: ACME SPKI changed — re-register so Control Plane catalog pin matches")
+		}
 		return cert, nil
 	}
-	if !errors.Is(err, os.ErrNotExist) && !os.IsNotExist(err) {
-		if _, statErr := os.Stat(certFile); statErr == nil {
+
+	// Prefer existing on-disk material (operator-provided) — never overwrite here.
+	if nodetls.Exists(dest) {
+		cert, err := nodetls.Load(dest)
+		if err != nil {
 			return tls.Certificate{}, fmt.Errorf("runtime: load TLS cert: %w", err)
 		}
+		return cert, nil
 	}
+
 	serverName := cfg.ServerName
 	if serverName == "" {
 		serverName = cfg.PublicHost
@@ -893,11 +920,73 @@ func (n *Node) loadTLSCert(cfg localconfig.File) (tls.Certificate, error) {
 	if serverName == "" {
 		serverName = "nyxveil-node"
 	}
-	log.Printf("runtime: generating self-signed TLS certificate for %s", serverName)
-	if err := generateSelfSigned(certFile, keyFile, serverName); err != nil {
+	log.Printf("runtime: no TLS material and no acme_domain — generating self-signed leaf for %s (Windows SystemTrust clients will fail until a trusted cert is installed)", serverName)
+	if err := nodetls.GenerateSelfSignedDev(dest, serverName, false); err != nil {
 		return tls.Certificate{}, err
 	}
-	return tls.LoadX509KeyPair(certFile, keyFile)
+	return nodetls.Load(dest)
+}
+
+// acmeRenewLoop periodically renews Let's Encrypt certificates and reloads listeners
+// without rewriting server.json. Stable leaf key keeps SPKI pin constant when possible.
+func (n *Node) acmeRenewLoop(ctx context.Context) {
+	defer n.wg.Done()
+	ticker := time.NewTicker(12 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n.mu.RLock()
+			cfg := *n.local
+			n.mu.RUnlock()
+			if strings.TrimSpace(cfg.ACMEDomain) == "" {
+				continue
+			}
+			cert, prevPin, newPin, pinChanged, err := n.issueACME(cfg)
+			if err != nil {
+				log.Printf("runtime: ACME renew: %v", err)
+				continue
+			}
+			if n.listen != nil {
+				n.listen.UpdateCert(cert)
+				if err := n.listen.StartTLS(n.runCtx); err != nil {
+					log.Printf("runtime: TLS reload after ACME: %v", err)
+				}
+				if err := n.listen.StartQUIC(n.runCtx); err != nil {
+					log.Printf("runtime: QUIC reload after ACME: %v", err)
+				}
+			}
+			if pinChanged {
+				log.Printf("runtime: ACME SPKI changed (was present=%v) — updating Control Plane registration", len(prevPin) > 0)
+				_ = newPin
+				if _, err := n.Register(ctx, ""); err != nil {
+					log.Printf("runtime: re-register after SPKI change failed: %v (catalog pin may be stale until re-register succeeds)", err)
+				}
+			}
+		}
+	}
+}
+
+func (n *Node) issueACME(cfg localconfig.File) (cert tls.Certificate, prevPin, newPin []byte, pinChanged bool, err error) {
+	certFile := cfg.TLSCertFile
+	keyFile := cfg.TLSKeyFile
+	if certFile == "" {
+		certFile = paths.TLSCert()
+	}
+	if keyFile == "" {
+		keyFile = paths.TLSKey()
+	}
+	stateDir := filepath.Join(filepath.Dir(keyFile), "acme")
+	return nodetls.IssueOrRenew(context.Background(), nodetls.ACMEConfig{
+		Domain:     strings.TrimSpace(cfg.ACMEDomain),
+		Email:      strings.TrimSpace(cfg.ACMEEmail),
+		StateDir:   stateDir,
+		AccountKey: filepath.Join(stateDir, "acme-account.key"),
+		Dest:       nodetls.Paths{CertFile: certFile, KeyFile: keyFile},
+		Replace:    false,
+	})
 }
 
 func generateSelfSigned(certFile, keyFile, serverName string) error {

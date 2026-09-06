@@ -110,14 +110,15 @@ func verifyCatalog(args []string) error {
 	catalogFile := fs.String("catalog-file", "", "")
 	pubHex := fs.String("pubkey-hex", "", "")
 	kid := fs.String("kid", "", "")
+	keysFile := fs.String("keys-file", "", "catalog-keys JSON (issuer/keys/updated_at); std Base64 pubs")
 	expectedNode := fs.String("expected-node-id", "node-ams-1", "")
 	expectedLoc := fs.String("expected-location-id", "loc-ams", "")
 	noCandidates := fs.Bool("expect-no-candidates", false, "")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *catalogFile == "" || *pubHex == "" || *kid == "" {
-		return fmt.Errorf("verify-catalog requires --catalog-file --pubkey-hex --kid")
+	if *catalogFile == "" {
+		return fmt.Errorf("verify-catalog requires --catalog-file")
 	}
 	raw, err := os.ReadFile(*catalogFile)
 	if err != nil {
@@ -127,13 +128,47 @@ func verifyCatalog(args []string) error {
 	if err != nil {
 		return err
 	}
-	pub, err := decodeKey32(*pubHex)
-	if err != nil {
-		return err
+
+	v := catalog.VerifyKeys{Keys: map[string]ed25519.PublicKey{}}
+	if *keysFile != "" {
+		keysRaw, err := os.ReadFile(*keysFile)
+		if err != nil {
+			return err
+		}
+		var envelope struct {
+			Keys map[string]string `json:"keys"`
+		}
+		if err := json.Unmarshal(keysRaw, &envelope); err != nil {
+			return fmt.Errorf("catalog-keys json: %w", err)
+		}
+		if len(envelope.Keys) == 0 {
+			return fmt.Errorf("catalog-keys: empty keys")
+		}
+		for id, b64 := range envelope.Keys {
+			pub, err := base64.StdEncoding.DecodeString(b64)
+			if err != nil {
+				return fmt.Errorf("catalog-keys key %s: std base64 decode: %w", id, err)
+			}
+			if len(pub) != ed25519.PublicKeySize {
+				return fmt.Errorf("catalog-keys key %s: want %d bytes, got %d", id, ed25519.PublicKeySize, len(pub))
+			}
+			v.Keys[id] = ed25519.PublicKey(pub)
+		}
+	} else {
+		if *pubHex == "" || *kid == "" {
+			return fmt.Errorf("verify-catalog requires --pubkey-hex --kid or --keys-file")
+		}
+		pub, err := decodeKey32(*pubHex)
+		if err != nil {
+			return err
+		}
+		v.Keys[*kid] = ed25519.PublicKey(pub)
 	}
-	v := catalog.VerifyKeys{Keys: map[string]ed25519.PublicKey{*kid: ed25519.PublicKey(pub)}}
 	if err := catalog.Verify(v, signed); err != nil {
 		return fmt.Errorf("catalog verify failed: %w", err)
+	}
+	if *keysFile != "" {
+		fmt.Println("CATALOG_KEYS_TO_FROZEN_VERIFY=PASS")
 	}
 	selector := failover.Selector{Catalog: signed.Catalog, Role: "user", LocationID: *expectedLoc}
 	candidates := selector.CandidateNodes()

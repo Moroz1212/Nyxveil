@@ -100,13 +100,40 @@ func TestEnableQUICAfterBothDisabled(t *testing.T) {
 	}
 }
 
+func TestTypeConfigMissingDNSFailsClosed(t *testing.T) {
+	mgr, err := sessions.New(10, "10.66.0.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(Config{SubnetCIDR: "10.66.0.0/24", MTU: 1280}, nil, mgr, nil)
+	var attached int
+	oldAttach := attachSessionFn
+	defer func() { attachSessionFn = oldAttach }()
+	attachSessionFn = func(b *datapath.Bridge, sess *session.Session) { attached++ }
+
+	sess := session.New(session.DefaultConfig(false))
+	rec, err := mgr.Allocate(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.activateAllocatedSession(context.Background(), sess, rec); err == nil {
+		t.Fatal("expected fail-closed without dns_servers")
+	}
+	if attached != 0 {
+		t.Fatalf("attached=%d", attached)
+	}
+	if mgr.Count() != 0 {
+		t.Fatalf("count=%d", mgr.Count())
+	}
+}
+
 func TestTypeConfigFailureDoesNotAttachSession(t *testing.T) {
 	mgr, err := sessions.New(10, "10.66.0.0/24")
 	if err != nil {
 		t.Fatal(err)
 	}
 	bridge := datapath.New(mgr, nil, 8)
-	s := New(Config{SubnetCIDR: "10.66.0.0/24", MTU: 1280}, nil, mgr, bridge)
+	s := New(Config{SubnetCIDR: "10.66.0.0/24", MTU: 1280, DNSServers: []string{"203.0.113.53"}}, nil, mgr, bridge)
 
 	oldSend := sendConfigFn
 	oldAttach := attachSessionFn
@@ -140,7 +167,7 @@ func TestTypeConfigFailureReleasesVPNIP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := New(Config{SubnetCIDR: "10.66.0.0/24", MTU: 1280}, nil, mgr, nil)
+	s := New(Config{SubnetCIDR: "10.66.0.0/24", MTU: 1280, DNSServers: []string{"203.0.113.53"}}, nil, mgr, nil)
 
 	oldSend := sendConfigFn
 	defer func() { sendConfigFn = oldSend }()

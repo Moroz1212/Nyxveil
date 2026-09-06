@@ -15,19 +15,15 @@ import (
 
 func releaseManifestPath(t *testing.T, arch string) string {
 	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("caller")
-	}
-	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	p := filepath.Join(root, "dist", "release", "release-manifest-linux-"+arch+".json")
-	if _, err := os.Stat(p); err != nil {
-		_ = os.MkdirAll(filepath.Dir(p), 0o755)
-		url := "https://github.com/Moroz1212/Nyxveil/releases/download/server-v1.0.0/release-manifest-linux-" + arch + ".json"
-		cmd := exec.Command("curl", "-fsSL", "-o", p, url)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Skipf("production manifest missing and download failed: %v\n%s", err, out)
-		}
+	// Always fetch the published server-v1.0.0 manifest for the frozen SHA pin.
+	// Local dist/release belongs to the current VERSION being packaged and must not
+	// overwrite this regression anchor.
+	dir := t.TempDir()
+	p := filepath.Join(dir, "release-manifest-linux-"+arch+".json")
+	url := "https://github.com/Moroz1212/Nyxveil/releases/download/server-v1.0.0/release-manifest-linux-" + arch + ".json"
+	cmd := exec.Command("curl", "-fsSL", "-o", p, url)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("production server-v1.0.0 manifest download failed: %v\n%s", err, out)
 	}
 	return p
 }

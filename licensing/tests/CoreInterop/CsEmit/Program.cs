@@ -154,6 +154,18 @@ public static class Program
             expected_location_id = "loc-ams"
         }));
 
+        // Same encoding as GET /api/v1/catalog-keys (standard Base64 pubs).
+        var verificationKeys = await fx.Keys.GetVerificationKeysAsync();
+        var catalogKeys = new Dictionary<string, string>(verificationKeys.Count);
+        foreach (var k in verificationKeys)
+            catalogKeys[k.KeyId] = Convert.ToBase64String(k.PublicKey);
+        await File.WriteAllTextAsync(Path.Combine(outDir, "catalog-keys.json"), JsonSerializer.Serialize(new
+        {
+            issuer = "nyxveil-control-plane-interop",
+            keys = catalogKeys,
+            updated_at = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        }));
+
         // TestOnly role semantics artifact for harness.
         var masterSigned = await fx.Catalog.GetSignedCatalogForCallerAsync(null, fx.MasterLicenseToken);
         var userHasTest = signed.Catalog.Nodes.Any(n => n.TestOnly);

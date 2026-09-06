@@ -14,7 +14,7 @@
 # Local --binary-dir / --skip-download skips remote verify.
 set -euo pipefail
 
-readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.0.1}"
+readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.0.2}"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 # Same Ed25519 public key as internal/updater.UpdatePublicKey
 readonly PUB_HEX="f63d2c8001df3d7b2efdd171a16463260cb7190d61ef564419cc0836777d176f"
@@ -66,6 +66,12 @@ QUIC_PORT="443"
 BINARY_DIR=""
 SKIP_DOWNLOAD=0
 VPN_SUBNET="${DEFAULT_VPN_SUBNET}"
+DNS_SERVERS=()
+TLS_CERT_SRC=""
+TLS_KEY_SRC=""
+TLS_DOMAIN=""
+TLS_REPLACE=0
+ACME_EMAIL=""
 NONINTERACTIVE=0
 TEST_SELF_SIGNED=0
 CONTROL_PLANE_CA_FILE=""
@@ -91,6 +97,12 @@ Usage: install.sh [options]
   --binary-dir DIR             Local directory with nyxveil-server + nyxveilctl
   --skip-download              Do not fetch release binaries (requires --binary-dir)
   --vpn-subnet CIDR            VPN client subnet (default 10.66.0.0/24)
+  --dns-servers IP[,IP...]     Operator DNS resolvers for TypeConfig (required for client DNS)
+  --tls-cert PATH              Operator-provided fullchain PEM (copied; not overwritten on repair)
+  --tls-key PATH               Operator-provided private key PEM (0600)
+  --tls-domain FQDN            ACME (Let's Encrypt HTTP-01 :80); reuses stable key for SPKI stability
+  --tls-email EMAIL            Optional ACME contact email
+  --tls-replace                Replace existing tls.crt/tls.key when installing operator/ACME material
   --control-plane-ca-file PATH Pin Control Plane CA (written as pinned_ca_file)
   --control-plane-spki-pin HEX Pin peer SPKI SHA-256 (control_plane_spki_pin)
   --test-self-signed           Allow test/self-signed TLS mode (--test-mode on register)
@@ -122,6 +134,15 @@ parse_args() {
       --binary-dir) BINARY_DIR="${2:-}"; shift 2 ;;
       --skip-download) SKIP_DOWNLOAD=1; shift ;;
       --vpn-subnet) VPN_SUBNET="${2:-}"; shift 2 ;;
+      --dns-servers)
+        IFS=',' read -r -a DNS_SERVERS <<< "${2:-}"
+        shift 2
+        ;;
+      --tls-cert) TLS_CERT_SRC="${2:-}"; shift 2 ;;
+      --tls-key) TLS_KEY_SRC="${2:-}"; shift 2 ;;
+      --tls-domain) TLS_DOMAIN="${2:-}"; shift 2 ;;
+      --tls-email) ACME_EMAIL="${2:-}"; shift 2 ;;
+      --tls-replace) TLS_REPLACE=1; shift ;;
       --control-plane-ca-file) CONTROL_PLANE_CA_FILE="${2:-}"; shift 2 ;;
       --control-plane-spki-pin) CONTROL_PLANE_SPKI_PIN="${2:-}"; shift 2 ;;
       --test-self-signed) TEST_SELF_SIGNED=1; shift ;;
@@ -814,12 +835,16 @@ EOF
 }
 
 install_nftables() {
+  local acme_line=""
+  if [[ -n "${TLS_DOMAIN}" ]]; then
+    acme_line=$'    tcp dport 80 ct state new accept comment "nyxveil-acme-http01"\n'
+  fi
   cat > "${NFT_FILE}" <<EOF
 # Managed by Nyxveil installer — table inet nyxveil only
 table inet nyxveil {
   chain input {
     type filter hook input priority filter - 10; policy accept;
-    tcp dport ${TLS_PORT} ct state new accept comment "nyxveil-tls"
+${acme_line}    tcp dport ${TLS_PORT} ct state new accept comment "nyxveil-tls"
     udp dport ${QUIC_PORT} ct state new accept comment "nyxveil-quic"
   }
 
@@ -978,9 +1003,24 @@ write_server_json() {
     printf '  "tls_listen": %s,\n' "$(json_str ":${TLS_PORT}")"
     printf '  "quic_listen": %s,\n' "$(json_str ":${QUIC_PORT}")"
     printf '  "vpn_subnet_cidr": %s,\n' "$(json_str "${VPN_SUBNET}")"
+    if [[ "${#DNS_SERVERS[@]}" -gt 0 ]]; then
+      printf '  "dns_servers": ['
+      local i
+      for i in "${!DNS_SERVERS[@]}"; do
+        [[ $i -gt 0 ]] && printf ', '
+        printf '%s' "$(json_str "${DNS_SERVERS[$i]}")"
+      done
+      printf '],\n'
+    fi
     printf '  "heartbeat_seconds": 30,\n'
     printf '  "tls_cert_file": %s,\n' "$(json_str "${STATE_DIR}/tls.crt")"
     printf '  "tls_key_file": %s' "$(json_str "${STATE_DIR}/tls.key")"
+    if [[ -n "${TLS_DOMAIN}" ]]; then
+      printf ',\n  "acme_domain": %s' "$(json_str "${TLS_DOMAIN}")"
+      if [[ -n "${ACME_EMAIL}" ]]; then
+        printf ',\n  "acme_email": %s' "$(json_str "${ACME_EMAIL}")"
+      fi
+    fi
     if [[ -n "${PINNED_CA_DEST}" ]]; then
       printf ',\n  "pinned_ca_file": %s' "$(json_str "${PINNED_CA_DEST}")"
     fi
@@ -992,6 +1032,22 @@ write_server_json() {
   chmod 0644 "${CONFIG_FILE}"
   chown root:root "${CONFIG_FILE}" 2>/dev/null || true
   WROTE_CONFIG=1
+
+  # Operator TLS: copy without overwrite unless --tls-replace.
+  if [[ -n "${TLS_CERT_SRC}" || -n "${TLS_KEY_SRC}" ]]; then
+    [[ -n "${TLS_CERT_SRC}" && -n "${TLS_KEY_SRC}" ]] || die "--tls-cert and --tls-key must be used together"
+    [[ -f "${TLS_CERT_SRC}" ]] || die "tls cert not found: ${TLS_CERT_SRC}"
+    [[ -f "${TLS_KEY_SRC}" ]] || die "tls key not found: ${TLS_KEY_SRC}"
+    if [[ -f "${STATE_DIR}/tls.crt" && -f "${STATE_DIR}/tls.key" && "${TLS_REPLACE}" -eq 0 ]]; then
+      log "keeping existing ${STATE_DIR}/tls.crt (use --tls-replace to overwrite)"
+    else
+      install -m 0644 "${TLS_CERT_SRC}" "${STATE_DIR}/tls.crt"
+      install -m 0600 "${TLS_KEY_SRC}" "${STATE_DIR}/tls.key"
+      chown nyxveil:nyxveil "${STATE_DIR}/tls.crt" "${STATE_DIR}/tls.key" 2>/dev/null || true
+      log "installed operator TLS material (trusted leaf required for Windows clients)"
+    fi
+  fi
+
   log "wrote ${CONFIG_FILE} (no bootstrap token)"
 }
 

@@ -49,8 +49,21 @@ sudo bash install.sh \
   --bootstrap-token "$TOKEN" \
   --public-host vpn.example.com \
   --tls-port 443 \
-  --quic-port 443
+  --quic-port 443 \
+  --dns-servers 203.0.113.53 \
+  --tls-domain vpn.example.com
 ```
+
+Operator-provided trusted cert (no ACME):
+
+```bash
+sudo bash install.sh ... \
+  --tls-cert /path/fullchain.pem \
+  --tls-key /path/privkey.pem \
+  --dns-servers 203.0.113.53
+```
+
+Existing `tls.crt`/`tls.key` are kept on repair unless `--tls-replace`. See [WINDOWS-CLIENT-TLS.md](WINDOWS-CLIENT-TLS.md).
 
 ## Offline / air-gapped
 

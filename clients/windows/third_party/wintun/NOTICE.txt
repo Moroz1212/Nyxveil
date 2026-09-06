@@ -1,0 +1,13 @@
+Wintun redistributable
+======================
+
+The Nyxveil Windows service loads wintun.dll (WireGuard Wintun) at runtime to
+create the Nyxveil TUN adapter. Ship the official Wintun DLL next to
+Nyxveil.Service.exe.
+
+Upstream: https://www.wintun.net/
+License: see the Wintun distribution LICENSE / COPYING files from the
+official release you package.
+
+Frozen Core does not embed Wintun; the client injects OpenFunc into
+core/platform/windows.Factory (ErrWintunNotLinked until the DLL binds).

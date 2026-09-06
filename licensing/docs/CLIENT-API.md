@@ -14,6 +14,7 @@ Frozen Core contracts apply: location-scoped tickets (`aud=nvp-node`), refresh n
 | POST | `/ticket/issue` | License + device | Issues location-scoped access ticket (`aud=nvp-node`) |
 | POST | `/ticket/refresh` | License + prior ticket | **Must not widen** locations/node scope |
 | GET | `/catalog` | License bearer | Signed node catalog filtered by entitlement |
+| GET | `/catalog-keys` | License bearer | Catalog Ed25519 verification public keys only (`issuer`, `keys` kid→standard Base64, `updated_at`). Same signing ring as CatalogSigner. Never private keys. |
 | GET | `/locations` | As implemented | Location list (`location_id`) |
 | GET | `/nodes` | As implemented | Node descriptors for client |
 | GET | `/version` | Public/minimal | Control Plane / API version |
