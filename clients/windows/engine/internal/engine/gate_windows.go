@@ -269,6 +269,8 @@ func RunGateCrashStep(step string) error {
 		applier.journal.Pending = nil
 		applier.journal.Applied = append(applier.journal.Applied, mut)
 		_ = applier.persist()
+		fmt.Fprintf(os.Stdout, "NYXVEIL_CRASH_CHECKPOINT=ipv6\n")
+		fmt.Fprintf(os.Stderr, "NYXVEIL_CRASH_CHECKPOINT=ipv6\n")
 		fmt.Fprintf(os.Stderr, "nyxveil: fault-inject crash after ipv6\n")
 		os.Exit(99)
 		return nil
@@ -318,6 +320,8 @@ func gateCrashIsolatedVPN(applier *WindowsApplier, plan *Plan, tunGW netip.Addr)
 	_ = applier.persist()
 	applier.mu.Unlock()
 	_ = tunGW
+	fmt.Fprintf(os.Stdout, "NYXVEIL_CRASH_CHECKPOINT=default_vpn\n")
+	fmt.Fprintf(os.Stderr, "NYXVEIL_CRASH_CHECKPOINT=default_vpn\n")
 	fmt.Fprintf(os.Stderr, "nyxveil: fault-inject crash after default_vpn\n")
 	os.Exit(99)
 	return nil

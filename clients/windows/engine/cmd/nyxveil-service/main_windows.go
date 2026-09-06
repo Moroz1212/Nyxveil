@@ -471,6 +471,7 @@ func handleConn(
 			}
 			_ = writeJSON(map[string]any{
 				"v": ipc.ProtocolVersion, "type": "gate_applied",
+				"id": env.ID, "request_id": env.ID,
 				"dest": pfx.String(), "via": via.String(),
 			})
 		case ipc.TypeGateClear:

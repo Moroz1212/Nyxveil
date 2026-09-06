@@ -10,20 +10,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// ProtectClientDataDir creates %ProgramData%\Nyxveil\Client if needed and sets a
-// protected DACL: SYSTEM + Administrators Full Control only (no inherited Users write).
-func ProtectClientDataDir() error {
-	dir := ClientDataDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	if err := rejectReparsePoint(dir); err != nil {
-		return err
-	}
-	return protectPathACL(dir)
-}
-
-// protectPathACL sets D:PAI SYSTEM+Admins Full Control on a file or directory.
+// protectPathACL sets a protected DACL: SYSTEM + Administrators Full Control only.
+// For directories, OICI inheritance is set so new children do not pick up Users write from parents.
 func protectPathACL(path string) error {
 	sidSystem, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {
@@ -33,7 +21,8 @@ func protectPathACL(path string) error {
 	if err != nil {
 		return err
 	}
-	sddl := fmt.Sprintf("D:PAI(A;;FA;;;%s)(A;;FA;;;%s)", sidSystem.String(), sidAdmins.String())
+	// D:P = DACL protected (no inherit from parent). OICI applies to directory children.
+	sddl := fmt.Sprintf("D:P(A;OICI;FA;;;%s)(A;OICI;FA;;;%s)", sidSystem.String(), sidAdmins.String())
 	sd, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
 		return fmt.Errorf("ipc: SDDL: %w", err)
@@ -50,6 +39,30 @@ func protectPathACL(path string) error {
 	)
 	if err != nil {
 		return fmt.Errorf("ipc: SetNamedSecurityInfo %s: %w", path, err)
+	}
+	return nil
+}
+
+// ProtectClientDataDir creates %ProgramData%\Nyxveil\Client if needed and sets a
+// protected DACL: SYSTEM + Administrators Full Control only (no inherited Users write).
+func ProtectClientDataDir() error {
+	dir := ClientDataDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := rejectReparsePoint(dir); err != nil {
+		return err
+	}
+	if err := protectPathACL(dir); err != nil {
+		return err
+	}
+	// Harden existing children (journal, SID file, flags) that may still carry inherited ACEs.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		_ = protectPathACL(filepath.Join(dir, e.Name()))
 	}
 	return nil
 }

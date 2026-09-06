@@ -6,7 +6,7 @@ BIN_DIR="${NYXVEIL_BIN_DIR:-/usr/local/sbin}"
 LINK_DIR="${NYXVEIL_LINK_DIR:-/usr/local/bin}"
 CTL="${BIN_DIR}/nyxveilctl"
 
-COMMANDS=(status health start stop restart logs version config update uninstall)
+COMMANDS=(status health start stop restart logs version config configure update uninstall)
 
 usage() {
   cat <<'EOF'

@@ -72,13 +72,13 @@ No remote signature check when using `--binary-dir` / `--skip-download`. No Go t
 ## Binaries
 
 - `cmd/nyxveil-server` — node daemon; `nyxveil-server --register-stdin` for Control Plane bootstrap (empty token + existing `node.key` = PoP repair)
-- `cmd/nyxveilctl` — status/health/start/stop/logs
+- `cmd/nyxveilctl` — status/health/start/stop/logs/update/**configure** (existing-node reconfigure)
 
-After install: `serv_status`, `serv_health`, `serv_logs -f`, …
+After install: `serv_status`, `serv_health`, `serv_logs -f`, `serv_configure`, …
 
 ## Docs
 
-See [docs/](docs/) — start with [INSTALL.md](docs/INSTALL.md) and [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+See [docs/](docs/) — start with [INSTALL.md](docs/INSTALL.md), [CONFIGURE.md](docs/CONFIGURE.md), and [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Frozen Protocol Core notes: [THIRD_PARTY_CORE.md](THIRD_PARTY_CORE.md).
 

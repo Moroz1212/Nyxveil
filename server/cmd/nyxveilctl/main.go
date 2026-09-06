@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nyxveil/server/internal/configure"
 	"github.com/nyxveil/server/internal/localconfig"
 	"github.com/nyxveil/server/internal/paths"
 	"github.com/nyxveil/server/internal/updater"
@@ -47,6 +50,8 @@ func main() {
 		err = runUpdate(args)
 	case "config":
 		err = showConfig(args)
+	case "configure":
+		err = runConfigure(args)
 	case "uninstall":
 		err = uninstall()
 	case "help", "-h", "--help":
@@ -71,9 +76,20 @@ Usage:
   nyxveilctl start|stop|restart
   nyxveilctl logs [-f]
   nyxveilctl update [manifest-url]
-  nyxveilctl config [path]
+  nyxveilctl config [path]              # dump server.json
+  nyxveilctl configure [flags]          # existing-node reconfigure (transactional)
+  nyxveilctl configure --status         # TLS/public_host/dns/SPKI summary
   nyxveilctl version
   nyxveilctl uninstall
+
+configure flags (existing registered node only — preserves node_id / node.key):
+  --public-host HOST
+  --dns-servers IP,IP
+  --tls-domain FQDN
+  --tls-email EMAIL
+  --tls-cert PATH --tls-key PATH [--tls-replace]
+  --expect-public-ip IP   # required for ACME DNS check when public_host is already an FQDN
+  --check | --dry-run     # validate only; no changes
 `)
 }
 
@@ -300,6 +316,57 @@ func showConfig(args []string) error {
 	}
 	fmt.Println(string(b))
 	return nil
+}
+
+func runConfigure(args []string) error {
+	fs := flag.NewFlagSet("configure", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	var (
+		publicHost   = fs.String("public-host", "", "set public_host (FQDN after TLS cutover)")
+		dnsServers   = fs.String("dns-servers", "", "comma-separated IPv4 resolvers")
+		tlsDomain    = fs.String("tls-domain", "", "ACME FQDN (Let's Encrypt HTTP-01)")
+		tlsEmail     = fs.String("tls-email", "", "ACME contact email")
+		tlsCert      = fs.String("tls-cert", "", "operator certificate PEM path")
+		tlsKey       = fs.String("tls-key", "", "operator private key PEM path")
+		tlsReplace   = fs.Bool("tls-replace", false, "overwrite existing TLS material")
+		expectIP     = fs.String("expect-public-ip", "", "expected public IP for ACME DNS check")
+		configPath   = fs.String("config", paths.ServerConfig(), "path to server.json")
+		dryRun       = fs.Bool("dry-run", false, "validate only; do not change the node")
+		check        = fs.Bool("check", false, "alias for --dry-run")
+		showStatus   = fs.Bool("status", false, "print configure/TLS status JSON and exit")
+	)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *showStatus {
+		v, err := configure.LoadStatus(*configPath)
+		if err != nil {
+			return err
+		}
+		return configure.PrintStatusJSON(v)
+	}
+	opts := configure.Options{
+		ConfigPath:   *configPath,
+		PublicHost:   *publicHost,
+		DNSServers:   *dnsServers,
+		TLSDomain:    *tlsDomain,
+		TLSEmail:     *tlsEmail,
+		TLSCert:      *tlsCert,
+		TLSKey:       *tlsKey,
+		TLSReplace:   *tlsReplace,
+		DryRun:       *dryRun || *check,
+		PublicIPHint: *expectIP,
+	}
+	if opts.PublicHost == "" && opts.DNSServers == "" && opts.TLSDomain == "" && opts.TLSCert == "" {
+		return fmt.Errorf("configure: specify at least one of --public-host, --dns-servers, --tls-domain, or --tls-cert/--tls-key (or --status)")
+	}
+	res, err := configure.Apply(context.Background(), opts)
+	if res != nil {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(res)
+	}
+	return err
 }
 
 func uninstall() error {

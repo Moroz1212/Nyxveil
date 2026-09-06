@@ -24,3 +24,4 @@ if ($pub -notmatch "WireGuard|Joshua\s+Adrian\s+Donenfeld|ZX2C4") {
   }
 }
 Write-Host "assert-wintun: OK zip=$ExpectedZip Authenticode=$($sig.Status) publisher=$pub"
+exit 0

@@ -19,35 +19,64 @@ type IPv6State struct {
 }
 
 type netAdapterBindingJSON struct {
-	Enabled       bool   `json:"Enabled"`
+	Enabled        bool   `json:"Enabled"`
 	InterfaceAlias string `json:"Name"`
-	ComponentID   string `json:"ComponentID"`
+	ComponentID    string `json:"ComponentID"`
+}
+
+// adapterNameByIfIndex resolves ifIndex → Name via Get-NetAdapter (locale-independent).
+// Get-NetAdapterBinding on Windows 10 often lacks -InterfaceIndex; use -Name instead.
+func adapterNameByIfIndex(ifIndex uint32) (string, error) {
+	script := fmt.Sprintf(
+		`$ErrorActionPreference='Stop'; `+
+			`$a = Get-NetAdapter -ErrorAction Stop | Where-Object { $_.ifIndex -eq %d } | Select-Object -First 1; `+
+			`if (-not $a) { throw "no adapter for ifIndex %d" }; `+
+			`Write-Output $a.Name`,
+		ifIndex, ifIndex,
+	)
+	out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("winnet: resolve adapter Name for ifIndex %d: %w (%s)", ifIndex, err, strings.TrimSpace(string(out)))
+	}
+	name := strings.TrimSpace(string(out))
+	if name == "" {
+		return "", fmt.Errorf("winnet: empty adapter Name for ifIndex %d", ifIndex)
+	}
+	return name, nil
+}
+
+func escapePSSingleQuoted(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
 }
 
 // CaptureIPv6State uses structured PowerShell Get-NetAdapterBinding (locale-independent).
-// Does not parse localized netsh text.
+// Resolves ifIndex → Name first; does not use unsupported -InterfaceIndex on binding cmdlets.
 func CaptureIPv6State(ifIndex uint32) (IPv6State, error) {
 	st := IPv6State{InterfaceIndex: ifIndex}
 	if ifIndex == 0 {
 		return st, nil
 	}
+	name, err := adapterNameByIfIndex(ifIndex)
+	if err != nil {
+		return st, err
+	}
+	st.InterfaceName = name
 	script := fmt.Sprintf(
 		`$ErrorActionPreference='Stop'; `+
-			`Get-NetAdapterBinding -InterfaceIndex %d -ComponentID ms_tcpip6 -ErrorAction Stop | `+
+			`Get-NetAdapterBinding -Name '%s' -ComponentID ms_tcpip6 -ErrorAction Stop | `+
 			`Select-Object Enabled,Name,ComponentID | ConvertTo-Json -Compress`,
-		ifIndex,
+		escapePSSingleQuoted(name),
 	)
 	out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
 	if err != nil {
-		return st, fmt.Errorf("winnet: Get-NetAdapterBinding ms_tcpip6: %w (%s)", err, strings.TrimSpace(string(out)))
+		return st, fmt.Errorf("winnet: Get-NetAdapterBinding ms_tcpip6 Name=%q: %w (%s)", name, err, strings.TrimSpace(string(out)))
 	}
 	raw := strings.TrimSpace(string(out))
 	if raw == "" {
-		return st, fmt.Errorf("winnet: empty Get-NetAdapterBinding output for ifIndex %d", ifIndex)
+		return st, fmt.Errorf("winnet: empty Get-NetAdapterBinding output for ifIndex %d Name=%q", ifIndex, name)
 	}
 	var one netAdapterBindingJSON
 	if err := json.Unmarshal([]byte(raw), &one); err != nil {
-		// PowerShell may emit a single-object array
 		var many []netAdapterBindingJSON
 		if err2 := json.Unmarshal([]byte(raw), &many); err2 != nil || len(many) == 0 {
 			return st, fmt.Errorf("winnet: parse binding JSON: %v / %v (%s)", err, err2, raw)
@@ -56,14 +85,16 @@ func CaptureIPv6State(ifIndex uint32) (IPv6State, error) {
 	}
 	st.Captured = true
 	st.Enabled = one.Enabled
-	st.InterfaceName = one.InterfaceAlias
+	if one.InterfaceAlias != "" {
+		st.InterfaceName = one.InterfaceAlias
+	}
 	return st, nil
 }
 
 // ListActiveEgressIfIndexes returns ifIndex of Up adapters excluding the Nyxveil tunnel
 // and loopback/virtual tunnel classes (locale-independent structured PowerShell).
 func ListActiveEgressIfIndexes(excludeAlias string) ([]uint32, error) {
-	excl := strings.ReplaceAll(excludeAlias, "'", "''")
+	excl := escapePSSingleQuoted(excludeAlias)
 	script := fmt.Sprintf(
 		`$ErrorActionPreference='Stop'; `+
 			`$ex='%s'; `+
@@ -112,24 +143,27 @@ func CaptureAllEgressIPv6(excludeAlias string) ([]IPv6State, error) {
 	return out, nil
 }
 
-
 // SetIPv6Enabled enables or disables the ms_tcpip6 binding via PowerShell cmdlets
-// (locale-independent; no netsh human text).
+// using -Name (supported on Windows 10); no localized netsh text.
 func SetIPv6Enabled(ifIndex uint32, enabled bool) error {
 	if ifIndex == 0 {
 		return nil
+	}
+	name, err := adapterNameByIfIndex(ifIndex)
+	if err != nil {
+		return err
 	}
 	cmdlet := "Disable-NetAdapterBinding"
 	if enabled {
 		cmdlet = "Enable-NetAdapterBinding"
 	}
 	script := fmt.Sprintf(
-		`$ErrorActionPreference='Stop'; %s -InterfaceIndex %d -ComponentID ms_tcpip6 -ErrorAction Stop`,
-		cmdlet, ifIndex,
+		`$ErrorActionPreference='Stop'; %s -Name '%s' -ComponentID ms_tcpip6 -ErrorAction Stop`,
+		cmdlet, escapePSSingleQuoted(name),
 	)
 	out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("winnet: %s ms_tcpip6: %w (%s)", cmdlet, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("winnet: %s ms_tcpip6 Name=%q: %w (%s)", cmdlet, name, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -165,7 +199,6 @@ func DNSServersOnInterface(ifIndex uint32) ([]string, error) {
 	if err := json.Unmarshal([]byte(raw), &many); err != nil {
 		var one string
 		if err2 := json.Unmarshal([]byte(raw), &one); err2 != nil {
-			// bare string without quotes from ConvertTo-Json single value
 			if !strings.HasPrefix(raw, "[") && !strings.HasPrefix(raw, "{") {
 				return []string{strings.Trim(raw, `"`)}, nil
 			}
@@ -180,7 +213,7 @@ func DNSServersOnInterface(ifIndex uint32) ([]string, error) {
 func InterfaceIndexByAlias(alias string) (uint32, error) {
 	script := fmt.Sprintf(
 		`$ErrorActionPreference='Stop'; (Get-NetAdapter -Name '%s' -ErrorAction Stop).ifIndex`,
-		strings.ReplaceAll(alias, "'", "''"),
+		escapePSSingleQuoted(alias),
 	)
 	out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
 	if err != nil {

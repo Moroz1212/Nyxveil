@@ -48,3 +48,4 @@ if (-not $foundZip) {
   Write-Host "assert-frozen-core: zip not in tree; vendored third_party/nvp + doc SHA enforced"
 }
 Write-Host "assert-frozen-core: OK $Expected"
+exit 0

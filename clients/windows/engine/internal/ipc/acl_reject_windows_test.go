@@ -15,6 +15,19 @@ import (
 // Unauthorized SID (well-known Null SID is broad? Use a synthetic non-current SID).
 // S-1-5-21-0-0-0-1001 is an arbitrary domain user SID that is not the current process.
 func TestListenSecureRejectsUnauthorizedUser(t *testing.T) {
+	// Production pipe DACL grants Builtin Administrators. An Admin (elevated or not)
+	// dial always succeeds even when the authorized-user SID is a different identity.
+	// Ordinary-user denial is proven by final-windows-gate OTHER_USER_REJECT (UserB).
+	token := windows.GetCurrentProcessToken()
+	if token.IsElevated() {
+		t.Skip("elevated Admin is authorized by production pipe DACL; UserB denial covered by elevated gate")
+	}
+	if sidAdmins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid); err == nil {
+		if member, err := token.IsMember(sidAdmins); err == nil && member {
+			t.Skip("Administrators member is authorized by production pipe DACL; UserB denial covered by elevated gate")
+		}
+	}
+
 	other := "S-1-5-21-3623811015-3361044348-30300820-1013"
 	sddl, err := ipc.SDDLForSIDs(other)
 	if err != nil {

@@ -18,6 +18,9 @@ func crashAfter(step string) {
 	if want == "" || !strings.EqualFold(want, step) {
 		return
 	}
+	// Distinctive markers for elevated gate (must appear before intentional exit 99).
+	fmt.Fprintf(os.Stderr, "NYXVEIL_CRASH_CHECKPOINT=%s\n", step)
+	fmt.Fprintf(os.Stdout, "NYXVEIL_CRASH_CHECKPOINT=%s\n", step)
 	fmt.Fprintf(os.Stderr, "nyxveil: fault-inject crash after %s\n", step)
 	os.Exit(99)
 }

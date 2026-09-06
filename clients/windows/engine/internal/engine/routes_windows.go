@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -399,12 +400,23 @@ func undoMutation(m recoverylog.Mutation) error {
 func (w *WindowsApplier) RecoverOnStartup() error {
 	j, err := recoverylog.Read(w.JournalPath)
 	if err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil
+		}
+		// Fail-closed: unreadable journal must not allow service readiness.
+		return fmt.Errorf("routes: read recovery journal: %w", err)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.journal = *j
-	return w.rollbackLocked(&Plan{})
+	if err := w.rollbackLocked(&Plan{}); err != nil {
+		return fmt.Errorf("routes: recovery refuse ready (dirty journal): %w", err)
+	}
+	// Belt-and-suspenders: journal must be gone after successful restore.
+	if _, statErr := os.Stat(w.JournalPath); statErr == nil {
+		return fmt.Errorf("routes: recovery refuse ready: journal still present after restore")
+	}
+	return nil
 }
 
 func run(name string, args ...string) error {

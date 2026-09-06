@@ -14,7 +14,7 @@
 # Local --binary-dir / --skip-download skips remote verify.
 set -euo pipefail
 
-readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.0.2}"
+readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.0.3}"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 # Same Ed25519 public key as internal/updater.UpdatePublicKey
 readonly PUB_HEX="f63d2c8001df3d7b2efdd171a16463260cb7190d61ef564419cc0836777d176f"
@@ -1198,7 +1198,7 @@ install_serv_wrappers() {
   if [[ -n "${SCRIPT_DIR}" ]]; then
     wrap="${SCRIPT_DIR}/../scripts/serv_wrappers.sh"
   fi
-  cmds=(status health start stop restart logs version config update uninstall)
+  cmds=(status health start stop restart logs version config configure update uninstall)
   mkdir -p "${LINK_DIR}"
 
   # Prefer repo script when present (offline tarball). curl|bash uses embedded list.
@@ -1237,10 +1237,14 @@ print_success() {
     serv_health
     serv_restart
     serv_update
+    serv_configure --status
     serv_logs
     serv_version
 
-  Or: nyxveilctl status | health | logs | update | version
+  Or: nyxveilctl status | health | configure | logs | update | version
+
+  Existing-node TLS/DNS cutover (no bootstrap token):
+    see docs/CONFIGURE.md  (serv_configure / nyxveilctl configure)
 
 ========================================================================
 EOF
