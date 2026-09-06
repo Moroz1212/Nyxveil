@@ -169,7 +169,10 @@ public sealed class CatalogService : ICatalogService
                     Capacity = cfg is not null ? Math.Min(n.Capacity, cfg.Capacity) : n.Capacity,
                     CurrentSessions = n.CurrentSessions,
                     LastSeen = n.LastSeenAt ?? default,
-                    Endpoints = n.Endpoints.Where(e => e.Enabled).OrderBy(e => e.Priority)
+                    Endpoints = n.Endpoints.Where(e => e.Enabled)
+                        .GroupBy(e => $"{e.Host}|{e.Port}|{MapIpFamily(e.AddressFamily)}", StringComparer.OrdinalIgnoreCase)
+                        .Select(g => g.OrderBy(e => e.Priority).First())
+                        .OrderBy(e => e.Priority)
                         .Select(e => new EndpointDto
                         {
                             Host = e.Host,

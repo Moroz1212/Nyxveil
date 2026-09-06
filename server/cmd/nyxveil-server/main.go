@@ -70,7 +70,7 @@ func main() {
 	}
 	log.Printf("nyxveil-server %s running", version.ServerVersion)
 	<-ctx.Done()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	_ = node.Shutdown(shutdownCtx)
 	log.Println("shutdown complete")

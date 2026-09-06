@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/nyxveil/nvp/core/auth/ticket"
 	"github.com/nyxveil/nvp/core/authhandler"
@@ -276,8 +277,13 @@ func (s *Server) Reconcile(parent context.Context) error {
 	return nil
 }
 
-// Stop closes listeners and waits for accept loops.
+// Stop closes listeners and waits briefly for accept loops (bounded).
 func (s *Server) Stop() {
+	s.StopWithTimeout(2 * time.Second)
+}
+
+// StopWithTimeout closes listeners and waits up to d for accept loops.
+func (s *Server) StopWithTimeout(d time.Duration) {
 	s.mu.Lock()
 	if !s.running {
 		s.mu.Unlock()
@@ -291,7 +297,19 @@ func (s *Server) Stop() {
 	if cancel != nil {
 		cancel()
 	}
-	s.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	if d <= 0 {
+		d = 2 * time.Second
+	}
+	select {
+	case <-done:
+	case <-time.After(d):
+		log.Printf("listeners: stop wait timed out after %s", d)
+	}
 }
 
 // Running reports whether Start/Reconcile has marked the server running.

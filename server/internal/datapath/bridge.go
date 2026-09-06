@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/nyxveil/nvp/core/session"
 	"github.com/nyxveil/server/internal/sessions"
@@ -76,8 +77,13 @@ func (b *Bridge) Start(parent context.Context) error {
 	return nil
 }
 
-// Stop cancels pumps and waits for goroutines.
+// Stop cancels pumps and waits (bounded) for goroutines.
 func (b *Bridge) Stop() {
+	b.StopWithTimeout(2 * time.Second)
+}
+
+// StopWithTimeout cancels pumps and waits up to d.
+func (b *Bridge) StopWithTimeout(d time.Duration) {
 	b.mu.Lock()
 	if !b.running {
 		b.mu.Unlock()
@@ -89,7 +95,19 @@ func (b *Bridge) Stop() {
 	if cancel != nil {
 		cancel()
 	}
-	b.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		b.wg.Wait()
+		close(done)
+	}()
+	if d <= 0 {
+		d = 2 * time.Second
+	}
+	select {
+	case <-done:
+	case <-time.After(d):
+		log.Printf("datapath: bridge stop wait timed out after %s", d)
+	}
 }
 
 // AttachSession wires OnData: validate source IP, then enqueue to TUN.
@@ -164,7 +182,15 @@ func (b *Bridge) tunReader() {
 		if !ok || rec.Session == nil {
 			continue
 		}
-		if err := rec.Session.WritePacket(b.ctx, pkt); err != nil {
+		select {
+		case <-b.ctx.Done():
+			return
+		default:
+		}
+		writeCtx, cancel := context.WithTimeout(b.ctx, 250*time.Millisecond)
+		err = rec.Session.WritePacket(writeCtx, pkt)
+		cancel()
+		if err != nil {
 			log.Printf("datapath: session write: %v", err)
 		}
 	}

@@ -2,6 +2,7 @@
 package sessions
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -145,6 +146,22 @@ func (m *Manager) ReleaseBySession(sess *session.Session) {
 		return
 	}
 	m.releaseLocked(rec)
+}
+
+// CloseAll closes every active session and releases IPs. Safe during shutdown.
+func (m *Manager) CloseAll(ctx context.Context) {
+	m.mu.Lock()
+	recs := make([]*Record, 0, len(m.byID))
+	for _, rec := range m.byID {
+		recs = append(recs, rec)
+	}
+	m.mu.Unlock()
+	for _, rec := range recs {
+		if rec.Session != nil {
+			_ = rec.Session.Close(ctx)
+		}
+		m.ReleaseBySession(rec.Session)
+	}
 }
 
 // ReleaseByID frees a session by its allocated ID.

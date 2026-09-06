@@ -66,3 +66,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\update-windows.ps1 -PublishDi
 
 Preserves DB, DPAPI secrets, DataProtection keys, port/NAT/firewall, nodes/licenses.
 No DB schema migration required for TLS configure.
+
+## Update 1.0.5 → 1.0.6
+
+Same `update-windows.ps1` path. Restarts only `NyxveilControlPlane`.
+Fixes same-node re-register so catalog refreshes `server_version` / `server_name` / SPKI / endpoints.
+See [`RELEASE-1.0.6.md`](RELEASE-1.0.6.md).

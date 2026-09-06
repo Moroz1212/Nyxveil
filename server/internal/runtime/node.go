@@ -252,11 +252,18 @@ func (n *Node) Register(ctx context.Context, bootstrapToken string) (*controlpla
 				af = "ipv6"
 			}
 		}
-		// Register both TLS and QUIC endpoints with correct ports when enabled.
-		req.Endpoints = append(req.Endpoints,
-			controlplane.Endpoint{Host: host, Port: tlsPort, AddressFamily: af, Priority: 1, Enabled: true},
-			controlplane.Endpoint{Host: host, Port: quicPort, AddressFamily: af, Priority: 2, Enabled: true},
-		)
+		// One catalog endpoint per (host,port). TLS+QUIC sharing :443 must not
+		// create duplicate identical endpoint rows; profiles come from transports.
+		if tlsPort == quicPort {
+			req.Endpoints = append(req.Endpoints,
+				controlplane.Endpoint{Host: host, Port: tlsPort, AddressFamily: af, Priority: 1, Enabled: true},
+			)
+		} else {
+			req.Endpoints = append(req.Endpoints,
+				controlplane.Endpoint{Host: host, Port: tlsPort, AddressFamily: af, Priority: 1, Enabled: true},
+				controlplane.Endpoint{Host: host, Port: quicPort, AddressFamily: af, Priority: 2, Enabled: true},
+			)
+		}
 	}
 
 	resp, err := n.cp.Register(ctx, req)
@@ -484,46 +491,79 @@ func (n *Node) Available() bool {
 	return n.sessions.Available()
 }
 
-// Shutdown stops listeners, datapath, and background loops.
-// Order matters: close TUN before waiting on bridge pumps (Read blocks until FD close).
+// Shutdown stops listeners, datapath, and background loops with a hard bound.
+// Every wait is timed; never block past ctx / internal phase budgets (well under
+// systemd TimeoutStopSec=20).
 func (n *Node) Shutdown(ctx context.Context) error {
 	if !n.running.Swap(false) {
 		return nil
 	}
+	log.Printf("shutdown phase=signal")
 	n.accepting.Store(false)
 
-	// Stop accepting sessions / close VPN listeners first.
-	if n.listen != nil {
-		n.listen.Stop()
-	}
-	if n.ctl != nil {
-		_ = n.ctl.Stop()
+	phase := func(name string, fn func()) {
+		log.Printf("shutdown phase=%s", name)
+		fn()
 	}
 
-	// Cancel CP workers (heartbeat / revocation / ticket keys / ACME).
-	if n.cancel != nil {
-		n.cancel()
-	}
+	phase("sessions_closing", func() {
+		shCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		n.sessions.CloseAll(shCtx)
+	})
 
-	// Unblock TUN read loop before Bridge.Stop waits on it.
-	if n.tunDev != nil {
-		_ = n.tunDev.Close()
-		n.tunReady.Store(false)
-	}
-	if n.bridge != nil {
-		n.bridge.Stop()
-		n.bridgeOK.Store(false)
-	}
+	phase("listeners_closed", func() {
+		if n.listen != nil {
+			n.listen.StopWithTimeout(1500 * time.Millisecond)
+		}
+	})
 
-	done := make(chan struct{})
-	go func() {
-		n.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
+	phase("control_socket_stopped", func() {
+		if n.ctl != nil {
+			_ = n.ctl.Stop()
+		}
+	})
+
+	phase("context_cancelled", func() {
+		if n.cancel != nil {
+			n.cancel()
+		}
+	})
+
+	phase("tun_closed", func() {
+		if n.tunDev != nil {
+			_ = n.tunDev.Close()
+			n.tunReady.Store(false)
+		}
+	})
+
+	phase("bridge_stopped", func() {
+		if n.bridge != nil {
+			n.bridge.StopWithTimeout(1500 * time.Millisecond)
+			n.bridgeOK.Store(false)
+		}
+	})
+
+	phase("workers_wait", func() {
+		done := make(chan struct{})
+		go func() {
+			n.wg.Wait()
+			close(done)
+		}()
+		waitCtx := ctx
+		if waitCtx == nil {
+			var cancel context.CancelFunc
+			waitCtx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+		}
+		select {
+		case <-done:
+		case <-waitCtx.Done():
+			log.Printf("shutdown phase=workers_wait timed out")
+		}
+	})
+
+	log.Printf("shutdown phase=complete")
 	return nil
 }
 
@@ -953,7 +993,7 @@ func (n *Node) acmeRenewLoop(ctx context.Context) {
 			if strings.TrimSpace(cfg.ACMEDomain) == "" {
 				continue
 			}
-			cert, prevPin, newPin, pinChanged, err := n.issueACME(cfg)
+			cert, prevPin, newPin, pinChanged, err := n.issueACME(ctx, cfg)
 			if err != nil {
 				log.Printf("runtime: ACME renew: %v", err)
 				continue
@@ -978,7 +1018,7 @@ func (n *Node) acmeRenewLoop(ctx context.Context) {
 	}
 }
 
-func (n *Node) issueACME(cfg localconfig.File) (cert tls.Certificate, prevPin, newPin []byte, pinChanged bool, err error) {
+func (n *Node) issueACME(ctx context.Context, cfg localconfig.File) (cert tls.Certificate, prevPin, newPin []byte, pinChanged bool, err error) {
 	certFile := cfg.TLSCertFile
 	keyFile := cfg.TLSKeyFile
 	if certFile == "" {
@@ -988,7 +1028,10 @@ func (n *Node) issueACME(cfg localconfig.File) (cert tls.Certificate, prevPin, n
 		keyFile = paths.TLSKey()
 	}
 	stateDir := filepath.Join(filepath.Dir(keyFile), "acme")
-	return nodetls.IssueOrRenew(context.Background(), nodetls.ACMEConfig{
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return nodetls.IssueOrRenew(ctx, nodetls.ACMEConfig{
 		Domain:     strings.TrimSpace(cfg.ACMEDomain),
 		Email:      strings.TrimSpace(cfg.ACMEEmail),
 		StateDir:   stateDir,
