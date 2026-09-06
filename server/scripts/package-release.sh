@@ -68,6 +68,10 @@ package_arch() {
 package_arch amd64
 package_arch arm64
 
+# Legacy bootstrap helper (CLI-only replace for ≤1.0.4 updaters).
+cp -a "${ROOT}/scripts/bootstrap-cli-update.sh" "${DIST}/bootstrap-cli-update.sh"
+chmod 0755 "${DIST}/bootstrap-cli-update.sh"
+
 # Sign manifests (fail-closed unless SKIP_SIGN=1 for local unsigned experiments).
 if [[ "${SKIP_SIGN:-0}" == "1" ]]; then
   echo "SKIP_SIGN=1 — not writing signed manifests" >&2
@@ -89,9 +93,11 @@ fi
     nyxveil-server-linux-amd64 nyxveilctl-linux-amd64 \
     nyxveil-server-linux-arm64 nyxveilctl-linux-arm64 \
     release-manifest-linux-amd64.json release-manifest-linux-arm64.json \
+    bootstrap-cli-update.sh \
     2>/dev/null > SHA256SUMS || sha256sum \
     nyxveil-server-linux-amd64 nyxveilctl-linux-amd64 \
-    nyxveil-server-linux-arm64 nyxveilctl-linux-arm64 > SHA256SUMS
+    nyxveil-server-linux-arm64 nyxveilctl-linux-arm64 \
+    release-manifest-linux-amd64.json release-manifest-linux-arm64.json > SHA256SUMS
 )
 
 # Tarballs for offline --binary-dir
@@ -108,21 +114,22 @@ Canonical release assets (exact names):
   nyxveil-server-linux-{amd64,arm64}
   nyxveilctl-linux-{amd64,arm64}
   release-manifest-linux-{amd64,arm64}.json
+  bootstrap-cli-update.sh
   SHA256SUMS
+
+Legacy upgrade from 1.0.3/1.0.4 (broken updater) — DO NOT run serv_update first:
+  1) Verify SHA256SUMS for bootstrap-cli-update.sh
+  2) sudo bash bootstrap-cli-update.sh --version ${VERSION} --then-update
+  See docs/LEGACY-UPDATE.md
+
+Normal update (1.0.5+ nodes):
+  sudo nyxveilctl update
+  # or: sudo serv_update
 
 Offline install (example amd64):
   tar -xzf nyxveil-server-${VERSION}-linux-amd64.tar.gz
   sudo ./linux-amd64/installer/install.sh --binary-dir ./linux-amd64 --skip-download \\
     --control-plane https://example --location x --name y --public-host z --bootstrap-token "\$TOKEN"
-
-curl|bash install with SelfSignedPinned Control Plane (SPKI pin, no CA file):
-  curl -fsSL https://raw.githubusercontent.com/Moroz1212/Nyxveil/main/server/installer/install.sh | sudo bash -s -- \\
-    --control-plane https://42mou.ru:8443 \\
-    --control-plane-spki-pin <PIN> \\
-    --location ... --name ... --public-host ... --bootstrap-token "\$TOKEN"
-
-Update (arch-aware default manifest, no args):
-  sudo nyxveilctl update
 EOF
 
 echo "Packaged ${TAG} in ${DIST}"

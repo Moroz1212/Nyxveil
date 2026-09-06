@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/nyxveil/server/internal/configure"
+	"github.com/nyxveil/server/internal/filemeta"
 	"github.com/nyxveil/server/internal/localconfig"
 	"github.com/nyxveil/server/internal/paths"
 	"github.com/nyxveil/server/internal/updater"
@@ -48,6 +49,8 @@ func main() {
 		err = journalctl(args)
 	case "update":
 		err = runUpdate(args)
+	case "bootstrap-cli":
+		err = runBootstrapCLI(args)
 	case "config":
 		err = showConfig(args)
 	case "configure":
@@ -76,11 +79,17 @@ Usage:
   nyxveilctl start|stop|restart
   nyxveilctl logs [-f]
   nyxveilctl update [manifest-url]
+  nyxveilctl bootstrap-cli --version 1.0.5 [--then-update]
   nyxveilctl config [path]              # dump server.json
   nyxveilctl configure [flags]          # existing-node reconfigure (transactional)
   nyxveilctl configure --status         # TLS/public_host/dns/SPKI summary
   nyxveilctl version
   nyxveilctl uninstall
+
+bootstrap-cli (legacy ≤1.0.4 updaters):
+  Replace ONLY /usr/local/sbin/nyxveilctl from a signed release.
+  Does not stop the server or touch TLS/config/identity.
+  Prefer scripts/bootstrap-cli-update.sh on nodes that still run ctl 1.0.3.
 
 configure flags (existing registered node only — preserves node_id / node.key):
   --public-host HOST
@@ -203,6 +212,54 @@ func resolveManifestURL(args []string) (string, error) {
 	return updater.DefaultManifestURL(), nil
 }
 
+func runBootstrapCLI(args []string) error {
+	fs := flag.NewFlagSet("bootstrap-cli", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	versionFlag := fs.String("version", "1.0.5", "target server-vVERSION release")
+	manifestURL := fs.String("manifest-url", "", "override signed manifest URL")
+	ctlPath := fs.String("ctl-path", "", "nyxveilctl install path (default beside nyxveil-server)")
+	thenUpdate := fs.Bool("then-update", false, "after CLI replace, run full nyxveilctl update")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	bin, err := os.Executable()
+	if err != nil {
+		bin = paths.BinaryPath()
+	}
+	server := paths.BinaryPath()
+	if _, err := os.Stat(server); err != nil {
+		server = filepath.Join(filepath.Dir(bin), "nyxveil-server")
+	}
+	dest := *ctlPath
+	if dest == "" {
+		dest = filepath.Join(filepath.Dir(server), "nyxveilctl")
+	}
+	url := strings.TrimSpace(*manifestURL)
+	if url == "" {
+		url = updater.ManifestURLForVersion(*versionFlag)
+	}
+
+	fmt.Printf("bootstrap-cli: verifying signed manifest %s (CLI-only; server untouched)\n", url)
+	res, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
+		ManifestURL: url,
+		WantVersion: *versionFlag,
+		CtlPath:     dest,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("bootstrap-cli: installed nyxveilctl %s sha256=%s (replaced=%v)\n", res.Version, res.NewSHA, res.Replaced)
+	fmt.Println("bootstrap-cli: nyxveil-server / TLS / server.json / identity were NOT modified")
+
+	if *thenUpdate {
+		fmt.Println("bootstrap-cli: launching fixed updater…")
+		return runUpdate([]string{url})
+	}
+	fmt.Printf("next: sudo %s update\n", dest)
+	return nil
+}
+
 func runUpdate(args []string) error {
 	manifestURL, err := resolveManifestURL(args)
 	if err != nil {
@@ -236,25 +293,28 @@ func runUpdate(args []string) error {
 	u := updater.New(server, paths.PreviousBinary(), paths.RollbackMarker())
 	u.ExtraBinaries = map[string]string{"nyxveilctl": ctlPath}
 	u.ExtraPrev = map[string]string{"nyxveilctl": ctlPrev}
+	u.StateDir = paths.StateDir
+	u.EnforceOwnership = filemeta.EnforceRuntimeTLS
 
 	health := func() bool {
 		if runtime.GOOS == "windows" {
 			return true
 		}
 		_ = restartUnit("nyxveil-server")
-		return verifyServiceHealth(30)
+		return verifyServiceHealth(45)
 	}
 
 	if err := u.Apply(m, health); err != nil {
-		// After Apply rolls binaries back, the running process may still be the
-		// failed new version — always restart the restored previous binaries.
+		// After Apply rolls binaries + TLS metadata back, restart previous and
+		// require real health (socket + /health), not merely systemctl active.
 		if runtime.GOOS != "windows" && isUpdateRollback(err) {
-			fmt.Println("update failed; restoring previous binaries and restarting service…")
+			fmt.Println("update failed; restoring previous binaries/TLS ownership and restarting service…")
+			_ = filemeta.EnforceRuntimeTLS(paths.StateDir)
 			_ = restartUnit("nyxveil-server")
-			if verifyServiceHealth(30) {
+			if verifyServiceHealth(45) {
 				return fmt.Errorf("%w; previous version restarted and healthy", err)
 			}
-			return fmt.Errorf("%w; previous version restarted but still unhealthy", err)
+			return fmt.Errorf("%w; ROLLBACK INCOMPLETE: previous version restarted but still unhealthy (check TLS ownership under %s)", err, paths.StateDir)
 		}
 		return err
 	}
@@ -285,20 +345,42 @@ func isUpdateRollback(err error) bool {
 	return strings.Contains(msg, "rolled back") || strings.Contains(msg, "health check failed")
 }
 
+// controlSocketReady reports whether the node control socket exists (overridable in tests).
+var controlSocketReady = func() bool {
+	st, err := os.Stat(paths.ControlSocket())
+	return err == nil && !st.IsDir()
+}
+
 func verifyServiceHealth(seconds int) bool {
-	for i := 0; i < seconds; i++ {
+	// Require consecutive healthy samples so we do not accept a transient
+	// systemctl "active" during a restart loop before the process dies again.
+	const needStable = 3
+	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
+	stable := 0
+	for time.Now().Before(deadline) {
 		time.Sleep(time.Second)
 		if !serviceActive("nyxveil-server") {
+			stable = 0
+			continue
+		}
+		if !controlSocketReady() {
+			stable = 0
 			continue
 		}
 		out, err := ctlHealthJSON()
 		if err != nil {
+			stable = 0
 			continue
 		}
 		var wrap struct {
 			Healthy *bool `json:"healthy"`
 		}
-		if json.Unmarshal(out, &wrap) == nil && wrap.Healthy != nil && *wrap.Healthy {
+		if json.Unmarshal(out, &wrap) != nil || wrap.Healthy == nil || !*wrap.Healthy {
+			stable = 0
+			continue
+		}
+		stable++
+		if stable >= needStable {
 			return true
 		}
 	}

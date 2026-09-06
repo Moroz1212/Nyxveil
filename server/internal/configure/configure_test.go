@@ -89,7 +89,11 @@ func TestMergePreservesIdentity(t *testing.T) {
 }
 
 func TestAtomicSaveRollbackRoundTrip(t *testing.T) {
-	dir := t.TempDir()
+	dir, err := os.MkdirTemp("", "nyxveil-atomic-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	path := filepath.Join(dir, "server.json")
 	cfg := &localconfig.File{
 		ControlPlaneURL: "https://cp.example",

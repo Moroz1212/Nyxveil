@@ -33,6 +33,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nyxveil/server/internal/filemeta"
+	"github.com/nyxveil/server/internal/paths"
 	"github.com/nyxveil/server/internal/version"
 )
 
@@ -77,6 +79,11 @@ type Updater struct {
 	MarkerPath    string
 	ExtraBinaries map[string]string // asset name → install path
 	ExtraPrev     map[string]string // asset name → previous backup path
+
+	// StateDir holds TLS + rollback marker; default paths.StateDir.
+	StateDir string
+	// EnforceOwnership after commit/rollback (overridable in tests).
+	EnforceOwnership func(stateDir string) error
 }
 
 // New returns an updater with default HTTP client and embedded public key.
@@ -193,11 +200,32 @@ func (u *Updater) Apply(m *Manifest, health HealthCheck) error {
 		return err
 	}
 
+	stateDir := u.StateDir
+	if stateDir == "" {
+		stateDir = paths.StateDir
+	}
+	tlsCert := filepath.Join(stateDir, "tls.crt")
+	tlsKey := filepath.Join(stateDir, "tls.key")
+
 	tmpDir, err := os.MkdirTemp("", "nyxveil-update-*")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(tmpDir)
+
+	snapDir := filepath.Join(tmpDir, "tls-meta-snap")
+	if err := os.MkdirAll(snapDir, 0o700); err != nil {
+		return err
+	}
+	var snaps []*filemeta.Snapshot
+	for _, name := range []string{"tls.crt", "tls.key"} {
+		src := filepath.Join(stateDir, name)
+		s, err := filemeta.SnapshotFile(src, snapDir, name)
+		if err != nil {
+			return fmt.Errorf("updater: snapshot %s: %w", name, err)
+		}
+		snaps = append(snaps, s)
+	}
 
 	type prepared struct {
 		replaceJob
@@ -226,6 +254,29 @@ func (u *Updater) Apply(m *Manifest, health HealthCheck) error {
 		_ = os.WriteFile(u.MarkerPath, []byte(m.Version), 0o644)
 	}
 
+	restoreTLS := func() error {
+		var first error
+		for _, s := range snaps {
+			if s == nil {
+				continue
+			}
+			// Ensure restore targets live TLS paths.
+			if filepath.Base(s.Meta.Path) == "tls.crt" {
+				s.Meta.Path = tlsCert
+			}
+			if filepath.Base(s.Meta.Path) == "tls.key" {
+				s.Meta.Path = tlsKey
+			}
+			if err := filemeta.Restore(s); err != nil && first == nil {
+				first = err
+			}
+		}
+		if err := u.enforceOwnership(stateDir); err != nil && first == nil {
+			first = err
+		}
+		return first
+	}
+
 	replaced := make([]replaceJob, 0, len(preparedList))
 	for _, p := range preparedList {
 		if p.dest == "" {
@@ -240,29 +291,47 @@ func (u *Updater) Apply(m *Manifest, health HealthCheck) error {
 			}
 			if _, err := os.Stat(p.dest); err == nil {
 				_ = os.Remove(p.prev)
-				if err := copyFile(p.dest, p.prev); err != nil {
+				if err := copyFilePreserve(p.dest, p.prev); err != nil {
 					_ = u.rollbackJobs(replaced)
+					_ = restoreTLS()
 					return fmt.Errorf("updater: backup %s: %w", p.name, err)
 				}
 			}
 		}
 		if err := atomicReplace(p.tmp, p.dest); err != nil {
 			_ = u.rollbackJobs(replaced)
+			_ = restoreTLS()
 			return err
 		}
 		replaced = append(replaced, p.replaceJob)
 	}
 
 	if health != nil && !health() {
-		if err := u.rollbackJobs(replaced); err != nil {
-			return fmt.Errorf("updater: health failed and rollback failed: %w", err)
+		binErr := u.rollbackJobs(replaced)
+		tlsErr := restoreTLS()
+		if binErr != nil {
+			return fmt.Errorf("updater: health failed and binary rollback failed: %w (tls restore err: %v)", binErr, tlsErr)
+		}
+		if tlsErr != nil {
+			return fmt.Errorf("updater: health check failed; binaries rolled back but TLS metadata restore failed: %w", tlsErr)
 		}
 		return fmt.Errorf("updater: health check failed; rolled back")
 	}
+	// Successful path: ensure runtime TLS is readable by service user even if a
+	// prior root-owned rewrite left bad ownership on disk.
+	_ = u.enforceOwnership(stateDir)
 	if u.MarkerPath != "" {
 		_ = os.Remove(u.MarkerPath)
 	}
 	return nil
+}
+
+func (u *Updater) enforceOwnership(stateDir string) error {
+	fn := u.EnforceOwnership
+	if fn == nil {
+		fn = filemeta.EnforceRuntimeTLS
+	}
+	return fn(stateDir)
 }
 
 func (u *Updater) planJobs(m *Manifest) ([]replaceJob, error) {
@@ -370,35 +439,50 @@ func fileSHA256(path string) (string, error) {
 func atomicReplace(src, dest string) error {
 	dir := filepath.Dir(dest)
 	tmp := filepath.Join(dir, ".nyxveil-replace-"+filepath.Base(dest))
-	if err := copyFile(src, tmp); err != nil {
+	if err := copyFilePreserve(src, tmp); err != nil {
 		return err
+	}
+	uid, gid := -1, -1
+	if prev, err := filemeta.CaptureMeta(dest); err == nil && prev.Exists {
+		uid, gid = prev.UID, prev.GID
 	}
 	if err := os.Chmod(tmp, 0o755); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
+	if uid >= 0 && gid >= 0 {
+		_ = filemeta.Chown(tmp, uid, gid)
+	}
 	if err := os.Rename(tmp, dest); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	return nil
+	return filemeta.ApplyOwnerMode(dest, uid, gid, 0o755)
 }
 
 func copyFile(src, dest string) error {
+	return copyFilePreserve(src, dest)
+}
+
+func copyFilePreserve(src, dest string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	mode := os.FileMode(0o755)
+	uid, gid := -1, -1
+	if st, err := in.Stat(); err == nil {
+		mode = st.Mode().Perm()
+		if m, err := filemeta.CaptureMeta(src); err == nil {
+			uid, gid = m.UID, m.GID
+		}
+	}
+	b, err := io.ReadAll(io.LimitReader(in, 256<<20))
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Sync()
+	return filemeta.AtomicWrite(dest, b, mode, uid, gid)
 }
 
 func isZeroKey(pub ed25519.PublicKey) bool {

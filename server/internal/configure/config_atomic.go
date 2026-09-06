@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nyxveil/server/internal/filemeta"
 	"github.com/nyxveil/server/internal/localconfig"
 )
 
@@ -92,44 +93,74 @@ func AtomicSave(path string, cfg *localconfig.File) error {
 		_ = os.Remove(tmp)
 		return err
 	}
+	// Preserve prior owner when replacing an existing config (root-run configure).
+	uid, gid := -1, -1
+	if prev, err := filemeta.CaptureMeta(path); err == nil && prev.Exists {
+		uid, gid = prev.UID, prev.GID
+	}
+	if uid >= 0 && gid >= 0 {
+		_ = filemeta.Chown(tmp, uid, gid)
+	}
+	_ = os.Chmod(tmp, mode)
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	return nil
+	return filemeta.ApplyOwnerMode(path, uid, gid, mode)
 }
 
-// SnapshotFile copies path to destPath (best-effort).
+// SnapshotFile copies path to destPath with ownership/mode metadata sidecar.
 func SnapshotFile(src, dest string) error {
-	b, err := os.ReadFile(src)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(dest, b, 0o600)
+	dir := filepath.Dir(dest)
+	name := filepath.Base(dest)
+	_, err := filemeta.SnapshotFile(src, dir, name)
+	return err
 }
 
-// RestoreFile copies snapshot back if snapshot exists.
+// RestoreFile restores snapshot content AND ownership/mode (never leave root:root TLS).
 func RestoreFile(snap, dest string) error {
-	b, err := os.ReadFile(snap)
-	if err != nil {
-		if os.IsNotExist(err) {
+	dir := filepath.Dir(snap)
+	name := filepath.Base(snap)
+	s := &filemeta.Snapshot{
+		Meta:     filemeta.Meta{Path: dest},
+		DataFile: filepath.Join(dir, name+".data"),
+		MetaFile: filepath.Join(dir, name+".meta.json"),
+	}
+	// Backward-compatible: old snapshots wrote raw bytes at dest path directly.
+	if _, err := os.Stat(s.MetaFile); os.IsNotExist(err) {
+		if _, err2 := os.Stat(snap); err2 == nil {
+			b, rerr := os.ReadFile(snap)
+			if rerr != nil {
+				return rerr
+			}
+			meta, _ := filemeta.CaptureMeta(dest)
+			uid, gid := meta.UID, meta.GID
+			mode := meta.Mode
+			if mode == 0 {
+				mode = 0o644
+			}
+			if err := filemeta.AtomicWrite(dest, b, mode, uid, gid); err != nil {
+				return err
+			}
+			// Prefer runtime TLS contract when restoring TLS material.
+			base := strings.ToLower(filepath.Base(dest))
+			if base == "tls.crt" || base == "tls.key" {
+				_ = filemeta.EnforceRuntimeTLS(filepath.Dir(dest))
+			}
 			return nil
 		}
+		return nil
+	}
+	if metaRaw, err := os.ReadFile(s.MetaFile); err == nil {
+		_ = json.Unmarshal(metaRaw, &s.Meta)
+		s.Meta.Path = dest
+	}
+	if err := filemeta.Restore(s); err != nil {
 		return err
 	}
-	mode := os.FileMode(0o644)
-	if st, err := os.Stat(dest); err == nil {
-		mode = st.Mode().Perm()
+	base := strings.ToLower(filepath.Base(dest))
+	if base == "tls.crt" || base == "tls.key" {
+		_ = filemeta.EnforceRuntimeTLS(filepath.Dir(dest))
 	}
-	tmp := dest + ".rollback.tmp"
-	if err := os.WriteFile(tmp, b, mode); err != nil {
-		return err
-	}
-	return os.Rename(tmp, dest)
+	return nil
 }

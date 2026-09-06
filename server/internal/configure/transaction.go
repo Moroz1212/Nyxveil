@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nyxveil/server/internal/filemeta"
 	"github.com/nyxveil/server/internal/localconfig"
 	"github.com/nyxveil/server/internal/nodetls"
 	"github.com/nyxveil/server/internal/paths"
@@ -131,6 +132,7 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 		_ = RestoreFile(filepath.Join(snapDir, "tls.crt"), certPath)
 		_ = RestoreFile(filepath.Join(snapDir, "tls.key"), keyPath)
 		_ = RestoreFile(filepath.Join(snapDir, "nyxveil.conf"), nftFile)
+		_ = filemeta.EnforceRuntimeTLS(filepath.Dir(keyPath))
 		if !opts.SkipFW {
 			fw := opts.ExecFirewall
 			if fw == nil {
@@ -233,6 +235,7 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 	_ = EnsureOwnerReadable(certPath, keyPath)
+	_ = filemeta.EnforceRuntimeTLS(filepath.Dir(keyPath))
 
 	if err := AtomicSave(cfgPath, &merged); err != nil {
 		return res, rollback(err)

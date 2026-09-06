@@ -29,6 +29,7 @@ REQUIRED=(
   nyxveilctl-linux-arm64
   release-manifest-linux-amd64.json
   release-manifest-linux-arm64.json
+  bootstrap-cli-update.sh
   SHA256SUMS
 )
 
@@ -39,6 +40,7 @@ HASHED=(
   nyxveilctl-linux-arm64
   release-manifest-linux-amd64.json
   release-manifest-linux-arm64.json
+  bootstrap-cli-update.sh
 )
 
 echo "==> Required assets"

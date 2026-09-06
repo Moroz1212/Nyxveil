@@ -25,6 +25,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/nyxveil/server/internal/filemeta"
 )
 
 // Paths holds on-disk certificate material.
@@ -168,20 +170,22 @@ func WriteLeafChain(dest Paths, certDERs [][]byte, key crypto.Signer) error {
 	if err := atomicWrite(tmpK, dest.KeyFile, keyPEM, 0o600); err != nil {
 		return err
 	}
+	_ = filemeta.EnforceRuntimeTLS(filepath.Dir(dest.KeyFile))
 	return nil
 }
 
 func atomicWrite(tmp, final string, data []byte, mode os.FileMode) error {
-	if err := os.WriteFile(tmp, data, mode); err != nil {
+	_ = tmp
+	uid, gid := -1, -1
+	if prev, err := filemeta.CaptureMeta(final); err == nil && prev.Exists {
+		uid, gid = prev.UID, prev.GID
+	}
+	if err := filemeta.AtomicWrite(final, data, mode, uid, gid); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, mode); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, final); err != nil {
-		_ = os.Remove(tmp)
-		return err
+	base := filepath.Base(final)
+	if base == "tls.key" || base == "tls.crt" {
+		_ = filemeta.EnforceRuntimeTLS(filepath.Dir(final))
 	}
 	return nil
 }

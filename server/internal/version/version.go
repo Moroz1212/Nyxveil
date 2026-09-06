@@ -1,7 +1,7 @@
 package version
 
 const (
-	ServerVersion   = "1.0.4"
+	ServerVersion   = "1.0.5"
 	CoreVersion     = "1.0.0"
 	ProtocolVersion = "NVP/1"
 	ProtocolNumber  = uint16(1)

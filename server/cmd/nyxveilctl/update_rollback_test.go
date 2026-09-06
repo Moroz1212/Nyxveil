@@ -49,10 +49,12 @@ func TestUpdateRollbackRestartsPreviousService(t *testing.T) {
 	oldRestart := restartUnit
 	oldActive := serviceActive
 	oldHealth := ctlHealthJSON
+	oldSock := controlSocketReady
 	defer func() {
 		restartUnit = oldRestart
 		serviceActive = oldActive
 		ctlHealthJSON = oldHealth
+		controlSocketReady = oldSock
 	}()
 
 	restartUnit = func(unit string) error {
@@ -60,6 +62,7 @@ func TestUpdateRollbackRestartsPreviousService(t *testing.T) {
 		return nil
 	}
 	serviceActive = func(unit string) bool { return true }
+	controlSocketReady = func() bool { return true }
 
 	healthPhase := 0
 	ctlHealthJSON = func() ([]byte, error) {

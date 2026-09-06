@@ -14,7 +14,7 @@
 # Local --binary-dir / --skip-download skips remote verify.
 set -euo pipefail
 
-readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.0.4}"
+readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.0.5}"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 # Same Ed25519 public key as internal/updater.UpdatePublicKey
 readonly PUB_HEX="f63d2c8001df3d7b2efdd171a16463260cb7190d61ef564419cc0836777d176f"
@@ -1216,6 +1216,15 @@ exec ${BIN_DIR}/nyxveilctl ${cmd} "\$@"
 EOF
     chmod 0755 "${LINK_DIR}/serv_${cmd}"
   done
+  cat > "${LINK_DIR}/serv_update_bootstrap" <<EOF
+#!/usr/bin/env bash
+exec ${BIN_DIR}/nyxveilctl bootstrap-cli --version "\${NYXVEIL_BOOTSTRAP_VERSION:-${NYXVEIL_VERSION}}" --then-update "\$@"
+EOF
+  chmod 0755 "${LINK_DIR}/serv_update_bootstrap"
+  # Ship legacy helper next to binaries when packaging offline trees.
+  if [[ -f "${SCRIPT_DIR}/../scripts/bootstrap-cli-update.sh" ]]; then
+    install -m 0755 "${SCRIPT_DIR}/../scripts/bootstrap-cli-update.sh" "${BIN_DIR}/nyxveil-bootstrap-cli-update" 2>/dev/null || true
+  fi
   log "installed serv_* wrappers in ${LINK_DIR}"
 }
 
@@ -1237,11 +1246,16 @@ print_success() {
     serv_health
     serv_restart
     serv_update
+    serv_update_bootstrap   # legacy ≤1.0.4: CLI-only then full update
     serv_configure --status
     serv_logs
     serv_version
 
   Or: nyxveilctl status | health | configure | logs | update | version
+
+  Legacy upgrade from 1.0.3/1.0.4 (broken updater):
+    see docs/LEGACY-UPDATE.md
+    sudo bash scripts/bootstrap-cli-update.sh --version 1.0.5 --then-update
 
   Existing-node TLS/DNS cutover (no bootstrap token):
     see docs/CONFIGURE.md  (serv_configure / nyxveilctl configure)

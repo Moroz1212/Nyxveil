@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/nyxveil/server/internal/filemeta"
 )
 
 // StagingTLSPaths returns secure next-cert paths under stateDir.
@@ -22,18 +24,9 @@ func SeedStagingKeyFromLive(liveKey, stageKey string) error {
 		}
 		return fmt.Errorf("configure: read live TLS key for staging seed: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(stageKey), 0o700); err != nil {
-		return err
-	}
-	tmp := stageKey + ".seed.tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, stageKey)
+	meta, _ := filemeta.CaptureMeta(liveKey)
+	uid, gid := meta.UID, meta.GID
+	return filemeta.AtomicWrite(stageKey, b, filemeta.RuntimeTLSKeyMode, uid, gid)
 }
 
 // CleanStaging removes staged next-cert material (never logs contents).
@@ -43,9 +36,11 @@ func CleanStaging(stageCert, stageKey string) {
 	_ = os.Remove(stageCert + ".tmp")
 	_ = os.Remove(stageKey + ".tmp")
 	_ = os.Remove(stageKey + ".seed.tmp")
+	_ = os.Remove(stageCert + ".filemeta.tmp")
+	_ = os.Remove(stageKey + ".filemeta.tmp")
 }
 
-// AtomicCommitTLS renames validated staged cert/key onto live paths.
+// AtomicCommitTLS writes validated staged cert/key onto live paths with nyxveil ownership.
 func AtomicCommitTLS(stageCert, stageKey, liveCert, liveKey string) error {
 	certPEM, err := os.ReadFile(stageCert)
 	if err != nil {
@@ -55,30 +50,17 @@ func AtomicCommitTLS(stageCert, stageKey, liveCert, liveKey string) error {
 	if err != nil {
 		return fmt.Errorf("configure: read staged key: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(liveCert), 0o700); err != nil {
+	uid, gid, _ := filemeta.LookupServiceIDs()
+	if prev, err := filemeta.CaptureMeta(liveKey); err == nil && prev.Exists && prev.UID >= 0 {
+		uid, gid = prev.UID, prev.GID
+	}
+	if err := filemeta.AtomicWrite(liveCert, certPEM, filemeta.RuntimeTLSCertMode, uid, gid); err != nil {
 		return err
 	}
-	tmpC := liveCert + ".commit.tmp"
-	tmpK := liveKey + ".commit.tmp"
-	if err := os.WriteFile(tmpC, certPEM, 0o644); err != nil {
+	if err := filemeta.AtomicWrite(liveKey, keyPEM, filemeta.RuntimeTLSKeyMode, uid, gid); err != nil {
 		return err
 	}
-	if err := os.WriteFile(tmpK, keyPEM, 0o600); err != nil {
-		_ = os.Remove(tmpC)
-		return err
-	}
-	_ = os.Chmod(tmpC, 0o644)
-	_ = os.Chmod(tmpK, 0o600)
-	if err := os.Rename(tmpC, liveCert); err != nil {
-		_ = os.Remove(tmpC)
-		_ = os.Remove(tmpK)
-		return err
-	}
-	if err := os.Rename(tmpK, liveKey); err != nil {
-		_ = os.Remove(tmpK)
-		return fmt.Errorf("configure: commit live key after cert: %w", err)
-	}
-	return nil
+	return filemeta.EnforceRuntimeTLS(filepath.Dir(liveKey))
 }
 
 // FileBytesEqual reports whether two files have identical contents (missing = unequal unless both missing).
