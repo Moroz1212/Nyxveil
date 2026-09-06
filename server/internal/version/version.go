@@ -1,7 +1,7 @@
 package version
 
 const (
-	ServerVersion   = "1.1.0"
+	ServerVersion   = "1.1.1"
 	CLIVersion      = ServerVersion
 	CoreVersion     = "1.0.0"
 	ProtocolVersion = "NVP/1"

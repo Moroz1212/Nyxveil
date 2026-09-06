@@ -29,8 +29,13 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 	requiredAssets := []string{
 		"nyxveil-server-linux-amd64",
 		"nyxveilctl-linux-amd64",
+		"nyxveil-catalog-verify-linux-amd64",
 		"nyxveil-server-linux-arm64",
 		"nyxveilctl-linux-arm64",
+		"nyxveil-catalog-verify-linux-arm64",
+		"production-gate.sh",
+		"VERSION",
+		"THIRD_PARTY_CORE.md",
 		"release-manifest-linux-amd64.json",
 		"release-manifest-linux-arm64.json",
 		"SHA256SUMS",
@@ -39,15 +44,15 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 		if !strings.Contains(wf, name) {
 			t.Errorf("workflow missing asset %s", name)
 		}
-		if !strings.Contains(pkg, name) && name != "SHA256SUMS" {
-			// package-release lists binaries; SHA256SUMS is generated
-			if strings.HasPrefix(name, "nyxveil-") && !strings.Contains(pkg, "nyxveil-server-linux-") {
-				t.Errorf("package-release missing %s", name)
-			}
-		}
 	}
-	if !strings.Contains(pkg, "SHA256SUMS") {
-		t.Error("package-release must write SHA256SUMS")
+	if !strings.Contains(pkg, "production-gate.sh") {
+		t.Error("package-release must ship production-gate.sh")
+	}
+	if !strings.Contains(sign, "production-gate") || !strings.Contains(sign, "share-version") {
+		t.Error("sign-release must include production-gate and share-version assets")
+	}
+	if !strings.Contains(inst, "production-gate") || !strings.Contains(inst, "/usr/local/share/nyxveil") {
+		t.Error("installer must install production-gate under /usr/local/share/nyxveil")
 	}
 	if !strings.Contains(inst, "release-manifest-linux-") {
 		t.Error("installer must download release-manifest-linux-${arch}.json")
@@ -55,9 +60,16 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 	if !strings.Contains(sign, "nyxveil-server-linux-") {
 		t.Error("sign-release must reference arch-qualified binary asset names in URLs")
 	}
-	// Installer consumes URLs from the signed manifest (exact GitHub asset names).
 	if !strings.Contains(inst, ".assets[") && !strings.Contains(inst, ".assets|") {
 		t.Error("installer must install from manifest asset URLs")
+	}
+	for _, name := range updater.RequiredAssetNames {
+		if name == "nyxveil-server" {
+			continue
+		}
+		if !strings.Contains(sign, name) {
+			t.Errorf("sign-release missing required asset %s", name)
+		}
 	}
 }
 

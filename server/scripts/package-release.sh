@@ -74,6 +74,15 @@ package_arch() {
 package_arch amd64
 package_arch arm64
 
+# Arch-independent auxiliary install/gate assets (hashed + signed into manifests).
+bash "${ROOT}/scripts/normalize-shell-lf.sh" "${ROOT}/scripts/production-gate.sh"
+cp -a "${ROOT}/scripts/production-gate.sh" "${DIST}/production-gate.sh"
+chmod 0755 "${DIST}/production-gate.sh"
+bash "${ROOT}/scripts/normalize-shell-lf.sh" "${DIST}/production-gate.sh"
+cp -a "${ROOT}/VERSION" "${DIST}/VERSION"
+cp -a "${ROOT}/THIRD_PARTY_CORE.md" "${DIST}/THIRD_PARTY_CORE.md"
+chmod 0644 "${DIST}/VERSION" "${DIST}/THIRD_PARTY_CORE.md"
+
 # Legacy bootstrap helper (CLI-only replace for ≤1.0.4 updaters).
 bash "${ROOT}/scripts/normalize-shell-lf.sh" "${ROOT}/scripts/bootstrap-cli-update.sh"
 cp -a "${ROOT}/scripts/bootstrap-cli-update.sh" "${DIST}/bootstrap-cli-update.sh"
@@ -93,8 +102,13 @@ else
     -base-url "${BASE_URL}" \
     -amd64-server "${BIN_SRC}/nyxveil-server-linux-amd64" \
     -amd64-ctl "${BIN_SRC}/nyxveilctl-linux-amd64" \
+    -amd64-catalog "${BIN_SRC}/nyxveil-catalog-verify-linux-amd64" \
     -arm64-server "${BIN_SRC}/nyxveil-server-linux-arm64" \
-    -arm64-ctl "${BIN_SRC}/nyxveilctl-linux-arm64"
+    -arm64-ctl "${BIN_SRC}/nyxveilctl-linux-arm64" \
+    -arm64-catalog "${BIN_SRC}/nyxveil-catalog-verify-linux-arm64" \
+    -production-gate "${DIST}/production-gate.sh" \
+    -share-version "${DIST}/VERSION" \
+    -share-third-party "${DIST}/THIRD_PARTY_CORE.md"
 fi
 
 # Secondary checksums for humans / older tooling
@@ -103,11 +117,13 @@ fi
   sha256sum \
     nyxveil-server-linux-amd64 nyxveilctl-linux-amd64 nyxveil-catalog-verify-linux-amd64 \
     nyxveil-server-linux-arm64 nyxveilctl-linux-arm64 nyxveil-catalog-verify-linux-arm64 \
+    production-gate.sh VERSION THIRD_PARTY_CORE.md \
     release-manifest-linux-amd64.json release-manifest-linux-arm64.json \
     bootstrap-cli-update.sh \
     2>/dev/null > SHA256SUMS || sha256sum \
     nyxveil-server-linux-amd64 nyxveilctl-linux-amd64 nyxveil-catalog-verify-linux-amd64 \
     nyxveil-server-linux-arm64 nyxveilctl-linux-arm64 nyxveil-catalog-verify-linux-arm64 \
+    production-gate.sh VERSION THIRD_PARTY_CORE.md \
     release-manifest-linux-amd64.json release-manifest-linux-arm64.json > SHA256SUMS
 )
 
@@ -124,18 +140,25 @@ Nyxveil server ${TAG}
 Canonical release assets (exact names):
   nyxveil-server-linux-{amd64,arm64}
   nyxveilctl-linux-{amd64,arm64}
+  nyxveil-catalog-verify-linux-{amd64,arm64}
+  production-gate.sh
+  VERSION
+  THIRD_PARTY_CORE.md
   release-manifest-linux-{amd64,arm64}.json
   bootstrap-cli-update.sh
   SHA256SUMS
+
+After update, production gate MUST exist at:
+  /usr/local/share/nyxveil/scripts/production-gate.sh
+
+Normal live final gate (ONE command):
+  sudo nyxveilctl update && \\
+  GATE_MODE=live sudo -E bash /usr/local/share/nyxveil/scripts/production-gate.sh
 
 Legacy upgrade from 1.0.3/1.0.4 (broken updater) — DO NOT run serv_update first:
   1) Verify SHA256SUMS for bootstrap-cli-update.sh (must be LF-only Unix script)
   2) sudo bash bootstrap-cli-update.sh --version ${VERSION} --then-update
   See docs/LEGACY-UPDATE.md
-
-Normal update (1.0.6+ nodes, and 1.0.5 once CLI already fixed):
-  sudo nyxveilctl update
-  # or: sudo serv_update
 
 Offline install (example amd64):
   tar -xzf nyxveil-server-${VERSION}-linux-amd64.tar.gz

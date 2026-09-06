@@ -11,9 +11,11 @@
 // Usage:
 //
 //	go run ./scripts/sign-release.go \
-//	  -version 1.0.0 -out dist/release \
-//	  -amd64-server path -amd64-ctl path -arm64-server path -arm64-ctl path \
-//	  [-base-url https://github.com/org/repo/releases/download/server-v1.0.0]
+//	  -version 1.1.1 -out dist/release \
+//	  -amd64-server path -amd64-ctl path -amd64-catalog path \
+//	  -arm64-server path -arm64-ctl path -arm64-catalog path \
+//	  -production-gate path -share-version path -share-third-party path \
+//	  [-base-url https://github.com/org/repo/releases/download/server-v1.1.1]
 package main
 
 import (
@@ -39,8 +41,13 @@ func main() {
 	minProto := flag.Uint("min-protocol", 1, "min_protocol field")
 	amd64Server := flag.String("amd64-server", "", "path to nyxveil-server-linux-amd64")
 	amd64Ctl := flag.String("amd64-ctl", "", "path to nyxveilctl-linux-amd64")
+	amd64Catalog := flag.String("amd64-catalog", "", "path to nyxveil-catalog-verify-linux-amd64")
 	arm64Server := flag.String("arm64-server", "", "path to nyxveil-server-linux-arm64")
 	arm64Ctl := flag.String("arm64-ctl", "", "path to nyxveilctl-linux-arm64")
+	arm64Catalog := flag.String("arm64-catalog", "", "path to nyxveil-catalog-verify-linux-arm64")
+	productionGate := flag.String("production-gate", "", "path to production-gate.sh")
+	shareVersion := flag.String("share-version", "", "path to VERSION share file")
+	shareThirdParty := flag.String("share-third-party", "", "path to THIRD_PARTY_CORE.md")
 	flag.Parse()
 
 	if strings.TrimSpace(*version) == "" {
@@ -61,48 +68,59 @@ func main() {
 	}
 
 	type archSpec struct {
-		goArch string
-		server string
-		ctl    string
+		goArch  string
+		server  string
+		ctl     string
+		catalog string
 	}
 	specs := []archSpec{
-		{"amd64", *amd64Server, *amd64Ctl},
-		{"arm64", *arm64Server, *arm64Ctl},
+		{"amd64", *amd64Server, *amd64Ctl, *amd64Catalog},
+		{"arm64", *arm64Server, *arm64Ctl, *arm64Catalog},
 	}
 
 	for _, s := range specs {
-		if s.server == "" || s.ctl == "" {
-			fmt.Fprintf(os.Stderr, "sign-release: skip linux/%s (paths not set)\n", s.goArch)
+		if s.server == "" || s.ctl == "" || s.catalog == "" {
+			fmt.Fprintf(os.Stderr, "sign-release: skip linux/%s (binary paths not set)\n", s.goArch)
 			continue
 		}
-		if err := writeManifest(*outDir, *version, s.goArch, *baseURL, *minCore, uint16(*minProto), s.server, s.ctl, priv); err != nil {
+		if *productionGate == "" || *shareVersion == "" || *shareThirdParty == "" {
+			fatal("production-gate, share-version, and share-third-party are required")
+		}
+		if err := writeManifest(*outDir, *version, s.goArch, *baseURL, *minCore, uint16(*minProto),
+			s.server, s.ctl, s.catalog, *productionGate, *shareVersion, *shareThirdParty, priv); err != nil {
 			fatal("linux/%s: %v", s.goArch, err)
 		}
 	}
 }
 
-func writeManifest(outDir, version, goArch, baseURL, minCore string, minProto uint16, serverPath, ctlPath string, priv ed25519.PrivateKey) error {
-	serverSum, err := fileSHA256(serverPath)
-	if err != nil {
-		return fmt.Errorf("server: %w", err)
+func writeManifest(outDir, version, goArch, baseURL, minCore string, minProto uint16,
+	serverPath, ctlPath, catalogPath, gatePath, versionPath, thirdPartyPath string, priv ed25519.PrivateKey) error {
+	type namedPath struct {
+		name string
+		path string
+		url  string
 	}
-	ctlSum, err := fileSHA256(ctlPath)
-	if err != nil {
-		return fmt.Errorf("ctl: %w", err)
+	items := []namedPath{
+		{"nyxveil-server", serverPath, baseURL + "/" + fmt.Sprintf("nyxveil-server-linux-%s", goArch)},
+		{"nyxveilctl", ctlPath, baseURL + "/" + fmt.Sprintf("nyxveilctl-linux-%s", goArch)},
+		{"nyxveil-catalog-verify", catalogPath, baseURL + "/" + fmt.Sprintf("nyxveil-catalog-verify-linux-%s", goArch)},
+		{"production-gate", gatePath, baseURL + "/production-gate.sh"},
+		{"share-version", versionPath, baseURL + "/VERSION"},
+		{"share-third-party-core", thirdPartyPath, baseURL + "/THIRD_PARTY_CORE.md"},
 	}
-
-	serverName := fmt.Sprintf("nyxveil-server-linux-%s", goArch)
-	ctlName := fmt.Sprintf("nyxveilctl-linux-%s", goArch)
 
 	m := &updater.Manifest{
 		Version:     version,
 		Arch:        "linux/" + goArch,
 		MinCore:     minCore,
 		MinProtocol: minProto,
-		Assets: []updater.Asset{
-			{Name: "nyxveil-server", SHA256: serverSum, URL: baseURL + "/" + serverName},
-			{Name: "nyxveilctl", SHA256: ctlSum, URL: baseURL + "/" + ctlName},
-		},
+	}
+	for _, item := range items {
+		sum, err := fileSHA256(item.path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", item.name, err)
+		}
+		m.Assets = append(m.Assets, updater.Asset{Name: item.name, SHA256: sum, URL: item.url})
 	}
 	updater.SignManifest(m, priv)
 
@@ -115,9 +133,8 @@ func writeManifest(outDir, version, goArch, baseURL, minCore string, minProto ui
 	if err := os.WriteFile(out, raw, 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("wrote %s (sig ok)\n", out)
+	fmt.Printf("wrote %s (sig ok, assets=%d)\n", out, len(m.Assets))
 
-	// Sanity: ParseManifest must accept what we wrote.
 	if _, err := updater.ParseManifest(raw, updater.UpdatePublicKey); err != nil {
 		return fmt.Errorf("self-verify failed (is signing key paired with UpdatePublicKey?): %w", err)
 	}

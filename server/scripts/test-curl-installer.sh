@@ -34,10 +34,15 @@ chmod +x "${TMP}/alone/install.sh"
 
 MOCK_ROOT="$(mktemp -d /tmp/nyxveil-mock-root.XXXXXX)"
 BIN_DIR="${TMP}/bins"
-mkdir -p "${BIN_DIR}"
+mkdir -p "${BIN_DIR}/scripts"
 printf '#!/bin/sh\necho mock-server\n' > "${BIN_DIR}/nyxveil-server"
 printf '#!/bin/sh\necho mock-ctl\n' > "${BIN_DIR}/nyxveilctl"
-chmod +x "${BIN_DIR}/nyxveil-server" "${BIN_DIR}/nyxveilctl"
+printf '#!/bin/sh\necho mock-catalog-verify\n' > "${BIN_DIR}/nyxveil-catalog-verify"
+printf '#!/bin/sh\necho mock-gate\n' > "${BIN_DIR}/scripts/production-gate.sh"
+printf '1.1.1\n' > "${BIN_DIR}/VERSION"
+printf '# mock frozen core\n7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b\n' > "${BIN_DIR}/THIRD_PARTY_CORE.md"
+chmod +x "${BIN_DIR}/nyxveil-server" "${BIN_DIR}/nyxveilctl" \
+  "${BIN_DIR}/nyxveil-catalog-verify" "${BIN_DIR}/scripts/production-gate.sh"
 
 # Dummy CA for pinned_ca_file write path
 CA_FILE="${TMP}/cp-ca.pem"
@@ -85,6 +90,16 @@ if [[ -f "${MOCK_ROOT}/etc/nyxveil/server.json" ]] && grep -q 'pinned_ca_file' "
   pass "pinned_ca_file written"
 else
   fail "pinned_ca_file not in server.json"
+fi
+if [[ -x "${MOCK_ROOT}/usr/local/share/nyxveil/scripts/production-gate.sh" ]]; then
+  pass "production-gate.sh installed under share/scripts"
+else
+  fail "production-gate.sh missing after mock install"
+fi
+if [[ -x "${MOCK_ROOT}/usr/local/sbin/nyxveil-catalog-verify" ]]; then
+  pass "nyxveil-catalog-verify installed"
+else
+  fail "nyxveil-catalog-verify missing after mock install"
 fi
 
 echo "== TestCurlInstallerCreatesAllServCommands =="

@@ -29,6 +29,9 @@ REQUIRED=(
   nyxveil-server-linux-arm64
   nyxveilctl-linux-arm64
   nyxveil-catalog-verify-linux-arm64
+  production-gate.sh
+  VERSION
+  THIRD_PARTY_CORE.md
   release-manifest-linux-amd64.json
   release-manifest-linux-arm64.json
   bootstrap-cli-update.sh
@@ -42,6 +45,9 @@ HASHED=(
   nyxveil-server-linux-arm64
   nyxveilctl-linux-arm64
   nyxveil-catalog-verify-linux-arm64
+  production-gate.sh
+  VERSION
+  THIRD_PARTY_CORE.md
   release-manifest-linux-amd64.json
   release-manifest-linux-arm64.json
   bootstrap-cli-update.sh
@@ -80,10 +86,15 @@ done
 echo "==> No CRLF in production shell release assets"
 bash "${ROOT}/scripts/assert-no-crlf.sh" \
   "${DIST}/bootstrap-cli-update.sh" \
+  "${DIST}/production-gate.sh" \
   "${DIST}/linux-amd64/scripts" \
   "${DIST}/linux-arm64/scripts" \
   "${DIST}/linux-amd64/installer" \
   "${DIST}/linux-arm64/installer"
+
+echo "==> production-gate.sh parses under bash and is executable"
+[[ -x "${DIST}/production-gate.sh" ]] || die "production-gate.sh must be executable"
+bash -n "${DIST}/production-gate.sh"
 
 echo "==> bootstrap-cli-update.sh parses under bash"
 bash -n "${DIST}/bootstrap-cli-update.sh"

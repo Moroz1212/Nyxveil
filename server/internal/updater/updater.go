@@ -180,6 +180,27 @@ func ArchString() string {
 
 type replaceJob struct {
 	name, url, sha, dest, prev string
+	mode                       os.FileMode
+	existed                    bool
+}
+
+// RequiredAssetNames must appear in every signed multi-asset release manifest.
+var RequiredAssetNames = []string{
+	"nyxveil-server",
+	"nyxveilctl",
+	"nyxveil-catalog-verify",
+	"production-gate",
+	"share-version",
+	"share-third-party-core",
+}
+
+func assetMode(name string) os.FileMode {
+	switch name {
+	case "share-version", "share-third-party-core":
+		return 0o644
+	default:
+		return 0o755
+	}
 }
 
 // Apply downloads assets, verifies SHA-256, replaces atomically, runs health, rolls back on failure.
@@ -244,7 +265,11 @@ func (u *Updater) Apply(m *Manifest, health HealthCheck) error {
 		if !strings.EqualFold(sum, strings.TrimSpace(j.sha)) {
 			return fmt.Errorf("updater: sha256 mismatch for %s", j.name)
 		}
-		if err := os.Chmod(tmpBin, 0o755); err != nil {
+		mode := j.mode
+		if mode == 0 {
+			mode = assetMode(j.name)
+		}
+		if err := os.Chmod(tmpBin, mode); err != nil {
 			return err
 		}
 		preparedList = append(preparedList, prepared{replaceJob: j, tmp: tmpBin})
@@ -285,12 +310,21 @@ func (u *Updater) Apply(m *Manifest, health HealthCheck) error {
 		if err := os.MkdirAll(filepath.Dir(p.dest), 0o755); err != nil {
 			return err
 		}
+		job := p.replaceJob
+		if _, err := os.Stat(p.dest); err == nil {
+			job.existed = true
+		}
+		mode := job.mode
+		if mode == 0 {
+			mode = assetMode(job.name)
+		}
+		job.mode = mode
 		if p.prev != "" {
 			if err := os.MkdirAll(filepath.Dir(p.prev), 0o755); err != nil {
 				return err
 			}
-			if _, err := os.Stat(p.dest); err == nil {
-				_ = os.Remove(p.prev)
+			_ = os.Remove(p.prev)
+			if job.existed {
 				if err := copyFilePreserve(p.dest, p.prev); err != nil {
 					_ = u.rollbackJobs(replaced)
 					_ = restoreTLS()
@@ -298,12 +332,12 @@ func (u *Updater) Apply(m *Manifest, health HealthCheck) error {
 				}
 			}
 		}
-		if err := atomicReplace(p.tmp, p.dest); err != nil {
+		if err := atomicReplaceMode(p.tmp, p.dest, mode); err != nil {
 			_ = u.rollbackJobs(replaced)
 			_ = restoreTLS()
 			return err
 		}
-		replaced = append(replaced, p.replaceJob)
+		replaced = append(replaced, job)
 	}
 
 	if health != nil && !health() {
@@ -337,6 +371,7 @@ func (u *Updater) enforceOwnership(stateDir string) error {
 func (u *Updater) planJobs(m *Manifest) ([]replaceJob, error) {
 	var jobs []replaceJob
 	if len(m.Assets) > 0 {
+		seen := map[string]bool{}
 		for _, a := range m.Assets {
 			dest, prev := "", ""
 			switch a.Name {
@@ -353,27 +388,60 @@ func (u *Updater) planJobs(m *Manifest) ([]replaceJob, error) {
 			if dest == "" {
 				continue
 			}
-			jobs = append(jobs, replaceJob{name: a.Name, url: a.URL, sha: a.SHA256, dest: dest, prev: prev})
+			jobs = append(jobs, replaceJob{
+				name: a.Name, url: a.URL, sha: a.SHA256, dest: dest, prev: prev, mode: assetMode(a.Name),
+			})
+			seen[a.Name] = true
+			if a.Name == "server" {
+				seen["nyxveil-server"] = true
+			}
 		}
 		if len(jobs) == 0 {
 			return nil, fmt.Errorf("updater: no applicable assets")
 		}
+		for _, name := range RequiredAssetNames {
+			if name == "nyxveil-server" {
+				if !seen[name] {
+					return nil, fmt.Errorf("updater: required asset %q missing from signed manifest", name)
+				}
+				continue
+			}
+			if u.ExtraBinaries == nil {
+				continue
+			}
+			if _, mapped := u.ExtraBinaries[name]; !mapped {
+				continue
+			}
+			if !seen[name] {
+				return nil, fmt.Errorf("updater: required asset %q missing from signed manifest", name)
+			}
+		}
 		return jobs, nil
 	}
-	return []replaceJob{{name: "nyxveil-server", url: m.URL, sha: m.SHA256, dest: u.BinaryPath, prev: u.PrevPath}}, nil
+	return []replaceJob{{name: "nyxveil-server", url: m.URL, sha: m.SHA256, dest: u.BinaryPath, prev: u.PrevPath, mode: 0o755}}, nil
 }
 
 func (u *Updater) rollbackJobs(jobs []replaceJob) error {
 	var first error
 	for i := len(jobs) - 1; i >= 0; i-- {
 		j := jobs[i]
+		if !j.existed {
+			if err := os.Remove(j.dest); err != nil && !os.IsNotExist(err) && first == nil {
+				first = err
+			}
+			continue
+		}
 		if j.prev == "" {
 			continue
 		}
 		if _, err := os.Stat(j.prev); err != nil {
 			continue
 		}
-		if err := atomicReplace(j.prev, j.dest); err != nil && first == nil {
+		mode := j.mode
+		if mode == 0 {
+			mode = assetMode(j.name)
+		}
+		if err := atomicReplaceMode(j.prev, j.dest, mode); err != nil && first == nil {
 			first = err
 		}
 	}
@@ -437,6 +505,13 @@ func fileSHA256(path string) (string, error) {
 }
 
 func atomicReplace(src, dest string) error {
+	return atomicReplaceMode(src, dest, 0o755)
+}
+
+func atomicReplaceMode(src, dest string, mode os.FileMode) error {
+	if mode == 0 {
+		mode = 0o755
+	}
 	dir := filepath.Dir(dest)
 	tmp := filepath.Join(dir, ".nyxveil-replace-"+filepath.Base(dest))
 	if err := copyFilePreserve(src, tmp); err != nil {
@@ -446,7 +521,7 @@ func atomicReplace(src, dest string) error {
 	if prev, err := filemeta.CaptureMeta(dest); err == nil && prev.Exists {
 		uid, gid = prev.UID, prev.GID
 	}
-	if err := os.Chmod(tmp, 0o755); err != nil {
+	if err := os.Chmod(tmp, mode); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
@@ -457,7 +532,7 @@ func atomicReplace(src, dest string) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	return filemeta.ApplyOwnerMode(dest, uid, gid, 0o755)
+	return filemeta.ApplyOwnerMode(dest, uid, gid, mode)
 }
 
 func copyFile(src, dest string) error {

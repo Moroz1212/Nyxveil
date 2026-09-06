@@ -79,8 +79,13 @@ case "${MODE}" in
   *) fail "mode" "GATE_MODE must be source|local|live" ;;
 esac
 
+EXPECTED_VERSION="1.1.1"
 VERSION="$(tr -d '[:space:]' < "${ROOT}/VERSION" 2>/dev/null || true)"
-[[ "${VERSION}" == "1.1.0" ]] || fail "version_file" "expected VERSION=1.1.0 got '${VERSION}'"
+if [[ -z "${VERSION}" ]]; then
+  # Installed layout: prefer share VERSION; fall back to binary --version output later.
+  VERSION="$(tr -d '[:space:]' < "/usr/local/share/nyxveil/VERSION" 2>/dev/null || true)"
+fi
+[[ "${VERSION}" == "${EXPECTED_VERSION}" ]] || fail "version_file" "expected VERSION=${EXPECTED_VERSION} got '${VERSION}'"
 
 if [[ -x "${ROOT}/scripts/assert-frozen-core.sh" && -d "${ROOT}/third_party/nvp" ]]; then
   bash "${ROOT}/scripts/assert-frozen-core.sh" >"${WORK}/frozen-core.txt" 2>&1 ||
@@ -97,10 +102,14 @@ if [[ "${MODE}" == "source" ]]; then
   [[ -d "${DIST}" ]] || fail "release_tree" "missing ${DIST} — run build-release + package-release first"
   bash "${ROOT}/scripts/verify-release.sh" >"${WORK}/verify-release.txt" 2>&1 ||
     fail "verify_release" "verify-release.sh failed"
-  grep -E '1\.1\.0' "${DIST}/release-manifest-linux-amd64.json" >/dev/null ||
-    fail "manifest_version" "amd64 manifest not 1.1.0"
+  grep -E "${EXPECTED_VERSION}" "${DIST}/release-manifest-linux-amd64.json" >/dev/null ||
+    fail "manifest_version" "amd64 manifest not ${EXPECTED_VERSION}"
   [[ -f "${DIST}/nyxveil-catalog-verify-linux-amd64" ]] ||
     fail "catalog_verify_asset" "nyxveil-catalog-verify-linux-amd64 missing from release"
+  [[ -f "${DIST}/production-gate.sh" ]] ||
+    fail "production_gate_asset" "production-gate.sh missing from release"
+  [[ -x "${DIST}/production-gate.sh" ]] ||
+    fail "production_gate_mode" "production-gate.sh must be executable"
   chmod 0755 "${DIST}/nyxveil-catalog-verify-linux-amd64" "${DIST}/nyxveil-catalog-verify-linux-arm64" 2>/dev/null || true
   if command -v go >/dev/null 2>&1; then
     (cd "${ROOT}" && go test ./internal/catalogverify/ ./internal/runtime/ ./internal/controlplane/ -count=1 \
@@ -128,10 +137,10 @@ fi
   fail "ctl_version" "nyxveilctl version failed"
 "${SERVER}" version 2>&1 | sanitize >>"${WORK}/versions.txt" ||
   fail "server_version" "nyxveil-server version failed"
-grep -Eq 'cli_version=1\.1\.0|nyxveilctl 1\.1\.0' "${WORK}/versions.txt" ||
-  fail "cli_version" "expected 1.1.0"
-grep -Eq 'nyxveil-server 1\.1\.0|installed_server_version=1\.1\.0|running_server_version=1\.1\.0' "${WORK}/versions.txt" ||
-  fail "server_version" "expected 1.1.0"
+grep -Eq "cli_version=${EXPECTED_VERSION}|nyxveilctl ${EXPECTED_VERSION}" "${WORK}/versions.txt" ||
+  fail "cli_version" "expected ${EXPECTED_VERSION}"
+grep -Eq "nyxveil-server ${EXPECTED_VERSION}|installed_server_version=${EXPECTED_VERSION}|running_server_version=${EXPECTED_VERSION}" "${WORK}/versions.txt" ||
+  fail "server_version" "expected ${EXPECTED_VERSION}"
 
 [[ -s "${CONFIG}" ]] || fail "config" "${CONFIG} missing or empty"
 [[ -s "${STATE_DIR}/node.key" ]] || fail "identity" "node.key missing or empty"
@@ -202,6 +211,7 @@ if [[ "${MODE}" == "live" ]]; then
   if [[ -z "${VERIFY_BIN}" ]]; then
     for cand in \
       "$(command -v nyxveil-catalog-verify || true)" \
+      "/usr/local/sbin/nyxveil-catalog-verify" \
       "${ROOT}/dist/bin/nyxveil-catalog-verify-linux-amd64" \
       "${ROOT}/dist/release/nyxveil-catalog-verify-linux-amd64" \
       "${ROOT}/dist/release/linux-amd64/nyxveil-catalog-verify"; do

@@ -14,7 +14,7 @@
 # Local --binary-dir / --skip-download skips remote verify.
 set -euo pipefail
 
-readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.0}"
+readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.1}"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 # Same Ed25519 public key as internal/updater.UpdatePublicKey
 readonly PUB_HEX="f63d2c8001df3d7b2efdd171a16463260cb7190d61ef564419cc0836777d176f"
@@ -27,6 +27,8 @@ ETC_DIR="/etc/nyxveil"
 STATE_DIR="/var/lib/nyxveil"
 RUN_DIR="/run/nyxveil"
 BIN_DIR="/usr/local/sbin"
+SHARE_DIR="/usr/local/share/nyxveil"
+SCRIPTS_DIR="${SHARE_DIR}/scripts"
 LINK_DIR="/usr/local/bin"
 SYSCTL_FILE="/etc/sysctl.d/99-nyxveil.conf"
 SERVICE_UNIT="/etc/systemd/system/nyxveil-server.service"
@@ -164,6 +166,8 @@ init_paths() {
     STATE_DIR="${prefix}/var/lib/nyxveil"
     RUN_DIR="${prefix}/run/nyxveil"
     BIN_DIR="${prefix}/usr/local/sbin"
+    SHARE_DIR="${prefix}/usr/local/share/nyxveil"
+    SCRIPTS_DIR="${SHARE_DIR}/scripts"
     SYSCTL_FILE="${prefix}/etc/sysctl.d/99-nyxveil.conf"
     SERVICE_UNIT="${prefix}/etc/systemd/system/nyxveil-server.service"
     FIREWALL_UNIT="${prefix}/etc/systemd/system/nyxveil-firewall.service"
@@ -757,6 +761,7 @@ EOF
 download_or_copy_binaries() {
   local arch tmp
   arch="$(detect_arch)"
+  mkdir -p "${BIN_DIR}" "${SCRIPTS_DIR}"
 
   if [[ -n "${BINARY_DIR}" ]]; then
     [[ -d "${BINARY_DIR}" ]] || die "binary dir not found: ${BINARY_DIR}"
@@ -764,8 +769,34 @@ download_or_copy_binaries() {
     [[ -f "${BINARY_DIR}/nyxveilctl" ]] || die "missing ${BINARY_DIR}/nyxveilctl"
     install -m 0755 "${BINARY_DIR}/nyxveil-server" "${BIN_DIR}/nyxveil-server"
     install -m 0755 "${BINARY_DIR}/nyxveilctl" "${BIN_DIR}/nyxveilctl"
+    if [[ -f "${BINARY_DIR}/nyxveil-catalog-verify" ]]; then
+      install -m 0755 "${BINARY_DIR}/nyxveil-catalog-verify" "${BIN_DIR}/nyxveil-catalog-verify"
+    elif [[ -f "${BINARY_DIR}/../nyxveil-catalog-verify-linux-${arch}" ]]; then
+      install -m 0755 "${BINARY_DIR}/../nyxveil-catalog-verify-linux-${arch}" "${BIN_DIR}/nyxveil-catalog-verify"
+    fi
+    local gate_src=""
+    for cand in \
+      "${BINARY_DIR}/scripts/production-gate.sh" \
+      "${BINARY_DIR}/../production-gate.sh" \
+      "${BINARY_DIR}/production-gate.sh"; do
+      if [[ -f "${cand}" ]]; then gate_src="${cand}"; break; fi
+    done
+    [[ -n "${gate_src}" ]] || die "missing production-gate.sh beside binary dir"
+    install -m 0755 "${gate_src}" "${SCRIPTS_DIR}/production-gate.sh"
+    local ver_src=""
+    for cand in "${BINARY_DIR}/VERSION" "${BINARY_DIR}/../VERSION"; do
+      if [[ -f "${cand}" ]]; then ver_src="${cand}"; break; fi
+    done
+    [[ -n "${ver_src}" ]] || die "missing VERSION share file beside binary dir"
+    install -m 0644 "${ver_src}" "${SHARE_DIR}/VERSION"
+    local tp_src=""
+    for cand in "${BINARY_DIR}/THIRD_PARTY_CORE.md" "${BINARY_DIR}/../THIRD_PARTY_CORE.md"; do
+      if [[ -f "${cand}" ]]; then tp_src="${cand}"; break; fi
+    done
+    [[ -n "${tp_src}" ]] || die "missing THIRD_PARTY_CORE.md beside binary dir"
+    install -m 0644 "${tp_src}" "${SHARE_DIR}/THIRD_PARTY_CORE.md"
     INSTALLED_BINARIES=1
-    log "installed binaries from ${BINARY_DIR} (no remote verify)"
+    log "installed binaries + production-gate from ${BINARY_DIR} (no remote verify)"
     return 0
   fi
 
@@ -791,6 +822,7 @@ download_or_copy_binaries() {
   [[ "${got_arch}" == "${want_arch}" ]] || die "manifest arch mismatch: have ${got_arch} want ${want_arch}"
 
   local n i name sha url dest
+  local have_server=0 have_ctl=0 have_catalog=0 have_gate=0 have_ver=0 have_tp=0
   n="$(jq -r '.assets | length' "${tmp}/manifest.json")"
   [[ "${n}" -gt 0 ]] || die "manifest has no assets"
   for ((i = 0; i < n; i++)); do
@@ -806,20 +838,46 @@ download_or_copy_binaries() {
     case "${name}" in
       nyxveil-server|server)
         install -m 0755 "${dest}" "${BIN_DIR}/nyxveil-server"
+        have_server=1
         ;;
       nyxveilctl|ctl)
         install -m 0755 "${dest}" "${BIN_DIR}/nyxveilctl"
+        have_ctl=1
+        ;;
+      nyxveil-catalog-verify)
+        install -m 0755 "${dest}" "${BIN_DIR}/nyxveil-catalog-verify"
+        have_catalog=1
+        ;;
+      production-gate)
+        install -m 0755 "${dest}" "${SCRIPTS_DIR}/production-gate.sh"
+        have_gate=1
+        ;;
+      share-version)
+        install -m 0644 "${dest}" "${SHARE_DIR}/VERSION"
+        have_ver=1
+        ;;
+      share-third-party-core)
+        install -m 0644 "${dest}" "${SHARE_DIR}/THIRD_PARTY_CORE.md"
+        have_tp=1
         ;;
       *)
         warn "ignoring unknown asset ${name}"
         ;;
     esac
   done
-  [[ -x "${BIN_DIR}/nyxveil-server" ]] || die "nyxveil-server not installed from manifest"
-  [[ -x "${BIN_DIR}/nyxveilctl" ]] || die "nyxveilctl not installed from manifest"
+  [[ "${have_server}" -eq 1 ]] || die "nyxveil-server not installed from manifest"
+  [[ "${have_ctl}" -eq 1 ]] || die "nyxveilctl not installed from manifest"
+  [[ "${have_catalog}" -eq 1 ]] || die "nyxveil-catalog-verify not installed from manifest"
+  [[ "${have_gate}" -eq 1 ]] || die "production-gate.sh not installed from manifest"
+  [[ "${have_ver}" -eq 1 ]] || die "share VERSION not installed from manifest"
+  [[ "${have_tp}" -eq 1 ]] || die "THIRD_PARTY_CORE.md not installed from manifest"
+  [[ -x "${BIN_DIR}/nyxveil-server" ]] || die "nyxveil-server not executable"
+  [[ -x "${BIN_DIR}/nyxveilctl" ]] || die "nyxveilctl not executable"
+  [[ -x "${BIN_DIR}/nyxveil-catalog-verify" ]] || die "nyxveil-catalog-verify not executable"
+  [[ -x "${SCRIPTS_DIR}/production-gate.sh" ]] || die "production-gate.sh not executable"
   rm -rf "${tmp}"
   INSTALLED_BINARIES=1
-  log "installed binaries to ${BIN_DIR} (manifest verified)"
+  log "installed binaries + gate scripts to ${BIN_DIR} and ${SCRIPTS_DIR} (manifest verified)"
 }
 
 install_sysctl() {

@@ -388,8 +388,12 @@ func runUpdate(args []string) error {
 		return err
 	}
 	u := updater.New(server, paths.PreviousBinary(), paths.RollbackMarker())
-	u.ExtraBinaries = map[string]string{"nyxveilctl": ctlPath}
-	u.ExtraPrev = map[string]string{"nyxveilctl": ctlPrev}
+	extraDest, extraPrev := paths.DefaultExtraInstallMaps()
+	// Keep ctl beside the resolved server binary when not using the default layout.
+	extraDest["nyxveilctl"] = ctlPath
+	extraPrev["nyxveilctl"] = ctlPrev
+	u.ExtraBinaries = extraDest
+	u.ExtraPrev = extraPrev
 	u.StateDir = paths.StateDir
 	u.EnforceOwnership = filemeta.EnforceRuntimeTLS
 

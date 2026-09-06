@@ -1,7 +1,7 @@
 //go:build ignore
 
 // Command verify-manifest-hashes checks release-manifest-linux-*.json asset
-// SHA-256 values against flat binaries in -dist.
+// SHA-256 values against flat files in -dist.
 package main
 
 import (
@@ -37,15 +37,11 @@ func main() {
 		if *version != "" && m.Version != *version {
 			fatal("%s: version %q want %q", manPath, m.Version, *version)
 		}
+		seen := map[string]bool{}
 		for _, a := range m.Assets {
-			var path string
-			switch a.Name {
-			case "nyxveil-server", "server":
-				path = filepath.Join(*dist, "nyxveil-server-linux-"+arch)
-			case "nyxveilctl":
-				path = filepath.Join(*dist, "nyxveilctl-linux-"+arch)
-			default:
-				fatal("unknown asset %q", a.Name)
+			path, err := resolveAssetPath(*dist, arch, a.Name)
+			if err != nil {
+				fatal("%v", err)
 			}
 			sum, err := fileSHA(path)
 			if err != nil {
@@ -54,8 +50,33 @@ func main() {
 			if !strings.EqualFold(sum, a.SHA256) {
 				fatal("%s %s: manifest=%s file=%s", arch, a.Name, a.SHA256, sum)
 			}
+			seen[a.Name] = true
+		}
+		for _, name := range updater.RequiredAssetNames {
+			if !seen[name] {
+				fatal("%s: missing required asset %q", arch, name)
+			}
 		}
 		fmt.Printf("ok %s\n", arch)
+	}
+}
+
+func resolveAssetPath(dist, arch, name string) (string, error) {
+	switch name {
+	case "nyxveil-server", "server":
+		return filepath.Join(dist, "nyxveil-server-linux-"+arch), nil
+	case "nyxveilctl":
+		return filepath.Join(dist, "nyxveilctl-linux-"+arch), nil
+	case "nyxveil-catalog-verify":
+		return filepath.Join(dist, "nyxveil-catalog-verify-linux-"+arch), nil
+	case "production-gate":
+		return filepath.Join(dist, "production-gate.sh"), nil
+	case "share-version":
+		return filepath.Join(dist, "VERSION"), nil
+	case "share-third-party-core":
+		return filepath.Join(dist, "THIRD_PARTY_CORE.md"), nil
+	default:
+		return "", fmt.Errorf("unknown asset %q", name)
 	}
 }
 
