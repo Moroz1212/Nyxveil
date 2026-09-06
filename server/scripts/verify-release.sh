@@ -88,6 +88,10 @@ done
 
 echo "==> No CRLF in production shell release assets"
 bash "${ROOT}/scripts/assert-no-crlf.sh" \
+  "${DIST}/VERSION" \
+  "${DIST}/SHA256SUMS" \
+  "${DIST}/UPLOAD-LIST-server-v${VERSION}.txt" \
+  "${DIST}/NOTES.txt" \
   "${DIST}/bootstrap-cli-update.sh" \
   "${DIST}/live-final-update.sh" \
   "${DIST}/production-gate.sh" \
@@ -95,6 +99,7 @@ bash "${ROOT}/scripts/assert-no-crlf.sh" \
   "${DIST}/linux-arm64/scripts" \
   "${DIST}/linux-amd64/installer" \
   "${DIST}/linux-arm64/installer"
+
 
 echo "==> production-gate.sh parses under bash and is executable"
 [[ -x "${DIST}/production-gate.sh" ]] || die "production-gate.sh must be executable"

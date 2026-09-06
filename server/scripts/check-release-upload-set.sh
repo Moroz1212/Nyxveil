@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="${ROOT}/dist/release"
-VERSION="$(tr -d '[:space:]' < "${ROOT}/VERSION")"
+VERSION="$(tr -d '\r[:space:]' < "${ROOT}/VERSION")"
 UPLOAD_LIST="${DIST}/UPLOAD-LIST-server-v${VERSION}.txt"
 
 die() { echo "check-release-upload-set: $*" >&2; exit 1; }
@@ -13,6 +13,7 @@ die() { echo "check-release-upload-set: $*" >&2; exit 1; }
 [[ -f "${UPLOAD_LIST}" ]] || die "missing $(basename "${UPLOAD_LIST}")"
 
 while IFS= read -r name || [[ -n "${name}" ]]; do
+  name="$(printf '%s' "${name}" | tr -d '\r')"
   [[ -n "${name}" ]] || continue
   [[ "${name}" == "$(basename "${name}")" ]] || die "upload entry must be a basename: ${name}"
   [[ -f "${DIST}/${name}" ]] || die "upload entry missing from release: ${name}"
@@ -30,10 +31,19 @@ done
 [[ -x "${DIST}/live-final-update.sh" ]] || die "live-final-update.sh is missing or not executable"
 bash -n "${DIST}/bootstrap-cli-update.sh"
 bash -n "${DIST}/live-final-update.sh"
+bash -n "${DIST}/production-gate.sh"
+
+bash "${ROOT}/scripts/assert-no-crlf.sh" \
+  "${DIST}/VERSION" \
+  "${DIST}/SHA256SUMS" \
+  "${UPLOAD_LIST}" \
+  "${DIST}/bootstrap-cli-update.sh" \
+  "${DIST}/live-final-update.sh" \
+  "${DIST}/production-gate.sh"
 
 (
   cd "${DIST}"
-  sha256sum -c SHA256SUMS >/dev/null
+  tr -d '\r' < SHA256SUMS | sha256sum -c - >/dev/null
 )
 
 # This helper parses and signature-verifies both manifests with Go ParseManifest,
@@ -41,3 +51,7 @@ bash -n "${DIST}/live-final-update.sh"
 go run "${ROOT}/scripts/verify-manifest-hashes.go" -dist "${DIST}" -version "${VERSION}" >/dev/null
 
 echo "RELEASE_UPLOAD_SET=PASS"
+
+# Consumer test: empty-dir invariant + Ed25519 trust chain against ONLY dist/release.
+go run "${ROOT}/scripts/verify-live-final-consumer.go" "${DIST}"
+echo "LIVE_FINAL_UPDATE_CONSUMER=PASS"

@@ -153,13 +153,37 @@ fi
 # Exact flat files that must be uploaded for this server release. Keep this
 # generated list adjacent to the assets so upload tooling cannot omit auxiliaries.
 UPLOAD_LIST="${DIST}/UPLOAD-LIST-server-v${VERSION}.txt"
-printf '%s\n' "${REQUIRED_UPLOADS[@]}" > "${UPLOAD_LIST}"
+# Force LF regardless of host Git autocrlf / Windows printf.
+printf '%s\n' "${REQUIRED_UPLOADS[@]}" | tr -d '\r' > "${UPLOAD_LIST}"
 chmod 0644 "${UPLOAD_LIST}"
 
-# Secondary checksums for humans / older tooling
+# Secondary checksums for humans / older tooling. Always emit LF-only text.
 (
   cd "${DIST}"
-  sha256sum "${HASHED_UPLOADS[@]}" > SHA256SUMS
+  sha256sum "${HASHED_UPLOADS[@]}" | tr -d '\r' | sed 's/ \*/  /' > SHA256SUMS
+)
+# VERSION / NOTES / upload list / checksums must be LF for Linux consumers.
+bash "${ROOT}/scripts/normalize-shell-lf.sh" \
+  "${DIST}/VERSION" \
+  "${DIST}/SHA256SUMS" \
+  "${UPLOAD_LIST}" \
+  "${DIST}/bootstrap-cli-update.sh" \
+  "${DIST}/live-final-update.sh" \
+  "${DIST}/production-gate.sh"
+bash "${ROOT}/scripts/assert-no-crlf.sh" \
+  "${DIST}/VERSION" \
+  "${DIST}/SHA256SUMS" \
+  "${UPLOAD_LIST}" \
+  "${DIST}/bootstrap-cli-update.sh" \
+  "${DIST}/live-final-update.sh" \
+  "${DIST}/production-gate.sh" \
+  "${DIST}/linux-amd64/scripts" "${DIST}/linux-arm64/scripts" \
+  "${DIST}/linux-amd64/installer" "${DIST}/linux-arm64/installer"
+
+# Validate checksum list parses under Linux-style sha256sum -c after CRLF strip.
+(
+  cd "${DIST}"
+  tr -d '\r' < SHA256SUMS | sha256sum -c - >/dev/null
 )
 
 # Tarballs for offline --binary-dir
@@ -187,22 +211,31 @@ Canonical release assets (exact names):
 After update, production gate MUST exist at:
   /usr/local/share/nyxveil/scripts/production-gate.sh
 
-Live final update (ONE command; verifies the wrapper before executing it):
+Trust model:
+  Cryptographic authenticity = embedded Ed25519 UpdatePublicKey inside
+  live-final-update.sh / bootstrap-cli-update.sh / nyxveilctl verifying the
+  signed release manifest. SHA256SUMS is corruption convenience only.
+
+Live final update (ONE command; soft integrity check then Ed25519 trust):
   BASE=https://github.com/Moroz1212/Nyxveil/releases/download/server-v${VERSION}
-  cd /tmp && curl -fsSLO "\$BASE/SHA256SUMS" "\$BASE/live-final-update.sh" && \\
-  grep ' live-final-update.sh\$' SHA256SUMS | sha256sum -c - && \\
+  cd "\$(mktemp -d)" && curl -fsSLO "\$BASE/SHA256SUMS" "\$BASE/live-final-update.sh" && \\
+  tr -d '\\r' < SHA256SUMS | grep -E ' [*]?live-final-update.sh\$' | sha256sum -c - && \\
   chmod 0755 live-final-update.sh && \\
   sudo ./live-final-update.sh --base-url "\$BASE"
 
-The verified live-final-update.sh verifies bootstrap-cli-update.sh, replaces only
-nyxveilctl first, runs the complete updater, checks required auxiliaries, then
-executes production-gate.sh. Do not run the old 1.1.1 updater first.
+live-final-update.sh is self-contained: it creates a private workdir, fetches
+VERSION + signed manifest + ctl + bootstrap, verifies the signed manifest with
+the embedded release public key, upgrades ctl only, runs full update, then
+production-gate. Do not run the old 1.1.1 updater first.
 
 Offline install (example amd64):
   tar -xzf nyxveil-server-${VERSION}-linux-amd64.tar.gz
   sudo ./linux-amd64/installer/install.sh --binary-dir ./linux-amd64 --skip-download \\
     --control-plane https://example --location x --name y --public-host z --bootstrap-token "\$TOKEN"
 EOF
+# NOTES must also be LF-only for Linux operators copying commands.
+bash "${ROOT}/scripts/normalize-shell-lf.sh" "${DIST}/NOTES.txt"
+bash "${ROOT}/scripts/assert-no-crlf.sh" "${DIST}/NOTES.txt"
 
 echo "Packaged ${TAG} in ${DIST}"
 ls -la "${DIST}"
