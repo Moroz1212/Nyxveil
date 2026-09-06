@@ -9,6 +9,59 @@ import (
 	"github.com/nyxveil/server/internal/nodetls"
 )
 
+// TLSBackup is an in-memory copy of the live pair used to undo a rotation
+// after the Control Plane advertisement has already changed.
+type TLSBackup struct {
+	cert, key  []byte
+	certExists bool
+	keyExists  bool
+}
+
+// BackupLiveTLS captures the current live TLS pair before activation.
+func BackupLiveTLS(liveCert, liveKey string) (*TLSBackup, error) {
+	b := &TLSBackup{}
+	var err error
+	b.cert, err = os.ReadFile(liveCert)
+	if err == nil {
+		b.certExists = true
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("configure: backup live cert: %w", err)
+	}
+	b.key, err = os.ReadFile(liveKey)
+	if err == nil {
+		b.keyExists = true
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("configure: backup live key: %w", err)
+	}
+	return b, nil
+}
+
+// RestoreLiveTLS atomically restores a previously captured live TLS pair.
+func RestoreLiveTLS(backup *TLSBackup, liveCert, liveKey string) error {
+	if backup == nil {
+		return fmt.Errorf("configure: nil TLS backup")
+	}
+	uid, gid, _ := filemeta.LookupServiceIDs()
+	if prev, err := filemeta.CaptureMeta(liveKey); err == nil && prev.Exists && prev.UID >= 0 {
+		uid, gid = prev.UID, prev.GID
+	}
+	if backup.certExists {
+		if err := filemeta.AtomicWrite(liveCert, backup.cert, filemeta.RuntimeTLSCertMode, uid, gid); err != nil {
+			return err
+		}
+	} else {
+		_ = os.Remove(liveCert)
+	}
+	if backup.keyExists {
+		if err := filemeta.AtomicWrite(liveKey, backup.key, filemeta.RuntimeTLSKeyMode, uid, gid); err != nil {
+			return err
+		}
+	} else {
+		_ = os.Remove(liveKey)
+	}
+	return nil
+}
+
 // StagingTLSPaths returns secure next-cert paths under stateDir.
 // Live tls.crt/tls.key stay untouched until AtomicCommitTLS.
 func StagingTLSPaths(stateDir string) (certPath, keyPath string) {

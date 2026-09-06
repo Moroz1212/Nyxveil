@@ -5,12 +5,8 @@
   Restore Nyxveil Control Plane database from a .bak file.
 
 .DESCRIPTION
-  Requires explicit -Force confirmation. Optionally stops the Windows service,
-  restores, starts service, and runs health checks. Never runs without confirmation.
-
-.PARAMETER BackupPath
-  Path to the .bak file. For remote SQL Server this must be a path visible to the
-  SQL Server service (SQL host local disk or UNC), not necessarily the Control Plane box.
+  Administrative RESTORE always connects to [master] (never the target DB session)
+  to avoid SQL Server Msg 3102 ("database is in use by this session").
 #>
 [CmdletBinding()]
 param(
@@ -21,7 +17,10 @@ param(
     [switch]$StopService,
     [switch]$UseSqlAuth,
     [string]$SqlUser = '',
-    [securestring]$SqlPassword
+    [securestring]$SqlPassword,
+    [string]$ConfirmDatabaseName = '',
+    # When set, skip safety backup / health restart (used by production-deploy rollback).
+    [switch]$AutomatedRollback
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,7 +30,7 @@ Import-Module (Join-Path $PSScriptRoot 'Nyxveil.ControlPlane.Deploy.psm1') -Forc
 Assert-Administrator
 
 if (-not $Force) {
-    throw "Refusing restore. Pass -Force and type confirmation when prompted (destructive to target database)."
+    throw "Refusing restore. Pass -Force and confirm the database name."
 }
 
 $dbSettings = Get-NyxveilDatabaseSettings
@@ -60,7 +59,10 @@ if ($UseSqlAuth -and [string]::IsNullOrWhiteSpace($SqlUser)) {
     $SqlUser = [string]$dbSettings.User
 }
 
-$typed = Read-Host "Type the database name '$Database' to confirm destructive restore"
+$typed = $ConfirmDatabaseName
+if ([string]::IsNullOrWhiteSpace($typed)) {
+    $typed = Read-Host "Type the database name '$Database' to confirm destructive restore"
+}
 if ($typed -cne $Database) {
     throw 'Confirmation text did not match database name. Restore aborted.'
 }
@@ -94,61 +96,98 @@ if ($UseSqlAuth -and [string]::IsNullOrWhiteSpace($SqlUser)) {
     throw 'SQL Auth requires DatabaseUser in operational.json / appsettings or -SqlUser.'
 }
 
-# Safety backup of current DB before overwrite
-$safetyDir = Join-Path (Get-ProgramDataRoot) 'backups\sql'
-$safetyPath = Join-Path $safetyDir ("{0}-pre-restore-{1}.bak" -f $Database, (Get-Date -Format 'yyyyMMdd-HHmmss'))
-Write-Host "Creating safety backup of current database to $safetyPath ..."
+$stopped = $false
+$enteredSingleUser = $false
+$restoreSucceeded = $false
 try {
-    & (Join-Path $PSScriptRoot 'backup-db.ps1') -SqlServer $SqlServer -Database $Database -BackupPath $safetyPath `
-        -UseSqlAuth:$UseSqlAuth -SqlUser $SqlUser -SqlPassword $SqlPassword
+    if ($StopService) {
+        $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -ne 'Stopped') {
+            Write-Host "Stopping service $ServiceName..."
+            Stop-Service -Name $ServiceName -Force
+            (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60))
+            $stopped = $true
+        }
+    }
+
+    if (-not $AutomatedRollback) {
+        $safetyDir = Join-Path (Get-ProgramDataRoot) 'backups\sql'
+        $safetyPath = Join-Path $safetyDir ("{0}-pre-restore-{1}.bak" -f $Database, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        Write-Host "Creating safety backup of current database to $safetyPath ..."
+        & (Join-Path $PSScriptRoot 'backup-db.ps1') -SqlServer $SqlServer -Database $Database -BackupPath $safetyPath `
+            -UseSqlAuth:$UseSqlAuth -SqlUser $SqlUser -SqlPassword $SqlPassword
+    }
+
+    $escaped = $BackupPath.Replace("'", "''")
+    $dbEscaped = $Database.Replace(']', ']]')
+
+    # MUST connect to master — never DatabaseName=$Database (Msg 3102).
+    $sql = @"
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+USE [master];
+
+IF DB_ID(N'$($Database.Replace("'","''"))') IS NULL
+    THROW 51001, N'Target database does not exist.', 1;
+
+ALTER DATABASE [$dbEscaped] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+RESTORE DATABASE [$dbEscaped] FROM DISK = N'$escaped' WITH REPLACE, RECOVERY, STATS = 10;
+ALTER DATABASE [$dbEscaped] SET MULTI_USER;
+"@
+
+    Write-Host "Restoring $Database from $BackupPath via master session..."
+    $enteredSingleUser = $true
+    Invoke-NyxveilSql -Server $SqlServer -Query $sql -DatabaseName 'master' `
+        -DatabaseAuth $auth -DatabaseUser $SqlUser -DatabasePassword $SqlPassword `
+        -TrustSqlServerCertificate $trust -Encrypt $encrypt
+    $restoreSucceeded = $true
+    $enteredSingleUser = $false
+
+    $probe = @"
+SET NOCOUNT ON;
+USE [master];
+SELECT
+  name,
+  state_desc,
+  user_access_desc
+FROM sys.databases
+WHERE name = N'$($Database.Replace("'","''"))';
+"@
+    Invoke-NyxveilSql -Server $SqlServer -Query $probe -DatabaseName 'master' `
+        -DatabaseAuth $auth -DatabaseUser $SqlUser -DatabasePassword $SqlPassword `
+        -TrustSqlServerCertificate $trust -Encrypt $encrypt
+
+    if ($stopped -or ($StopService -and -not $AutomatedRollback)) {
+        Write-Host "Starting service $ServiceName..."
+        Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    }
+
+    if (-not $AutomatedRollback -and $port -gt 0) {
+        Write-Host "Post-restore health: $publicHostname :$port"
+        if (-not (Wait-HttpsHealthy -Port $port -PublicHostname $publicHostname -InstallDir $InstallDir `
+                -CertificateMode $certMode -TimeoutSec 60)) {
+            throw 'Post-restore health failed.'
+        }
+    }
+
+    Write-Host "Restore completed for $Database."
 }
 catch {
-    throw "Safety backup failed; restore aborted. $($_.Exception.Message)"
-}
-
-$stopped = $false
-if ($StopService) {
-    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    if ($svc -and $svc.Status -ne 'Stopped') {
-        Write-Host "Stopping service $ServiceName..."
-        Stop-Service -Name $ServiceName -Force
-        $stopped = $true
-    }
-}
-
-$escaped = $BackupPath.Replace("'", "''")
-$sql = @"
-ALTER DATABASE [$Database] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-RESTORE DATABASE [$Database] FROM DISK = N'$escaped' WITH REPLACE, STATS = 10;
-ALTER DATABASE [$Database] SET MULTI_USER;
+    if ($enteredSingleUser -and -not $restoreSucceeded) {
+        try {
+            $recover = @"
+USE [master];
+IF DB_ID(N'$($Database.Replace("'","''"))') IS NOT NULL
+    ALTER DATABASE [$dbEscaped] SET MULTI_USER WITH ROLLBACK IMMEDIATE;
 "@
-
-Write-Host "Restoring $Database from $BackupPath ..."
-Invoke-NyxveilSql -Server $SqlServer -Query $sql -DatabaseName $Database `
-    -DatabaseAuth $auth -DatabaseUser $SqlUser -DatabasePassword $SqlPassword `
-    -TrustSqlServerCertificate $trust -Encrypt $encrypt
-
-# Lightweight schema compatibility probe
-$probe = @"
-USE [$Database];
-SELECT CASE WHEN OBJECT_ID(N'dbo.AspNetUsers', N'U') IS NULL THEN 0 ELSE 1 END;
-"@
-Invoke-NyxveilSql -Server $SqlServer -Query $probe -DatabaseName $Database `
-    -DatabaseAuth $auth -DatabaseUser $SqlUser -DatabasePassword $SqlPassword `
-    -TrustSqlServerCertificate $trust -Encrypt $encrypt
-
-if ($stopped -or $StopService) {
-    Write-Host "Starting service $ServiceName..."
-    Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
-}
-
-if ($port -gt 0) {
-    Write-Host "Post-restore health: $publicHostname :$port"
-    if (-not (Wait-HttpsHealthy -Port $port -PublicHostname $publicHostname -InstallDir $InstallDir `
-            -CertificateMode $certMode -TimeoutSec 60)) {
-        Write-Warning "Health checks failed after restore. Safety backup: $safetyPath"
-        throw 'Post-restore health failed.'
+            Invoke-NyxveilSql -Server $SqlServer -Query $recover -DatabaseName 'master' `
+                -DatabaseAuth $auth -DatabaseUser $SqlUser -DatabasePassword $SqlPassword `
+                -TrustSqlServerCertificate $trust -Encrypt $encrypt
+            Write-Warning "Attempted MULTI_USER recovery after failed restore for $Database."
+        }
+        catch {
+            Write-Warning "MULTI_USER recovery also failed: $($_.Exception.Message)"
+        }
     }
+    throw
 }
-
-Write-Host "Restore completed. Safety backup: $safetyPath"

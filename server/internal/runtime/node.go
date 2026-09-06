@@ -2,6 +2,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/nyxveil/nvp/core/auth/ticket"
 	"github.com/nyxveil/nvp/core/transport/ech"
+	"github.com/nyxveil/server/internal/catalogverify"
 	"github.com/nyxveil/server/internal/configure"
 	"github.com/nyxveil/server/internal/controlplane"
 	"github.com/nyxveil/server/internal/controlsock"
@@ -102,6 +104,12 @@ type Node struct {
 	nextPlannedRenewal    time.Time
 	lastRenewalError      string
 	acmeIssuer            func(context.Context, nodetls.ACMEConfig) (tls.Certificate, []byte, []byte, bool, error)
+	advertiseSPKI         func(context.Context, []byte) error
+	verifyCatalogSPKI     func(context.Context, []byte) error
+	commitTLS             func(string, string, string, string) error
+	reloadTLS             func(tls.Certificate) error
+	verifyServedSPKI      func(context.Context, []byte) error
+	validateStagedTLS     func(string, string, string, time.Time) error
 
 	cancel context.CancelFunc
 	runCtx context.Context
@@ -205,6 +213,19 @@ func (n *Node) mergeAppliedIntoLocalLocked(cfg controlplane.NodeConfig) {
 
 // Register bootstraps or re-registers the node with Control Plane.
 func (n *Node) Register(ctx context.Context, bootstrapToken string) (*controlplane.RegisterResponse, error) {
+	return n.register(ctx, bootstrapToken, nil)
+}
+
+// RegisterWithSPKI advertises an explicitly supplied staged SPKI without
+// requiring that staged material be activated on disk first.
+func (n *Node) RegisterWithSPKI(ctx context.Context, spkiPin []byte) (*controlplane.RegisterResponse, error) {
+	if len(spkiPin) == 0 {
+		return nil, errors.New("runtime: SPKI override is empty")
+	}
+	return n.register(ctx, "", append([]byte(nil), spkiPin...))
+}
+
+func (n *Node) register(ctx context.Context, bootstrapToken string, spkiOverride []byte) (*controlplane.RegisterResponse, error) {
 	n.mu.RLock()
 	cfg := *n.local
 	key := n.key
@@ -242,7 +263,9 @@ func (n *Node) Register(ctx context.Context, bootstrapToken string) (*controlpla
 		req.BootstrapToken = bootstrapToken
 	}
 
-	if cert, err := n.loadTLSCert(cfg); err == nil {
+	if len(spkiOverride) > 0 {
+		req.SPKIPin = append([]byte(nil), spkiOverride...)
+	} else if cert, err := n.loadTLSCert(cfg); err == nil {
 		if pin, err := SPKIPinSHA256(cert); err == nil {
 			req.SPKIPin = pin
 		}
@@ -1046,26 +1069,10 @@ func (n *Node) acmeRenewLoop(ctx context.Context) {
 			if strings.TrimSpace(cfg.ACMEDomain) == "" {
 				continue
 			}
-			cert, prevPin, newPin, pinChanged, err := n.issueACME(ctx, cfg)
+			_, _, _, _, err := n.issueACME(ctx, cfg)
 			if err != nil {
 				log.Printf("runtime: ACME renew: %v", err)
 				continue
-			}
-			if n.listen != nil {
-				n.listen.UpdateCert(cert)
-				if err := n.listen.StartTLS(n.runCtx); err != nil {
-					log.Printf("runtime: TLS reload after ACME: %v", err)
-				}
-				if err := n.listen.StartQUIC(n.runCtx); err != nil {
-					log.Printf("runtime: QUIC reload after ACME: %v", err)
-				}
-			}
-			if pinChanged {
-				log.Printf("runtime: ACME SPKI changed (was present=%v) — updating Control Plane registration", len(prevPin) > 0)
-				_ = newPin
-				if _, err := n.Register(ctx, ""); err != nil {
-					log.Printf("runtime: re-register after SPKI change failed: %v (catalog pin may be stale until re-register succeeds)", err)
-				}
 			}
 		}
 	}
@@ -1133,22 +1140,147 @@ func (n *Node) issueACME(ctx context.Context, cfg localconfig.File) (cert tls.Ce
 	if err != nil {
 		return tls.Certificate{}, prevPin, nil, false, err
 	}
-	if err = configure.ValidateLeafForDomain(stageCert, stageKey, domain, time.Now()); err != nil {
+	validate := n.validateStagedTLS
+	if validate == nil {
+		validate = configure.ValidateLeafForDomain
+	}
+	if err = validate(stageCert, stageKey, domain, time.Now()); err != nil {
 		return tls.Certificate{}, prevPin, nil, false, err
 	}
-	if err = configure.AtomicCommitTLS(stageCert, stageKey, certFile, keyFile); err != nil {
-		return tls.Certificate{}, prevPin, nil, false, err
-	}
-	cert, err = nodetls.Load(live)
+	staged, err := nodetls.Load(nodetls.Paths{CertFile: stageCert, KeyFile: stageKey})
 	if err != nil {
 		return tls.Certificate{}, prevPin, nil, false, err
 	}
-	newPin, err = nodetls.SPKIPinSHA256(cert)
+	newPin, err = nodetls.SPKIPinSHA256(staged)
 	if err != nil {
 		return tls.Certificate{}, prevPin, nil, false, err
 	}
 	pinChanged = nodetls.PinChanged(prevPin, newPin)
-	return cert, prevPin, newPin, pinChanged, nil
+
+	commit := n.commitTLS
+	if commit == nil {
+		commit = configure.AtomicCommitTLS
+	}
+	if !pinChanged {
+		if err = commit(stageCert, stageKey, certFile, keyFile); err != nil {
+			return tls.Certificate{}, prevPin, newPin, false, err
+		}
+		cert, err = nodetls.Load(live)
+		if err == nil {
+			err = n.reloadActivatedTLS(cert)
+		}
+		return cert, prevPin, newPin, false, err
+	}
+
+	backup, err := configure.BackupLiveTLS(certFile, keyFile)
+	if err != nil {
+		return tls.Certificate{}, prevPin, newPin, true, err
+	}
+	if err = n.advertiseStagedSPKI(ctx, newPin); err != nil {
+		return tls.Certificate{}, prevPin, newPin, true, fmt.Errorf("runtime: advertise staged SPKI: %w", err)
+	}
+	if err = n.verifyAdvertisedSPKI(ctx, newPin); err != nil {
+		return tls.Certificate{}, prevPin, newPin, true, fmt.Errorf("runtime: verify staged SPKI catalog: %w", err)
+	}
+
+	rollback := func(cause error) error {
+		restoreErr := configure.RestoreLiveTLS(backup, certFile, keyFile)
+		if oldCert, loadErr := nodetls.Load(live); loadErr == nil {
+			_ = n.reloadActivatedTLS(oldCert)
+		}
+		var advertiseErr error
+		if len(prevPin) > 0 {
+			advertiseErr = n.advertiseStagedSPKI(ctx, prevPin)
+		}
+		return errors.Join(cause, restoreErr, advertiseErr)
+	}
+	if err = commit(stageCert, stageKey, certFile, keyFile); err != nil {
+		return tls.Certificate{}, prevPin, newPin, true, rollback(fmt.Errorf("runtime: activate staged TLS: %w", err))
+	}
+	cert, err = nodetls.Load(live)
+	if err != nil {
+		return tls.Certificate{}, prevPin, newPin, true, rollback(err)
+	}
+	if err = n.reloadActivatedTLS(cert); err != nil {
+		return tls.Certificate{}, prevPin, newPin, true, rollback(err)
+	}
+	if err = n.verifyActivatedSPKI(ctx, newPin, live); err != nil {
+		return tls.Certificate{}, prevPin, newPin, true, rollback(err)
+	}
+	return cert, prevPin, newPin, true, nil
+}
+
+func (n *Node) advertiseStagedSPKI(ctx context.Context, pin []byte) error {
+	if n.advertiseSPKI != nil {
+		return n.advertiseSPKI(ctx, append([]byte(nil), pin...))
+	}
+	_, err := n.RegisterWithSPKI(ctx, pin)
+	return err
+}
+
+func (n *Node) verifyAdvertisedSPKI(ctx context.Context, pin []byte) error {
+	if n.verifyCatalogSPKI != nil {
+		return n.verifyCatalogSPKI(ctx, append([]byte(nil), pin...))
+	}
+	keysJSON, err := n.cp.GetCatalogKeys(ctx)
+	if err != nil {
+		return err
+	}
+	catalogJSON, err := n.cp.GetSignedSelf(ctx)
+	if err != nil {
+		return err
+	}
+	signed, err := catalogverify.VerifySignedCatalogJSON(keysJSON, catalogJSON)
+	if err != nil {
+		return err
+	}
+	node, ok := catalogverify.FindNode(signed, n.cp.NodeID)
+	if !ok {
+		return fmt.Errorf("node %q absent from signed self catalog", n.cp.NodeID)
+	}
+	if !bytes.Equal(node.SPKIPin, pin) {
+		return fmt.Errorf("signed self catalog SPKI mismatch")
+	}
+	return nil
+}
+
+func (n *Node) reloadActivatedTLS(cert tls.Certificate) error {
+	if n.reloadTLS != nil {
+		return n.reloadTLS(cert)
+	}
+	if n.listen == nil {
+		return nil
+	}
+	n.listen.UpdateCert(cert)
+	ctx := n.runCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := n.listen.StartTLS(ctx); err != nil {
+		return fmt.Errorf("runtime: TLS reload after ACME: %w", err)
+	}
+	if err := n.listen.StartQUIC(ctx); err != nil {
+		return fmt.Errorf("runtime: QUIC reload after ACME: %w", err)
+	}
+	return nil
+}
+
+func (n *Node) verifyActivatedSPKI(ctx context.Context, pin []byte, live nodetls.Paths) error {
+	if n.verifyServedSPKI != nil {
+		return n.verifyServedSPKI(ctx, append([]byte(nil), pin...))
+	}
+	cert, err := nodetls.Load(live)
+	if err != nil {
+		return err
+	}
+	got, err := nodetls.SPKIPinSHA256(cert)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(got, pin) {
+		return fmt.Errorf("runtime: activated TLS SPKI mismatch")
+	}
+	return nil
 }
 
 func (n *Node) recordRenewalAttempt() {

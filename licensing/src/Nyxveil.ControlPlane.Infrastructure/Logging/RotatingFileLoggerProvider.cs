@@ -70,7 +70,14 @@ public sealed class RotatingFileLoggerProvider : ILoggerProvider
             var rotated = Path.Combine(
                 dir,
                 $"{opts.FilePrefix}-{DateTime.UtcNow:yyyyMMdd-HHmmss}.log");
-            File.Move(_currentPath, rotated, overwrite: true);
+            try
+            {
+                File.Move(_currentPath, rotated, overwrite: true);
+            }
+            catch (IOException)
+            {
+                // Windows may briefly lock the just-closed stream; skip rename this cycle.
+            }
         }
 
         CleanupOldFiles(dir, opts);

@@ -16,17 +16,20 @@ public sealed class NodesController : ControllerBase
 {
     private readonly INodeRegistrationService _registration;
     private readonly INodeHeartbeatService _heartbeat;
+    private readonly ICatalogService _catalog;
     private readonly ISigningKeyService _signingKeys;
     private readonly SigningOptions _signing;
 
     public NodesController(
         INodeRegistrationService registration,
         INodeHeartbeatService heartbeat,
+        ICatalogService catalog,
         ISigningKeyService signingKeys,
         IOptions<SigningOptions> signing)
     {
         _registration = registration;
         _heartbeat = heartbeat;
+        _catalog = catalog;
         _signingKeys = signingKeys;
         _signing = signing.Value;
     }
@@ -110,6 +113,19 @@ public sealed class NodesController : ControllerBase
         var nodeId = AuthTokenExtractor.GetNodeId(HttpContext)
                      ?? throw new InvalidOperationException("node id missing after NodeAuth");
         var result = await _registration.GetConfigAsync(nodeId, cancellationToken)
+            .ConfigureAwait(false);
+        return Ok(result);
+    }
+
+    /// <summary>GET /api/v1/node/signed-self — signed catalog for the authenticated node.</summary>
+    [HttpGet("node/signed-self")]
+    [NodeAuth]
+    [RateLimit]
+    public async Task<ActionResult<SignedCatalogDto>> GetSignedSelf(CancellationToken cancellationToken)
+    {
+        var nodeId = AuthTokenExtractor.GetNodeId(HttpContext)
+                     ?? throw new InvalidOperationException("node id missing after NodeAuth");
+        var result = await _catalog.GetSignedCatalogForNodeAsync(nodeId, cancellationToken)
             .ConfigureAwait(false);
         return Ok(result);
     }

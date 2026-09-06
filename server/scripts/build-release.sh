@@ -24,6 +24,8 @@ build_one() {
     -o "${OUT}/nyxveil-server-${suffix}" ./cmd/nyxveil-server
   CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" go build -trimpath -ldflags "${LDFLAGS}" \
     -o "${OUT}/nyxveilctl-${suffix}" ./cmd/nyxveilctl
+  CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" go build -trimpath -ldflags "${LDFLAGS}" \
+    -o "${OUT}/nyxveil-catalog-verify-${suffix}" ./cmd/nyxveil-catalog-verify
 }
 
 build_one amd64
@@ -31,8 +33,8 @@ build_one arm64
 
 (
   cd "${OUT}"
-  sha256sum nyxveil-server-linux-amd64 nyxveilctl-linux-amd64 \
-            nyxveil-server-linux-arm64 nyxveilctl-linux-arm64 > SHA256SUMS
+  sha256sum nyxveil-server-linux-amd64 nyxveilctl-linux-amd64 nyxveil-catalog-verify-linux-amd64 \
+            nyxveil-server-linux-arm64 nyxveilctl-linux-arm64 nyxveil-catalog-verify-linux-arm64 > SHA256SUMS
 )
 
 echo "Built ${VERSION} artifacts in ${OUT}"

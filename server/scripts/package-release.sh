@@ -33,7 +33,8 @@ package_arch() {
 
   cp -a "${BIN_SRC}/nyxveil-server-linux-${arch}" "${dest}/nyxveil-server"
   cp -a "${BIN_SRC}/nyxveilctl-linux-${arch}" "${dest}/nyxveilctl"
-  chmod 0755 "${dest}/nyxveil-server" "${dest}/nyxveilctl"
+  cp -a "${BIN_SRC}/nyxveil-catalog-verify-linux-${arch}" "${dest}/nyxveil-catalog-verify"
+  chmod 0755 "${dest}/nyxveil-server" "${dest}/nyxveilctl" "${dest}/nyxveil-catalog-verify"
 
   cp -a "${ROOT}/installer/"*.sh "${dest}/installer/"
   cp -a "${ROOT}/systemd/nyxveil-server.service" "${dest}/systemd/"
@@ -67,6 +68,7 @@ package_arch() {
   # Flat release assets (GitHub Downloads)
   cp -a "${BIN_SRC}/nyxveil-server-linux-${arch}" "${DIST}/"
   cp -a "${BIN_SRC}/nyxveilctl-linux-${arch}" "${DIST}/"
+  cp -a "${BIN_SRC}/nyxveil-catalog-verify-linux-${arch}" "${DIST}/"
 }
 
 package_arch amd64
@@ -99,13 +101,13 @@ fi
 (
   cd "${DIST}"
   sha256sum \
-    nyxveil-server-linux-amd64 nyxveilctl-linux-amd64 \
-    nyxveil-server-linux-arm64 nyxveilctl-linux-arm64 \
+    nyxveil-server-linux-amd64 nyxveilctl-linux-amd64 nyxveil-catalog-verify-linux-amd64 \
+    nyxveil-server-linux-arm64 nyxveilctl-linux-arm64 nyxveil-catalog-verify-linux-arm64 \
     release-manifest-linux-amd64.json release-manifest-linux-arm64.json \
     bootstrap-cli-update.sh \
     2>/dev/null > SHA256SUMS || sha256sum \
-    nyxveil-server-linux-amd64 nyxveilctl-linux-amd64 \
-    nyxveil-server-linux-arm64 nyxveilctl-linux-arm64 \
+    nyxveil-server-linux-amd64 nyxveilctl-linux-amd64 nyxveil-catalog-verify-linux-amd64 \
+    nyxveil-server-linux-arm64 nyxveilctl-linux-arm64 nyxveil-catalog-verify-linux-arm64 \
     release-manifest-linux-amd64.json release-manifest-linux-arm64.json > SHA256SUMS
 )
 

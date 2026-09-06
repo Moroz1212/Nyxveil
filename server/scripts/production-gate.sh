@@ -99,6 +99,15 @@ if [[ "${MODE}" == "source" ]]; then
     fail "verify_release" "verify-release.sh failed"
   grep -E '1\.1\.0' "${DIST}/release-manifest-linux-amd64.json" >/dev/null ||
     fail "manifest_version" "amd64 manifest not 1.1.0"
+  [[ -f "${DIST}/nyxveil-catalog-verify-linux-amd64" ]] ||
+    fail "catalog_verify_asset" "nyxveil-catalog-verify-linux-amd64 missing from release"
+  chmod 0755 "${DIST}/nyxveil-catalog-verify-linux-amd64" "${DIST}/nyxveil-catalog-verify-linux-arm64" 2>/dev/null || true
+  if command -v go >/dev/null 2>&1; then
+    (cd "${ROOT}" && go test ./internal/catalogverify/ ./internal/runtime/ ./internal/controlplane/ -count=1 \
+      -run 'TestVerify|TestTampered|TestWrong|TestModified|TestMalformed|TestNormalRenew|TestKeyRotation|TestSystemTrustClientReconnects' ) \
+      >"${WORK}/catalog-spki-tests.txt" 2>&1 ||
+      fail "catalog_spki_tests" "catalog crypto / SPKI / CP leaf rotation tests failed"
+  fi
   record "source_gate=release_artifacts_verified"
   finalize
 fi
@@ -188,20 +197,87 @@ if [[ "${MODE}" == "live" ]]; then
   json_bool "${WORK}/status.json" cp_connected ||
     fail "cp_connected" "live mode requires cp_connected=true"
   ask_license_once
-  # Catalog crypto gate uses license token only in-memory for curl Authorization.
-  keys="$(curl --silent --show-error --fail --connect-timeout 5 --max-time 15 \
+
+  VERIFY_BIN="${NYXVEIL_CATALOG_VERIFY:-}"
+  if [[ -z "${VERIFY_BIN}" ]]; then
+    for cand in \
+      "$(command -v nyxveil-catalog-verify || true)" \
+      "${ROOT}/dist/bin/nyxveil-catalog-verify-linux-amd64" \
+      "${ROOT}/dist/release/nyxveil-catalog-verify-linux-amd64" \
+      "${ROOT}/dist/release/linux-amd64/nyxveil-catalog-verify"; do
+      if [[ -n "${cand}" && -x "${cand}" ]]; then
+        VERIFY_BIN="${cand}"
+        break
+      fi
+    done
+  fi
+  if [[ -z "${VERIFY_BIN}" || ! -x "${VERIFY_BIN}" ]]; then
+    if command -v go >/dev/null 2>&1 && [[ -d "${ROOT}/cmd/nyxveil-catalog-verify" ]]; then
+      VERIFY_BIN="$(mktemp "${WORK}/nyxveil-catalog-verify.XXXXXX")"
+      (cd "${ROOT}" && CGO_ENABLED=0 go build -o "${VERIFY_BIN}" ./cmd/nyxveil-catalog-verify) ||
+        fail "catalog_verify_build" "could not build nyxveil-catalog-verify"
+      chmod 0755 "${VERIFY_BIN}"
+    else
+      fail "catalog_verify_tool" "nyxveil-catalog-verify binary not found"
+    fi
+  fi
+
+  # RAW bodies for cryptographic verification (never sanitize before verify).
+  curl --silent --show-error --fail --connect-timeout 5 --max-time 15 \
     -H "Authorization: Bearer ${LICENSE_TOKEN}" \
-    "${CP_URL%/}/api/v1/catalog-keys" 2>"${WORK}/catalog-keys.err")" ||
+    "${CP_URL%/}/api/v1/catalog-keys" \
+    -o "${WORK}/catalog-keys.raw.json" 2>"${WORK}/catalog-keys.err" ||
     fail "catalog_keys" "catalog-keys request failed"
-  printf '%s\n' "${keys}" | sanitize >"${WORK}/catalog-keys.json"
-  catalog="$(curl --silent --show-error --fail --connect-timeout 5 --max-time 30 \
+  curl --silent --show-error --fail --connect-timeout 5 --max-time 30 \
     -H "Authorization: Bearer ${LICENSE_TOKEN}" \
-    "${CP_URL%/}/api/v1/catalog" 2>"${WORK}/catalog.err")" ||
+    "${CP_URL%/}/api/v1/catalog" \
+    -o "${WORK}/catalog.raw.json" 2>"${WORK}/catalog.err" ||
     fail "catalog" "catalog request failed"
-  printf '%s\n' "${catalog}" | sanitize >"${WORK}/catalog.sanitized.json"
   LICENSE_TOKEN=""
   unset GATE_LICENSE_TOKEN || true
-  record "catalog_fetched=true (signature verification delegated to client/core tooling when available)"
+  sanitize <"${WORK}/catalog-keys.raw.json" >"${WORK}/catalog-keys.sanitized.json" || true
+  sanitize <"${WORK}/catalog.raw.json" >"${WORK}/catalog.sanitized.json" || true
+
+  NODE_ID="$(python3 - "${CONFIG}" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    print(json.load(f).get("node_id", ""))
+PY
+)"
+  SERVER_NAME="$(python3 - "${CONFIG}" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    d=json.load(f)
+    print(d.get("server_name") or d.get("public_host") or "")
+PY
+)"
+  SPKI_B64=""
+  if [[ -s "${WORK}/tls-spki-sha256.txt" ]]; then
+    SPKI_HEX="$(awk '{print $1}' "${WORK}/tls-spki-sha256.txt")"
+    SPKI_B64="$(python3 - "${SPKI_HEX}" <<'PY'
+import sys, binascii, base64
+print(base64.b64encode(binascii.unhexlify(sys.argv[1].strip())).decode())
+PY
+)"
+  fi
+
+  VERIFY_ARGS=( -keys "${WORK}/catalog-keys.raw.json" -catalog "${WORK}/catalog.raw.json" )
+  if [[ -n "${NODE_ID}" ]]; then
+    VERIFY_ARGS+=( -expect-node "${NODE_ID}" )
+  fi
+  if [[ -n "${SPKI_B64}" ]]; then
+    VERIFY_ARGS+=( -expect-spki-b64 "${SPKI_B64}" )
+  fi
+  if [[ -n "${SERVER_NAME}" ]]; then
+    VERIFY_ARGS+=( -expect-server-name "${SERVER_NAME}" )
+  fi
+
+  if ! "${VERIFY_BIN}" "${VERIFY_ARGS[@]}" | tee "${WORK}/catalog-verify.out"; then
+    fail "catalog_signature" "Ed25519 catalog verification failed"
+  fi
+  grep -q 'Catalog signature ........ PASS' "${WORK}/catalog-verify.out" ||
+    fail "catalog_signature" "verifier did not report PASS"
+  record "catalog_crypto=PASS"
 fi
 
 STOP_US="$(systemctl show nyxveil-server -p TimeoutStopUSec --value 2>/dev/null || true)"

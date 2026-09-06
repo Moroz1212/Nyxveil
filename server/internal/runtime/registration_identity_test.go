@@ -18,7 +18,7 @@ import (
 )
 
 func TestSuccessfulHTTPRegistrationLocalFailurePreservesIdentity(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	state := filepath.Join(dir, "state")
 	_ = os.MkdirAll(state, 0o700)
 	keyPath := filepath.Join(state, "node.key")
@@ -87,7 +87,7 @@ func TestSuccessfulHTTPRegistrationLocalFailurePreservesIdentity(t *testing.T) {
 }
 
 func TestRetryAfterLocalFailureUsesSameNodeIdentity(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	state := filepath.Join(dir, "state")
 	_ = os.MkdirAll(state, 0o700)
 	keyPath := filepath.Join(state, "node.key")

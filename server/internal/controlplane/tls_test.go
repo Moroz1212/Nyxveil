@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -76,6 +77,68 @@ func TestRuntimeCPClientTrustedPublicCAWorks(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
+}
+
+func TestSystemTrustClientReconnectsAfterCPLeafRotation(t *testing.T) {
+	const dns = "cp.test.local"
+	roots, ca, caKey := rotatingTestCA(t)
+	leafA := rotatingLeaf(t, dns, ca, caKey, 101)
+	leafB := rotatingLeaf(t, dns, ca, caKey, 102)
+	var current atomic.Pointer[tls.Certificate]
+	current.Store(&leafA)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	tlsLn := tls.NewListener(ln, &tls.Config{
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return current.Load(), nil
+		},
+	})
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(controlplane.HeartbeatResponse{Accepted: true})
+	})}
+	defer srv.Close()
+	go func() { _ = srv.Serve(tlsLn) }()
+
+	old := controlplane.SystemRootsLoader
+	controlplane.SystemRootsLoader = func() (*x509.CertPool, error) { return roots, nil }
+	defer func() { controlplane.SystemRootsLoader = old }()
+
+	baseURL := "https://" + net.JoinHostPort(dns, strconv.Itoa(ln.Addr().(*net.TCPAddr).Port))
+	c, res := func() (*controlplane.Client, *controlplane.TLSResult) {
+		tlsRes, buildErr := controlplane.BuildTLS(controlplane.TLSOptions{BaseURL: baseURL})
+		if buildErr != nil {
+			t.Fatal(buildErr)
+		}
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.TLSClientConfig = tlsRes.Config
+		tr.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, ln.Addr().String())
+		}
+		client := &controlplane.Client{
+			BaseURL: baseURL,
+			HTTP:    &http.Client{Transport: tr, Timeout: 5 * time.Second},
+			TLS:     tlsRes,
+		}
+		return client, tlsRes
+	}()
+	if res.TrustMode != controlplane.TrustSystem {
+		t.Fatalf("unexpected trust configuration: %+v", res)
+	}
+	k, _ := identity.Generate()
+	c.NodeID, c.PrivateKey = "n1", k.Private
+	if _, err := c.Heartbeat(context.Background(), controlplane.HeartbeatRequest{}); err != nil {
+		t.Fatal(err)
+	}
+
+	current.Store(&leafB)
+	c.HTTP.CloseIdleConnections()
+	if _, err := c.Heartbeat(context.Background(), controlplane.HeartbeatRequest{}); err != nil {
+		t.Fatalf("heartbeat after trusted leaf rotation: %v", err)
+	}
 }
 
 func TestRuntimeCPClientUnknownCAFails(t *testing.T) {
@@ -415,6 +478,51 @@ func startTLSBundle(t *testing.T, dns string, notBefore, notAfter time.Time) *tl
 	return &tlsBundle{Roots: roots, BaseURL: baseURL, Addr: ln.Addr().String(), Srv: srv, ln: ln}
 }
 
+func rotatingTestCA(t *testing.T) (*x509.CertPool, *x509.Certificate, *ecdsa.PrivateKey) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(100), Subject: pkix.Name{CommonName: "rotation-root"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		IsCA: true, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(cert)
+	return roots, cert, key
+}
+
+func rotatingLeaf(t *testing.T, dns string, ca *x509.Certificate, caKey *ecdsa.PrivateKey, serial int64) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: dns},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:    []string{dns},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der, ca.Raw}, PrivateKey: key}
+}
+
 func loadLocal(path string) (*localconfig.File, error) {
 	return localconfig.Load(path)
 }
@@ -449,4 +557,3 @@ func TestMergeClearsPinnedCAOnCPURLChange(t *testing.T) {
 		t.Fatal(out.ControlPlaneURL)
 	}
 }
-

@@ -39,7 +39,7 @@ func writeMinimalServerJSON(t *testing.T, dir, cpURL string) string {
 }
 
 func TestServiceDoesNotWriteEtcConfig(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	etc := filepath.Join(dir, "etc")
 	state := filepath.Join(dir, "state")
 	_ = os.MkdirAll(etc, 0o755)
@@ -88,7 +88,7 @@ func TestServiceDoesNotWriteEtcConfig(t *testing.T) {
 }
 
 func TestAppliedConfigPersistenceAsServiceUser(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	state := filepath.Join(dir, "state")
 	_ = os.MkdirAll(state, 0o700)
 	cfgPath := writeMinimalServerJSON(t, dir, "http://127.0.0.1:9")
@@ -132,7 +132,7 @@ func TestAppliedConfigPersistenceAsServiceUser(t *testing.T) {
 }
 
 func TestLocationChangeSurvivesRestart(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	state := filepath.Join(dir, "state")
 	_ = os.MkdirAll(state, 0o700)
 	cfgPath := writeMinimalServerJSON(t, dir, "http://127.0.0.1:9")
@@ -171,7 +171,7 @@ func TestLocationChangeSurvivesRestart(t *testing.T) {
 }
 
 func TestConfigVersionSurvivesRestart(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	state := filepath.Join(dir, "state")
 	_ = os.MkdirAll(state, 0o700)
 	cfgPath := writeMinimalServerJSON(t, dir, "http://127.0.0.1:9")
@@ -203,7 +203,7 @@ func TestConfigVersionSurvivesRestart(t *testing.T) {
 }
 
 func TestPersistenceFailureDoesNotAdvanceConfigVersion(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	cfgPath := writeMinimalServerJSON(t, dir, "http://127.0.0.1:9")
 	state := filepath.Join(dir, "state")
 	_ = os.MkdirAll(state, 0o700)
@@ -250,7 +250,7 @@ func TestPersistenceFailureLeavesOldSnapshot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory writability bits not reliable on Windows")
 	}
-	dir := t.TempDir()
+	dir := tempDir(t)
 	state := filepath.Join(dir, "state")
 	_ = os.MkdirAll(state, 0o700)
 	cfgPath := writeMinimalServerJSON(t, dir, "http://127.0.0.1:9")
@@ -300,7 +300,7 @@ func mustGenKey(t *testing.T) (*identity.NodeKey, error) {
 }
 
 func TestInitialRegistrationConfigPersisted(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	state := filepath.Join(dir, "state")
 	_ = os.MkdirAll(state, 0o700)
 	pub, _, _ := ed25519.GenerateKey(nil)
@@ -367,7 +367,7 @@ func TestInitialRegistrationConfigPersisted(t *testing.T) {
 }
 
 func TestRepairPreservesNewerAppliedConfig(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	state := filepath.Join(dir, "state")
 	_ = os.MkdirAll(state, 0o700)
 	appliedPath := filepath.Join(state, "applied-config.json")

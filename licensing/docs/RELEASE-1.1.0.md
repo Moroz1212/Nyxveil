@@ -13,31 +13,18 @@ Release candidate 1.1.0 adds operational node lifecycle controls and certificate
 
 ## Database
 
-Schema version is **2**. Apply `database/migrations/002_node_lifecycle_cert_metadata.sql`, or the EF migration `NodeLifecycleAndCertMetadata`, after taking a verified database backup.
+Schema version is **2**. The production deployment wrapper applies `database/migrations/002_node_lifecycle_cert_metadata.sql` when it is present, after taking and verifying a database backup.
 
-Example update argument:
+## Production deployment
 
-```powershell
-.\scripts\update-windows.ps1 -MigrationScript .\database\migrations\002_node_lifecycle_cert_metadata.sql -ExpectedSchemaVersion 2
-```
-
-## Production gate
-
-Run locally without production dependencies:
+From the licensing root, operators use this single command:
 
 ```powershell
-.\scripts\production-gate.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\production-deploy.ps1 -PublishDir .\publish
 ```
 
-For read-only checks of an installed instance:
-
-```powershell
-$env:GATE_MODE='production'
-.\scripts\production-gate.ps1 -InstallDir 'C:\Program Files\Nyxveil\ControlPlane'
-```
-
-The gate never rotates certificates and does not mutate an installed instance.
+The wrapper owns prechecks, verified database and binary backups, deployment, migration, service restart, the production gate, and rollback. Do not chain the legacy update script and production gate as separate operator steps.
 
 ## Rollback
 
-Before migration, binaries may be rolled back normally. After schema migration, restore the pre-update SQL backup together with the matching 1.0.x binaries. Preserve signing-key and license-KEK backups.
+Before migration, the wrapper restores the previous binaries and configuration. If migration was attempted, it restores the pre-deployment SQL backup (via `restore-db.ps1 -Force -ConfirmDatabaseName <db>`) before restoring binaries.

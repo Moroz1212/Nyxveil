@@ -104,7 +104,7 @@ func TestShutdownDoesNotWaitForeverOnBridge(t *testing.T) {
 
 func assertShutdownUnder(t *testing.T, max time.Duration) {
 	t.Helper()
-	dir := t.TempDir()
+	dir := tempDir(t)
 	cfgPath := filepath.Join(dir, "server.json")
 	keyPath := filepath.Join(dir, "node.key")
 	writeMinimalCfg(t, cfgPath, "https://127.0.0.1:1")

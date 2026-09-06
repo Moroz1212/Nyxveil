@@ -33,6 +33,7 @@ public sealed class DashboardQueryService : IDashboardQueryService
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var now = _clock.UtcNow;
         var expiringUntil = now.AddDays(14);
+        // Track current Server product line (not Control Plane version).
         const string currentServerRelease = "1.1.0";
 
         var nodes = await db.Nodes.AsNoTracking().ToListAsync(cancellationToken).ConfigureAwait(false);

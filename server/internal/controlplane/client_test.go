@@ -112,6 +112,43 @@ func TestGetConfigSignsGET(t *testing.T) {
 	}
 }
 
+func TestCatalogKeysPublicAndSignedSelfAuthenticated(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keysSigned, selfSigned string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/catalog-keys":
+			keysSigned = r.Header.Get("X-Node-Signature")
+			_, _ = w.Write([]byte(`{"issuer":"cp","keys":{"k":"AA=="}}`))
+		case "/api/v1/node/signed-self":
+			selfSigned = r.Header.Get("X-Node-Signature")
+			_, _ = w.Write([]byte(`{"catalog":{"version":"v"},"key_id":"k","signature":"AA=="}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c, err := NewClient(srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.NodeID, c.PrivateKey = "n1", priv
+	keys, err := c.GetCatalogKeys(context.Background())
+	if err != nil || len(keys) == 0 {
+		t.Fatalf("keys=%s err=%v", keys, err)
+	}
+	self, err := c.GetSignedSelf(context.Background())
+	if err != nil || len(self) == 0 {
+		t.Fatalf("self=%s err=%v", self, err)
+	}
+	if keysSigned != "" || selfSigned == "" {
+		t.Fatalf("catalog-keys signed=%q signed-self signed=%q", keysSigned, selfSigned)
+	}
+}
+
 func TestRegisterDoesNotRequireSignature(t *testing.T) {
 	var sawSig string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

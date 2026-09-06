@@ -5,6 +5,13 @@ namespace Nyxveil.ControlPlane.Application.Abstractions;
 public interface ICatalogService
 {
     /// <summary>
+    /// Builds and signs a self-catalog containing only the authenticated active node.
+    /// </summary>
+    Task<SignedCatalogDto> GetSignedCatalogForNodeAsync(
+        string nodeId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Builds and signs a catalog filtered for the authenticated caller (license or ticket).
     /// </summary>
     Task<SignedCatalogDto> GetSignedCatalogForCallerAsync(

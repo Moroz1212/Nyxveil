@@ -125,7 +125,7 @@ func TestBuildControlPlaneTLS_PinnedCAAndSPKI(t *testing.T) {
 	}
 	pin := sha256.Sum256(leafCert.RawSubjectPublicKeyInfo)
 
-	dir := t.TempDir()
+	dir := tempDir(t)
 	caPath := filepath.Join(dir, "ca.pem")
 	if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), 0o644); err != nil {
 		t.Fatal(err)
@@ -311,7 +311,7 @@ func startSelfSignedTLS(t *testing.T, dnsName string, notBefore, notAfter time.T
 }
 
 func TestGenerateSelfSignedIPUsesIPAddresses(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	certFile := filepath.Join(dir, "tls.crt")
 	keyFile := filepath.Join(dir, "tls.key")
 	if err := generateSelfSigned(certFile, keyFile, "203.0.113.10"); err != nil {
@@ -359,7 +359,7 @@ func TestRuntimeCPClientUsesSharedFactory(t *testing.T) {
 }
 
 func TestRuntimeACMEStagingFailurePreservesLiveTLS(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	certFile := filepath.Join(dir, "tls.crt")
 	keyFile := filepath.Join(dir, "tls.key")
 	if err := generateSelfSigned(certFile, keyFile, "node.example"); err != nil {

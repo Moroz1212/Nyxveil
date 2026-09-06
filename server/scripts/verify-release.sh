@@ -25,8 +25,10 @@ echo "==> Release tree present"
 REQUIRED=(
   nyxveil-server-linux-amd64
   nyxveilctl-linux-amd64
+  nyxveil-catalog-verify-linux-amd64
   nyxveil-server-linux-arm64
   nyxveilctl-linux-arm64
+  nyxveil-catalog-verify-linux-arm64
   release-manifest-linux-amd64.json
   release-manifest-linux-arm64.json
   bootstrap-cli-update.sh
@@ -36,8 +38,10 @@ REQUIRED=(
 HASHED=(
   nyxveil-server-linux-amd64
   nyxveilctl-linux-amd64
+  nyxveil-catalog-verify-linux-amd64
   nyxveil-server-linux-arm64
   nyxveilctl-linux-arm64
+  nyxveil-catalog-verify-linux-arm64
   release-manifest-linux-amd64.json
   release-manifest-linux-arm64.json
   bootstrap-cli-update.sh
@@ -66,7 +70,8 @@ echo "==> SHA256SUMS matches every listed file and includes required assets"
 )
 
 echo "==> Staging bin hashes match release flat assets"
-for f in nyxveil-server-linux-amd64 nyxveilctl-linux-amd64 nyxveil-server-linux-arm64 nyxveilctl-linux-arm64; do
+for f in nyxveil-server-linux-amd64 nyxveilctl-linux-amd64 nyxveil-catalog-verify-linux-amd64 \
+         nyxveil-server-linux-arm64 nyxveilctl-linux-arm64 nyxveil-catalog-verify-linux-arm64; do
   a="$(sha256sum "${BIN}/${f}" | awk '{print $1}')"
   b="$(sha256sum "${DIST}/${f}" | awk '{print $1}')"
   [[ "${a}" == "${b}" ]] || die "bin/release mismatch for ${f}"

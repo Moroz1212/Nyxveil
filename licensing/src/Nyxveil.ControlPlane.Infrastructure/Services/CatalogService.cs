@@ -31,6 +31,52 @@ public sealed class CatalogService : ICatalogService
         _clock = clock;
     }
 
+    public async Task<SignedCatalogDto> GetSignedCatalogForNodeAsync(
+        string nodeId,
+        CancellationToken cancellationToken = default)
+    {
+        var node = await _db.Nodes.AsNoTracking()
+            .Where(n => n.NodeId == nodeId && n.LifecycleState == NodeLifecycleState.Active)
+            .Include(n => n.Endpoints)
+            .Include(n => n.Transports)
+            .Include(n => n.Location)
+            .SingleOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new NotFoundException("active node not found");
+
+        var config = await _db.NodeConfigs.AsNoTracking()
+            .SingleOrDefaultAsync(c => c.NodeId == nodeId, cancellationToken)
+            .ConfigureAwait(false);
+        if (!(config?.Enabled ?? node.Enabled) || node.Location is null || !node.Location.Enabled)
+            throw new ForbiddenException("node or location disabled");
+
+        var health = await _db.NodeHealth.AsNoTracking()
+            .SingleOrDefaultAsync(h => h.NodeId == nodeId, cancellationToken)
+            .ConfigureAwait(false);
+        var now = _clock.UtcNow;
+        var catalog = new CatalogDto
+        {
+            Version = "cat_" + Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant(),
+            IssuedAt = now,
+            ExpiresAt = now.AddHours(1),
+            Locations =
+            [
+                new LocationDto
+                {
+                    LocationId = node.Location.LocationId,
+                    Country = node.Location.Country,
+                    CountryCode = node.Location.CountryCode ?? string.Empty,
+                    City = node.Location.City,
+                    DisplayName = node.Location.DisplayName,
+                    Enabled = node.Location.Enabled
+                }
+            ],
+            Nodes = [ProjectNode(node, config, health)]
+        };
+
+        return await SignAndRecordAsync(catalog, now, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<SignedCatalogDto> GetSignedCatalogForCallerAsync(
         AccessTicketClaims? ticketClaims,
         string? licenseToken,
@@ -148,50 +194,62 @@ public sealed class CatalogService : ICatalogService
             {
                 health.TryGetValue(n.NodeId, out var h);
                 configs.TryGetValue(n.NodeId, out var cfg);
-                var profiles = MapProfiles(n.Transports);
-                // MaintenanceMode → Draining=true so Frozen Core excludes without Core changes.
-                var draining = (cfg?.Draining ?? n.Draining) || (cfg?.MaintenanceMode ?? false);
-                var enabled = cfg?.Enabled ?? n.Enabled;
-                return new NodeRegistryEntryDto
-                {
-                    NodeId = n.NodeId,
-                    LocationId = n.LocationId,
-                    Country = n.Location?.Country ?? string.Empty,
-                    City = n.Location?.City ?? string.Empty,
-                    DisplayName = n.DisplayName,
-                    Status = n.Status.ToString().ToLowerInvariant(),
-                    Enabled = enabled,
-                    TestOnly = n.TestOnly,
-                    Draining = draining,
-                    ProtocolVersion = n.ProtocolVersion,
-                    ServerVersion = n.ServerVersion ?? string.Empty,
-                    ServerName = n.ServerName,
-                    SpkiPin = n.SpkiPin,
-                    Capacity = cfg is not null ? Math.Min(n.Capacity, cfg.Capacity) : n.Capacity,
-                    CurrentSessions = n.CurrentSessions,
-                    LastSeen = n.LastSeenAt ?? default,
-                    Endpoints = n.Endpoints.Where(e => e.Enabled)
-                        .GroupBy(e => $"{e.Host}|{e.Port}|{MapIpFamily(e.AddressFamily)}", StringComparer.OrdinalIgnoreCase)
-                        .Select(g => g.OrderBy(e => e.Priority).First())
-                        .OrderBy(e => e.Priority)
-                        .Select(e => new EndpointDto
-                        {
-                            Host = e.Host,
-                            Port = e.Port,
-                            IpFamily = MapIpFamily(e.AddressFamily),
-                            Profiles = profiles
-                        }).ToList(),
-                    Health = new HealthInfoDto
-                    {
-                        Healthy = h?.Healthy ?? false,
-                        SessionCount = h?.ActiveSessions ?? n.CurrentSessions,
-                        CpuPercent = h?.CpuPercent ?? 0,
-                        MemoryPercent = h?.MemoryPercent ?? 0
-                    }
-                };
+                return ProjectNode(n, cfg, h);
             }).ToList()
         };
 
+        return await SignAndRecordAsync(catalog, now, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static NodeRegistryEntryDto ProjectNode(Node node, NodeConfig? cfg, NodeHealth? health)
+    {
+        var profiles = MapProfiles(node.Transports);
+        // MaintenanceMode → Draining=true so Frozen Core excludes without Core changes.
+        var draining = (cfg?.Draining ?? node.Draining) || (cfg?.MaintenanceMode ?? false);
+        return new NodeRegistryEntryDto
+        {
+            NodeId = node.NodeId,
+            LocationId = node.LocationId,
+            Country = node.Location?.Country ?? string.Empty,
+            City = node.Location?.City ?? string.Empty,
+            DisplayName = node.DisplayName,
+            Status = node.Status.ToString().ToLowerInvariant(),
+            Enabled = cfg?.Enabled ?? node.Enabled,
+            TestOnly = node.TestOnly,
+            Draining = draining,
+            ProtocolVersion = node.ProtocolVersion,
+            ServerVersion = node.ServerVersion ?? string.Empty,
+            ServerName = node.ServerName,
+            SpkiPin = node.SpkiPin,
+            Capacity = cfg is not null ? Math.Min(node.Capacity, cfg.Capacity) : node.Capacity,
+            CurrentSessions = node.CurrentSessions,
+            LastSeen = node.LastSeenAt ?? default,
+            Endpoints = node.Endpoints.Where(e => e.Enabled)
+                .GroupBy(e => $"{e.Host}|{e.Port}|{MapIpFamily(e.AddressFamily)}", StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.OrderBy(e => e.Priority).First())
+                .OrderBy(e => e.Priority)
+                .Select(e => new EndpointDto
+                {
+                    Host = e.Host,
+                    Port = e.Port,
+                    IpFamily = MapIpFamily(e.AddressFamily),
+                    Profiles = profiles
+                }).ToList(),
+            Health = new HealthInfoDto
+            {
+                Healthy = health?.Healthy ?? false,
+                SessionCount = health?.ActiveSessions ?? node.CurrentSessions,
+                CpuPercent = health?.CpuPercent ?? 0,
+                MemoryPercent = health?.MemoryPercent ?? 0
+            }
+        };
+    }
+
+    private async Task<SignedCatalogDto> SignAndRecordAsync(
+        CatalogDto catalog,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
         var signed = await _signer.SignAsync(catalog, cancellationToken).ConfigureAwait(false);
         var payload = CatalogCanonicalJson.BuildCanonicalPayload(catalog);
         var hash = Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant();

@@ -231,6 +231,24 @@ func (c *Client) GetTicketKeys(ctx context.Context) (*TicketKeysResponse, error)
 	return &out, nil
 }
 
+// GetCatalogKeys fetches the public catalog-signing key ring.
+func (c *Client) GetCatalogKeys(ctx context.Context) ([]byte, error) {
+	var out json.RawMessage
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/catalog-keys", nil, false, &out); err != nil {
+		return nil, err
+	}
+	return []byte(out), nil
+}
+
+// GetSignedSelf fetches the node-authenticated single-node signed catalog.
+func (c *Client) GetSignedSelf(ctx context.Context) ([]byte, error) {
+	var out json.RawMessage
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/node/signed-self", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return []byte(out), nil
+}
+
 func (c *Client) doJSON(ctx context.Context, method, path string, body any, sign bool, out any) error {
 	var raw []byte
 	var err error

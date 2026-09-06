@@ -22,7 +22,7 @@ func TestStartFailClosedWithoutSkipTUN(t *testing.T) {
 	if runtime.GOOS == "linux" {
 		t.Skip("Linux may have TUN; fail-closed asserted on non-Linux")
 	}
-	dir := t.TempDir()
+	dir := tempDir(t)
 	cfgPath := filepath.Join(dir, "server.json")
 	cfg := localconfig.Default()
 	cfg.ControlPlaneURL = "http://127.0.0.1:9"
@@ -54,7 +54,7 @@ func TestStartFailClosedWithoutSkipTUN(t *testing.T) {
 }
 
 func TestApplyConfigVersionBlockAndPersist(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	pub, _, _ := ed25519.GenerateKey(nil)
 	keysJSON := `{"issuer":"nyxveil-control-plane","keys":{"k1":"` + base64.StdEncoding.EncodeToString(pub) + `"},"updated_at":1}`
 	_ = os.WriteFile(filepath.Join(dir, "ticket-keys.json"), []byte(keysJSON), 0o600)
@@ -127,7 +127,7 @@ func TestApplyConfigVersionBlockAndPersist(t *testing.T) {
 }
 
 func TestRegisterRequiresPublicHost(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	cfgPath := filepath.Join(dir, "server.json")
 	cfg := localconfig.Default()
 	cfg.ControlPlaneURL = "http://127.0.0.1:9"

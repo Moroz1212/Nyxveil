@@ -894,6 +894,82 @@ function Invoke-NyxveilSql {
     }
 }
 
+function Get-NyxveilFileListOnlySql {
+    <#
+    .SYNOPSIS
+      Returns the master-session SQL used to inspect backup logical files.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)][string]$BackupPath
+    )
+    if ([string]::IsNullOrWhiteSpace($BackupPath)) {
+        throw 'BackupPath is required.'
+    }
+    $escapedBackup = $BackupPath.Replace("'", "''")
+    return @"
+SET NOCOUNT ON;
+USE [master];
+RESTORE FILELISTONLY FROM DISK = N'$escapedBackup';
+"@
+}
+
+function Get-NyxveilRestoreMasterSql {
+    <#
+    .SYNOPSIS
+      Returns a master-session RESTORE DATABASE command with explicit MOVE paths.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)][string]$DatabaseName,
+        [Parameter(Mandatory = $true)][string]$BackupPath,
+        [Parameter(Mandatory = $true)][string]$DataLogicalName,
+        [Parameter(Mandatory = $true)][string]$LogLogicalName,
+        [Parameter(Mandatory = $true)][string]$DataPath,
+        [Parameter(Mandatory = $true)][string]$LogPath,
+        [object[]]$AdditionalFileMappings = @()
+    )
+    Assert-ValidDatabaseName -DatabaseName $DatabaseName
+    foreach ($requiredValue in @($BackupPath, $DataLogicalName, $LogLogicalName, $DataPath, $LogPath)) {
+        if ([string]::IsNullOrWhiteSpace([string]$requiredValue)) {
+            throw 'BackupPath, logical file names, and MOVE paths are required.'
+        }
+    }
+
+    $escapeLiteral = {
+        param([string]$Value)
+        return $Value.Replace("'", "''")
+    }
+    $moves = [Collections.Generic.List[string]]::new()
+    $moves.Add(("MOVE N'{0}' TO N'{1}'" -f (& $escapeLiteral $DataLogicalName), (& $escapeLiteral $DataPath)))
+    $moves.Add(("MOVE N'{0}' TO N'{1}'" -f (& $escapeLiteral $LogLogicalName), (& $escapeLiteral $LogPath)))
+    foreach ($mapping in @($AdditionalFileMappings)) {
+        if (-not $mapping -or -not $mapping.LogicalName -or -not $mapping.PhysicalPath) {
+            throw 'Each AdditionalFileMappings entry requires LogicalName and PhysicalPath.'
+        }
+        $moves.Add(("MOVE N'{0}' TO N'{1}'" -f
+                (& $escapeLiteral ([string]$mapping.LogicalName)),
+                (& $escapeLiteral ([string]$mapping.PhysicalPath))))
+    }
+
+    $escapedBackup = & $escapeLiteral $BackupPath
+    $escapedDbLiteral = & $escapeLiteral $DatabaseName
+    $quotedDb = $DatabaseName.Replace(']', ']]')
+    $moveSql = $moves -join ",`r`n    "
+    return @"
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+USE [master];
+IF DB_ID(N'$escapedDbLiteral') IS NOT NULL
+    THROW 51020, N'Migration rehearsal database already exists.', 1;
+RESTORE DATABASE [$quotedDb]
+FROM DISK = N'$escapedBackup'
+WITH $moveSql, RECOVERY, STATS = 10;
+"@
+}
+
 function Invoke-SqlCmdFailClosed {
     <#
     .SYNOPSIS
@@ -2272,6 +2348,8 @@ Export-ModuleMember -Function @(
     'Invoke-NativeChecked',
     'Get-NyxveilSqlcmdArgs',
     'Invoke-NyxveilSql',
+    'Get-NyxveilFileListOnlySql',
+    'Get-NyxveilRestoreMasterSql',
     'Invoke-SqlCmdFailClosed',
     'New-CreateDatabaseScriptCopy',
     'Get-HealthTarget',

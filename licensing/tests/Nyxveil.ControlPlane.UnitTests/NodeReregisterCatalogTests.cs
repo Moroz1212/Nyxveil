@@ -168,6 +168,26 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task TestSignedSelfUsesLatestSPKIAndValidSignature()
+    {
+        var (seed, _, req) = await RegisterAsync("node-self-spki");
+        var pin = Convert.FromHexString("f3855191aadfe5c14ac84483720625e45925d5423881aa3171f5c531576c4488");
+        var retry = ClonePoP(req, seed);
+        retry.SpkiPin = pin;
+        await _fx.Nodes.RegisterWithBootstrapAsync(retry);
+
+        var signed = await _fx.Catalog.GetSignedCatalogForNodeAsync("node-self-spki");
+        Assert.Equal(_fx.LocationId, Assert.Single(signed.Catalog.Locations).LocationId);
+        Assert.Equal(pin, Assert.Single(signed.Catalog.Nodes).SpkiPin);
+
+        var payload = CatalogCanonicalJson.BuildCanonicalPayload(signed.Catalog);
+        var keys = await _fx.Scope.ServiceProvider.GetRequiredService<ISigningKeyService>()
+            .GetCurrentSigningMaterialAsync();
+        Assert.Equal(keys.KeyId, signed.KeyId);
+        Assert.True(Ed25519SigningKeyStore.Verify(keys.PublicKey, payload, signed.Signature));
+    }
+
+    [Fact]
     public async Task TestCatalogUsesTLSFQDNAsServerName()
     {
         var (seed, _, req) = await RegisterAsync("node-fqdn");

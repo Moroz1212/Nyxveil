@@ -146,6 +146,9 @@ public sealed class NodeRequestSecurityTests : IClassFixture<CustomWebApplicatio
     public async Task TestSignedGetConfigAccepted() =>
         Assert.Equal(HttpStatusCode.OK, await Send(Signed("GET", $"/api/v1/node/config?node_id={_a}&x=a%2Fb&x=a+b")));
     [Fact]
+    public async Task TestSignedSelfCatalogAccepted() =>
+        Assert.Equal(HttpStatusCode.OK, await Send(Signed("GET", "/api/v1/node/signed-self")));
+    [Fact]
     public async Task TestSignedRevocationAccepted() =>
         Assert.Equal(HttpStatusCode.OK, await Send(Signed("GET", "/api/v1/revocation")));
 
