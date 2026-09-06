@@ -2,6 +2,7 @@ package configure
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,12 +23,24 @@ type Result struct {
 	LocationID  string   `json:"location_id"`
 	PublicHost  string   `json:"public_host"`
 	DNSServers  []string `json:"dns_servers"`
-	PrevSPKI    string   `json:"previous_spki_sha256,omitempty"`
-	NewSPKI     string   `json:"new_spki_sha256,omitempty"`
-	SPKIChanged bool     `json:"spki_changed"`
-	Registered  bool     `json:"control_plane_reregistered"`
-	RolledBack  bool     `json:"rolled_back,omitempty"`
-	Message     string   `json:"message,omitempty"`
+
+	ControlPlaneURL     string `json:"control_plane_url,omitempty"`
+	PrevControlPlaneURL string `json:"previous_control_plane_url,omitempty"`
+	CPURLChanged        bool   `json:"control_plane_url_changed,omitempty"`
+	CPConnected         bool   `json:"cp_connected,omitempty"`
+	CatalogVerified     bool   `json:"catalog_verified,omitempty"`
+
+	PrevSPKI    string `json:"previous_spki_sha256,omitempty"`
+	NewSPKI     string `json:"new_spki_sha256,omitempty"`
+	SPKIChanged bool   `json:"spki_changed"`
+	Registered  bool   `json:"control_plane_reregistered"`
+	RolledBack  bool   `json:"rolled_back,omitempty"`
+
+	// Rollback nuance when old CP URL is no longer TLS-valid after CP hostname migration.
+	RollbackConfigComplete            bool `json:"rollback_config_complete,omitempty"`
+	RollbackEndpointHealthImpossible  bool `json:"rollback_endpoint_health_impossible,omitempty"`
+
+	Message string `json:"message,omitempty"`
 }
 
 // Apply runs dry-run checks or a transactional reconfigure of an existing node.
@@ -75,16 +88,20 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 	prevSPKI, _ := CurrentSPKIHex(certPath, keyPath)
 
 	res := &Result{
-		DryRun:     opts.DryRun,
-		NodeID:     merged.NodeID,
-		LocationID: merged.LocationID,
-		PublicHost: merged.PublicHost,
-		DNSServers: append([]string(nil), merged.DNSServers...),
-		PrevSPKI:   prevSPKI,
+		DryRun:              opts.DryRun,
+		NodeID:              merged.NodeID,
+		LocationID:          merged.LocationID,
+		PublicHost:          merged.PublicHost,
+		DNSServers:          append([]string(nil), merged.DNSServers...),
+		PrevSPKI:            prevSPKI,
+		ControlPlaneURL:     merged.ControlPlaneURL,
+		PrevControlPlaneURL: base.ControlPlaneURL,
+		CPURLChanged:        !strings.EqualFold(strings.TrimRight(base.ControlPlaneURL, "/"), strings.TrimRight(merged.ControlPlaneURL, "/")),
 	}
 
 	wantACME := strings.TrimSpace(opts.TLSDomain) != ""
 	wantOp := opts.TLSCert != "" && opts.TLSKey != ""
+	wantCPURL := strings.TrimSpace(opts.ControlPlaneURL) != ""
 
 	// Pre-flight: DNS before any TLS mutation when ACME is requested.
 	if wantACME {
@@ -97,8 +114,27 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
+	// Pre-flight: validate target Control Plane BEFORE any config write.
+	if wantCPURL && !opts.SkipCPURLProbe {
+		prevLookup := LookupIPFunc
+		LookupIPFunc = opts.LookupIP
+		defer func() { LookupIPFunc = prevLookup }()
+		probeFn := opts.ExecProbeCP
+		if probeFn == nil {
+			probeFn = func(ctx context.Context, u string) (*ControlPlaneProbeResult, error) {
+				return ProbeControlPlaneAuthFromConfig(ctx, u, base, nodeKey)
+			}
+		}
+		if _, err := probeFn(ctx, merged.ControlPlaneURL); err != nil {
+			return res, err
+		}
+	}
+
 	if opts.DryRun {
-		res.Message = "dry-run OK: existing node identity preserved; DNS/config flags validated; no changes applied"
+		res.Message = "dry-run OK: existing node identity preserved; DNS/config/CP URL flags validated; no changes applied"
+		if wantCPURL {
+			res.Message = "dry-run OK: control plane URL validated (TLS+auth); identity preserved; no changes applied"
+		}
 		return res, nil
 	}
 
@@ -127,6 +163,7 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 	committed := false
 	rollback := func(cause error) error {
 		res.RolledBack = true
+		res.RollbackConfigComplete = true
 		CleanStaging(stageCert, stageKey)
 		_ = RestoreFile(filepath.Join(snapDir, "server.json"), cfgPath)
 		_ = RestoreFile(filepath.Join(snapDir, "tls.crt"), certPath)
@@ -148,10 +185,20 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 		}
 		if !opts.SkipSvc {
 			_ = systemctlAction(opts, "start", "nyxveil-server")
-			_ = waitHealth(opts, 30)
+			if err := waitHealthDataplane(opts, 30); err != nil {
+				// Old CP URL may be TLS-invalid after CP hostname migration.
+				res.RollbackEndpointHealthImpossible = true
+				return fmt.Errorf("configure: ROLLBACK CONFIG COMPLETE but endpoint health impossible (dataplane check: %v); original: %w", err, cause)
+			}
+			// Full healthy (incl. cp_connected) may fail if old CP cert no longer matches.
+			if err := waitHealth(opts, 15); err != nil {
+				res.RollbackEndpointHealthImpossible = true
+				return fmt.Errorf("configure: ROLLBACK CONFIG COMPLETE; old control_plane_url may be unreachable/TLS-invalid; VPN datapath restored; original: %w", cause)
+			}
 		}
 		return fmt.Errorf("configure: rolled back after failure: %w", cause)
 	}
+	rollbackCPAware := rollback
 
 	// Keep OLD working TLS listeners active during ACME HTTP-01.
 	// Only open Nyxveil-managed TCP/80 before requesting the challenge.
@@ -257,30 +304,58 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 
 	if !opts.SkipSvc {
 		if err := systemctlAction(opts, "start", "nyxveil-server"); err != nil {
-			return res, rollback(err)
+			return res, rollbackCPAware(err)
 		}
-		if err := waitHealth(opts, 60); err != nil {
-			return res, rollback(err)
+		if wantCPURL {
+			if err := waitHealthCPConnected(opts, 90); err != nil {
+				return res, rollbackCPAware(err)
+			}
+			res.CPConnected = true
+		} else if err := waitHealth(opts, 60); err != nil {
+			return res, rollbackCPAware(err)
 		}
 	}
 
 	needRegister := res.SPKIChanged ||
 		strings.TrimSpace(opts.PublicHost) != "" ||
-		wantACME || wantOp
+		wantACME || wantOp || wantCPURL
 	if needRegister && !opts.SkipCP {
 		reg := opts.ExecRegister
 		if reg == nil {
 			reg = defaultPoPRegister
 		}
 		if err := reg(cfgPath); err != nil {
-			return res, rollback(fmt.Errorf("Control Plane same-node re-register (SPKI/endpoints) failed: %w", err))
+			return res, rollbackCPAware(fmt.Errorf("Control Plane same-node re-register (SPKI/endpoints/CP URL) failed: %w", err))
 		}
 		res.Registered = true
 	}
 
+	if wantCPURL && !opts.SkipCP {
+		verify := opts.ExecVerifyCatalog
+		if verify == nil {
+			verify = func(ctx context.Context, p string) (*CatalogFreshness, error) {
+				spki, _ := CurrentSPKIHex(certPath, keyPath)
+				return DefaultVerifyCatalogAfterCPURL(ctx, p, nodeKey, spki)
+			}
+		}
+		cat, err := verify(ctx, cfgPath)
+		if err != nil {
+			return res, rollbackCPAware(fmt.Errorf("catalog/management freshness verify failed: %w", err))
+		}
+		if cat == nil || !cat.Verified {
+			return res, rollbackCPAware(fmt.Errorf("catalog/management freshness verify failed: not verified"))
+		}
+		res.CatalogVerified = true
+	}
+
 	_ = committed
 	CleanStaging(stageCert, stageKey)
+	res.NewSPKI, _ = CurrentSPKIHex(certPath, keyPath)
+	res.SPKIChanged = res.PrevSPKI != "" && res.NewSPKI != "" && !strings.EqualFold(res.PrevSPKI, res.NewSPKI)
 	res.Message = "configure OK: identity preserved; staged TLS validated then committed; config/firewall applied"
+	if wantCPURL {
+		res.Message = "configure OK: control_plane_url updated; same-node identity preserved; CP connected; catalog/management verified"
+	}
 	return res, nil
 }
 
@@ -335,6 +410,86 @@ func waitHealth(opts Options, seconds int) error {
 		time.Sleep(time.Second)
 	}
 	return fmt.Errorf("configure: health gate failed: %w", last)
+}
+
+// waitHealthCPConnected requires 3 consecutive samples with healthy + cp_connected.
+func waitHealthCPConnected(opts Options, seconds int) error {
+	const need = 3
+	stable := 0
+	var last error
+	for i := 0; i < seconds; i++ {
+		healthy, cpOK, err := readHealthFlags(opts)
+		if err != nil {
+			stable = 0
+			last = err
+			time.Sleep(time.Second)
+			continue
+		}
+		if !healthy || !cpOK {
+			stable = 0
+			last = fmt.Errorf("healthy=%v cp_connected=%v", healthy, cpOK)
+			time.Sleep(time.Second)
+			continue
+		}
+		stable++
+		if stable >= need {
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
+	if last == nil {
+		last = fmt.Errorf("timeout")
+	}
+	return fmt.Errorf("configure: cp_connected health gate failed: %w", last)
+}
+
+// waitHealthDataplane accepts tun/tls/quic readiness even when cp_connected is false
+// (management plane may be unavailable after CP hostname migration).
+func waitHealthDataplane(opts Options, seconds int) error {
+	if opts.ExecHealthStatus != nil {
+		var last error
+		for i := 0; i < seconds; i++ {
+			_, _, err := opts.ExecHealthStatus()
+			// Dataplane-only: if hook returns err only when process down, treat nil as OK.
+			if err == nil {
+				return nil
+			}
+			last = err
+			time.Sleep(time.Second)
+		}
+		return last
+	}
+	// Fallback: control socket responding is enough for dataplane-present signal in tests/prod without JSON.
+	return waitHealth(opts, seconds)
+}
+
+func readHealthFlags(opts Options) (healthy, cpConnected bool, err error) {
+	if opts.ExecHealthStatus != nil {
+		return opts.ExecHealthStatus()
+	}
+	cmd := exec.Command("nyxveilctl", "status")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// Fall back to health endpoint shape.
+		cmd2 := exec.Command("nyxveilctl", "health")
+		out2, err2 := cmd2.CombinedOutput()
+		if err2 != nil {
+			return false, false, fmt.Errorf("%w / %v: %s", err, err2, strings.TrimSpace(string(out2)))
+		}
+		out = out2
+	}
+	var wrap struct {
+		Healthy     *bool `json:"healthy"`
+		CPConnected *bool `json:"cp_connected"`
+	}
+	if json.Unmarshal(out, &wrap) != nil {
+		return false, false, fmt.Errorf("configure: cannot parse health JSON")
+	}
+	if wrap.Healthy == nil {
+		return false, false, fmt.Errorf("configure: health JSON missing healthy")
+	}
+	cp := wrap.CPConnected != nil && *wrap.CPConnected
+	return *wrap.Healthy, cp, nil
 }
 
 func defaultPoPRegister(cfgPath string) error {

@@ -60,6 +60,10 @@ package_arch() {
 
   chmod 0755 "${dest}/installer/"*.sh "${dest}/scripts/"*.sh
 
+  # Deterministic LF for every shell script shipped to Linux (Windows checkouts).
+  bash "${ROOT}/scripts/normalize-shell-lf.sh" "${dest}/installer" "${dest}/scripts" \
+    "${dest}/systemd" "${dest}/firewall"
+
   # Flat release assets (GitHub Downloads)
   cp -a "${BIN_SRC}/nyxveil-server-linux-${arch}" "${DIST}/"
   cp -a "${BIN_SRC}/nyxveilctl-linux-${arch}" "${DIST}/"
@@ -69,8 +73,13 @@ package_arch amd64
 package_arch arm64
 
 # Legacy bootstrap helper (CLI-only replace for ≤1.0.4 updaters).
+bash "${ROOT}/scripts/normalize-shell-lf.sh" "${ROOT}/scripts/bootstrap-cli-update.sh"
 cp -a "${ROOT}/scripts/bootstrap-cli-update.sh" "${DIST}/bootstrap-cli-update.sh"
 chmod 0755 "${DIST}/bootstrap-cli-update.sh"
+bash "${ROOT}/scripts/normalize-shell-lf.sh" "${DIST}/bootstrap-cli-update.sh"
+bash "${ROOT}/scripts/assert-no-crlf.sh" "${DIST}/bootstrap-cli-update.sh" \
+  "${DIST}/linux-amd64/scripts" "${DIST}/linux-arm64/scripts" \
+  "${DIST}/linux-amd64/installer" "${DIST}/linux-arm64/installer"
 
 # Sign manifests (fail-closed unless SKIP_SIGN=1 for local unsigned experiments).
 if [[ "${SKIP_SIGN:-0}" == "1" ]]; then
@@ -118,11 +127,11 @@ Canonical release assets (exact names):
   SHA256SUMS
 
 Legacy upgrade from 1.0.3/1.0.4 (broken updater) — DO NOT run serv_update first:
-  1) Verify SHA256SUMS for bootstrap-cli-update.sh
+  1) Verify SHA256SUMS for bootstrap-cli-update.sh (must be LF-only Unix script)
   2) sudo bash bootstrap-cli-update.sh --version ${VERSION} --then-update
   See docs/LEGACY-UPDATE.md
 
-Normal update (1.0.5+ nodes):
+Normal update (1.0.6+ nodes, and 1.0.5 once CLI already fixed):
   sudo nyxveilctl update
   # or: sudo serv_update
 

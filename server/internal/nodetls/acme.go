@@ -34,7 +34,9 @@ type ACMEConfig struct {
 }
 
 // IssueOrRenew obtains or renews a publicly trusted certificate.
-// Reuses Dest.KeyFile private key when present so SPKI remains stable across renewals.
+// Reuses Dest.KeyFile when it holds an ACME-compatible ECDSA key so SPKI stays
+// stable across renewals. Incompatible keys (e.g. Ed25519) are replaced with a
+// new ECDSA P-256 key at Dest.KeyFile (callers must stage away from live paths).
 // Never logs private keys. Returns (cert, previousPin, newPin, pinChanged, err).
 func IssueOrRenew(ctx context.Context, cfg ACMEConfig) (cert tls.Certificate, prevPin, newPin []byte, pinChanged bool, err error) {
 	if cfg.Domain == "" {

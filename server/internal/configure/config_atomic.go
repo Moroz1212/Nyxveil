@@ -12,11 +12,23 @@ import (
 	"github.com/nyxveil/server/internal/localconfig"
 )
 
-// Merge applies non-empty options onto a copy of base. Never clears NodeID / ControlPlaneURL / LocationID.
+// Merge applies non-empty options onto a copy of base.
+// Never clears NodeID / LocationID. ControlPlaneURL may change intentionally via --control-plane-url.
 func Merge(base localconfig.File, opts Options) (localconfig.File, error) {
 	out := base
 	if out.NodeID == "" || out.ControlPlaneURL == "" {
 		return out, fmt.Errorf("configure: existing node required (node_id and control_plane_url must be set)")
+	}
+	if u := strings.TrimSpace(opts.ControlPlaneURL); u != "" {
+		normalized, err := NormalizeControlPlaneURL(u)
+		if err != nil {
+			return out, err
+		}
+		if !strings.EqualFold(strings.TrimRight(out.ControlPlaneURL, "/"), normalized) {
+			out.ControlPlaneURL = normalized
+			// Public CP cutover: clear SelfSignedPinned pin so daemon uses SystemTrust.
+			out.ControlPlaneSPKIPin = ""
+		}
 	}
 	if key := strings.TrimSpace(opts.PublicHost); key != "" {
 		out.PublicHost = key
@@ -71,8 +83,11 @@ func AtomicSave(path string, cfg *localconfig.File) error {
 	if err := json.Unmarshal(b, &check); err != nil {
 		return fmt.Errorf("configure: config JSON invalid after marshal: %w", err)
 	}
-	if check.NodeID != cfg.NodeID || check.ControlPlaneURL != cfg.ControlPlaneURL {
+	if check.NodeID != cfg.NodeID {
 		return fmt.Errorf("configure: config identity fields changed unexpectedly")
+	}
+	if check.LocationID != cfg.LocationID {
+		return fmt.Errorf("configure: location_id changed unexpectedly")
 	}
 	tmp := path + ".configure.tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)

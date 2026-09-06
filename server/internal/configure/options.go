@@ -13,8 +13,9 @@ import (
 type Options struct {
 	ConfigPath string // default paths.ServerConfig()
 
-	PublicHost string
-	DNSServers string // comma-separated IPv4
+	PublicHost        string
+	DNSServers        string // comma-separated IPv4
+	ControlPlaneURL   string // https://cp.example:18443 — existing-node URL cutover
 
 	TLSDomain  string
 	TLSEmail   string
@@ -33,15 +34,21 @@ type Options struct {
 	NFTFile       string
 	SkipCertTrust bool // tests: skip system-trust verify (still checks SAN/expiry/key)
 
+	// SkipCPURLProbe skips live TLS/auth probe of --control-plane-url (unit tests only).
+	SkipCPURLProbe bool
+
 	// Hooks (overridable in tests).
-	ExecRegister  func(cfgPath string) error
-	ExecSystemctl func(action, unit string) error
-	ExecHealth    func() error
-	ExecACME      func(ctx context.Context, args ACMEIssueArgs) error
-	ExecFirewall  func(opts FirewallOpts) error // default ApplyNyxveilFirewall
-	OnBeforeACME  func()                        // fired after TCP/80 FW prep, before HTTP-01
-	LookupIP      func(host string) ([]net.IP, error)
-	PublicIPHint  string // optional expected public IP for DNS check (tests / --expect-public-ip)
+	ExecRegister       func(cfgPath string) error
+	ExecSystemctl      func(action, unit string) error
+	ExecHealth         func() error
+	ExecHealthStatus   func() (healthy, cpConnected bool, err error) // preferred for CP URL cutover
+	ExecACME           func(ctx context.Context, args ACMEIssueArgs) error
+	ExecFirewall       func(opts FirewallOpts) error // default ApplyNyxveilFirewall
+	ExecProbeCP        func(ctx context.Context, url string) (*ControlPlaneProbeResult, error)
+	ExecVerifyCatalog  func(ctx context.Context, cfgPath string) (*CatalogFreshness, error)
+	OnBeforeACME       func() // fired after TCP/80 FW prep, before HTTP-01
+	LookupIP           func(host string) ([]net.IP, error)
+	PublicIPHint       string // optional expected public IP for DNS check (tests / --expect-public-ip)
 }
 
 // ParseDNSServers validates and splits a comma-separated IPv4 list.
@@ -87,6 +94,11 @@ func (o *Options) ValidateFlags() error {
 	if hasACME && strings.TrimSpace(o.TLSEmail) == "" {
 		// Email is strongly recommended but Let's Encrypt allows empty; require for production UX.
 		return fmt.Errorf("configure: --tls-email required with --tls-domain")
+	}
+	if u := strings.TrimSpace(o.ControlPlaneURL); u != "" {
+		if _, err := NormalizeControlPlaneURL(u); err != nil {
+			return err
+		}
 	}
 	return nil
 }

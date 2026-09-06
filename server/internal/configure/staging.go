@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/nyxveil/server/internal/filemeta"
+	"github.com/nyxveil/server/internal/nodetls"
 )
 
 // StagingTLSPaths returns secure next-cert paths under stateDir.
@@ -14,19 +15,27 @@ func StagingTLSPaths(stateDir string) (certPath, keyPath string) {
 	return filepath.Join(stateDir, "tls.next.crt"), filepath.Join(stateDir, "tls.next.key")
 }
 
-// SeedStagingKeyFromLive copies the live leaf private key into staging when present
-// so ACME CSR can reuse SPKI across self-signed → publicly trusted transitions.
+// SeedStagingKeyFromLive copies the live leaf private key into staging when it is
+// ACME/WebPKI compatible (ECDSA). Incompatible keys (e.g. legacy Ed25519 self-signed)
+// are NOT copied — staging stays empty so ACME generates a new ECDSA P-256 key.
+// Live tls.key is never modified.
 func SeedStagingKeyFromLive(liveKey, stageKey string) error {
-	b, err := os.ReadFile(liveKey)
-	if err != nil {
+	if _, err := os.Stat(liveKey); err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
+		return fmt.Errorf("configure: stat live TLS key: %w", err)
+	}
+	if !nodetls.KeyFileACMECompatible(liveKey) {
+		_ = os.Remove(stageKey)
+		return nil
+	}
+	raw, err := os.ReadFile(liveKey)
+	if err != nil {
 		return fmt.Errorf("configure: read live TLS key for staging seed: %w", err)
 	}
 	meta, _ := filemeta.CaptureMeta(liveKey)
-	uid, gid := meta.UID, meta.GID
-	return filemeta.AtomicWrite(stageKey, b, filemeta.RuntimeTLSKeyMode, uid, gid)
+	return filemeta.AtomicWrite(stageKey, raw, filemeta.RuntimeTLSKeyMode, meta.UID, meta.GID)
 }
 
 // CleanStaging removes staged next-cert material (never logs contents).

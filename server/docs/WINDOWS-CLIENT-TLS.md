@@ -40,9 +40,10 @@ Requirements:
 
 Behaviour:
 
-- Reuses a **stable** leaf private key file so SPKI pin stays constant across renewals when possible
+- Reuses a **stable ECDSA** leaf private key so SPKI stays constant across renewals when possible
+- If the existing leaf key is incompatible (e.g. legacy Ed25519 self-signed), generates a new **ECDSA P-256** key in staging; SPKI changes once, then stays stable on renewals
 - Atomic cert/key replace (`.tmp` → rename); key never logged
-- If SPKI changes, logs a warning to **re-register** so Control Plane catalog pin stays consistent
+- If SPKI changes, same-node Control Plane re-register keeps catalog pin consistent
 - Existing operator certs are not overwritten by ACME unless `--tls-replace` / `Replace: true`
 
 ## Gate tests (`go test ./internal/nodetls/`)

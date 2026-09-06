@@ -37,7 +37,7 @@ public static class CertificateHostnameValidator
         return !string.IsNullOrEmpty(host) && certificate.MatchesHostname(host);
     }
 
-    internal static string NormalizeHost(string hostname)
+        public static string NormalizeHost(string hostname)
     {
         var host = hostname.Trim().TrimEnd('.');
         if (host.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||

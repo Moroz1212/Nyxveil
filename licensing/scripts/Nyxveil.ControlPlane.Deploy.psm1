@@ -74,6 +74,11 @@ function Get-OperationalConfigPath {
     param(
         [string]$InstallDir = ''
     )
+    # ProgramData is the ops SoT. InstallDir\config\operational.json is a mirror only.
+    # Prefer ProgramData whenever it exists to avoid nested-config drift / InstallDir preference bugs.
+    if (Test-Path -LiteralPath $script:OperationalConfigProgramData) {
+        return $script:OperationalConfigProgramData
+    }
     if ($InstallDir -and (Test-Path (Join-Path $InstallDir 'config\operational.json'))) {
         return (Join-Path $InstallDir 'config\operational.json')
     }

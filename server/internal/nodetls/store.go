@@ -11,8 +11,10 @@ package nodetls
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -20,6 +22,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"net"
 	"os"
@@ -99,33 +102,86 @@ func InstallOperator(srcCert, srcKey string, dest Paths, replace bool) error {
 	return nil
 }
 
-// LoadOrCreateStableKey loads an existing private key or creates a new ECDSA P-256
-// key persisted at keyFile (0600). Reusing the same key keeps SPKI stable across
-// certificate renewals when the CSR uses this key.
+// ACMECompatibleLeafKey reports whether signer can be reused for WebPKI ACME CSRs.
+// Compatible: ECDSA (any NIST curve already used by the leaf). Incompatible: Ed25519, RSA-only
+// paths we do not prefer for new issuance, and unknown types.
+func ACMECompatibleLeafKey(signer crypto.Signer) bool {
+	if signer == nil {
+		return false
+	}
+	switch signer.(type) {
+	case *ecdsa.PrivateKey:
+		return true
+	default:
+		return false
+	}
+}
+
+// ParseLeafPrivateKeyPEM parses a PKCS#8 / EC private key PEM. Never logs key material.
+func ParseLeafPrivateKeyPEM(pemBytes []byte) (crypto.Signer, error) {
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, errors.New("nodetls: invalid key PEM")
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		ec, err2 := x509.ParseECPrivateKey(block.Bytes)
+		if err2 != nil {
+			return nil, fmt.Errorf("nodetls: parse key: %v / %v", err, err2)
+		}
+		return ec, nil
+	}
+	switch k := key.(type) {
+	case *ecdsa.PrivateKey:
+		return k, nil
+	case ed25519.PrivateKey:
+		return k, nil
+	case *rsa.PrivateKey:
+		return k, nil
+	default:
+		return nil, fmt.Errorf("nodetls: unsupported private key type %T", key)
+	}
+}
+
+// KeyFileACMECompatible reports whether keyFile exists and holds an ACME-reusable leaf key.
+func KeyFileACMECompatible(keyFile string) bool {
+	b, err := os.ReadFile(keyFile)
+	if err != nil {
+		return false
+	}
+	signer, err := ParseLeafPrivateKeyPEM(b)
+	if err != nil {
+		return false
+	}
+	return ACMECompatibleLeafKey(signer)
+}
+
+// LoadOrCreateStableKey loads an existing ACME-compatible private key or creates a new
+// ECDSA P-256 key at keyFile (0600).
+//
+// "Reuse when possible" means: reuse ECDSA keys; if the on-disk key is incompatible
+// (e.g. Ed25519 from legacy self-signed nodes), replace it with a new P-256 key.
+// Callers that stage ACME material must point Dest.KeyFile at staging so live keys stay untouched.
 func LoadOrCreateStableKey(keyFile string) (crypto.Signer, error) {
 	if b, err := os.ReadFile(keyFile); err == nil {
-		block, _ := pem.Decode(b)
-		if block == nil {
-			return nil, errors.New("nodetls: invalid key PEM")
+		signer, perr := ParseLeafPrivateKeyPEM(b)
+		if perr == nil && ACMECompatibleLeafKey(signer) {
+			return signer, nil
 		}
-		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err != nil {
-			// Try EC
-			ec, err2 := x509.ParseECPrivateKey(block.Bytes)
-			if err2 != nil {
-				return nil, fmt.Errorf("nodetls: parse key: %v / %v", err, err2)
-			}
-			return ec, nil
-		}
-		switch k := key.(type) {
-		case *ecdsa.PrivateKey:
-			return k, nil
-		default:
-			return nil, fmt.Errorf("nodetls: unsupported private key type %T", key)
+		// Incompatible or unreadable for ACME — fall through and generate P-256.
+		// Do not log key material; type string is operator-safe.
+		if perr == nil {
+			log.Printf("nodetls: existing leaf key type %T is not ACME/WebPKI compatible; generating new ECDSA P-256 key", signer)
+		} else {
+			log.Printf("nodetls: existing leaf key unusable for ACME (%v); generating new ECDSA P-256 key", perr)
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
+	return createAndPersistP256Key(keyFile)
+}
+
+func createAndPersistP256Key(keyFile string) (crypto.Signer, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -138,8 +194,7 @@ func LoadOrCreateStableKey(keyFile string) (crypto.Signer, error) {
 	if err := os.MkdirAll(filepath.Dir(keyFile), 0o700); err != nil {
 		return nil, err
 	}
-	tmp := keyFile + ".tmp"
-	if err := atomicWrite(tmp, keyFile, pemBytes, 0o600); err != nil {
+	if err := atomicWrite(keyFile+".tmp", keyFile, pemBytes, 0o600); err != nil {
 		return nil, err
 	}
 	return priv, nil

@@ -395,6 +395,9 @@ static async Task<int?> TryRunCliAsync(string[] args)
         return CertificateValidateCommand.Run(args);
     }
 
+    if (cmd.Equals("tls", StringComparison.OrdinalIgnoreCase))
+        return TlsConfigureCommand.Run(args);
+
     return null;
 }
 

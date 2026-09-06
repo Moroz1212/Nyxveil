@@ -72,6 +72,18 @@ for f in nyxveil-server-linux-amd64 nyxveilctl-linux-amd64 nyxveil-server-linux-
   [[ "${a}" == "${b}" ]] || die "bin/release mismatch for ${f}"
 done
 
+echo "==> No CRLF in production shell release assets"
+bash "${ROOT}/scripts/assert-no-crlf.sh" \
+  "${DIST}/bootstrap-cli-update.sh" \
+  "${DIST}/linux-amd64/scripts" \
+  "${DIST}/linux-arm64/scripts" \
+  "${DIST}/linux-amd64/installer" \
+  "${DIST}/linux-arm64/installer"
+
+echo "==> bootstrap-cli-update.sh parses under bash"
+bash -n "${DIST}/bootstrap-cli-update.sh"
+bash "${DIST}/bootstrap-cli-update.sh" --help >/dev/null
+
 echo "==> Manifest asset hashes match release binaries (signed ParseManifest)"
 go run ./scripts/verify-manifest-hashes.go -dist "${DIST}" -version "${VERSION}"
 

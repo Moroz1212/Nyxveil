@@ -94,11 +94,13 @@ bootstrap-cli (legacy ≤1.0.4 updaters):
 configure flags (existing registered node only — preserves node_id / node.key):
   --public-host HOST
   --dns-servers IP,IP
+  --control-plane-url URL   # https://cp.example:18443 (SystemTrust validated)
   --tls-domain FQDN
   --tls-email EMAIL
   --tls-cert PATH --tls-key PATH [--tls-replace]
   --expect-public-ip IP   # required for ACME DNS check when public_host is already an FQDN
   --check | --dry-run     # validate only; no changes
+  --status                # print configure/TLS/CP status JSON
 `)
 }
 
@@ -215,7 +217,7 @@ func resolveManifestURL(args []string) (string, error) {
 func runBootstrapCLI(args []string) error {
 	fs := flag.NewFlagSet("bootstrap-cli", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	versionFlag := fs.String("version", "1.0.5", "target server-vVERSION release")
+	versionFlag := fs.String("version", "1.0.8", "target server-vVERSION release")
 	manifestURL := fs.String("manifest-url", "", "override signed manifest URL")
 	ctlPath := fs.String("ctl-path", "", "nyxveilctl install path (default beside nyxveil-server)")
 	thenUpdate := fs.Bool("then-update", false, "after CLI replace, run full nyxveilctl update")
@@ -406,6 +408,7 @@ func runConfigure(args []string) error {
 	var (
 		publicHost   = fs.String("public-host", "", "set public_host (FQDN after TLS cutover)")
 		dnsServers   = fs.String("dns-servers", "", "comma-separated IPv4 resolvers")
+		cpURL        = fs.String("control-plane-url", "", "set control_plane_url (https://host:port); SystemTrust validated")
 		tlsDomain    = fs.String("tls-domain", "", "ACME FQDN (Let's Encrypt HTTP-01)")
 		tlsEmail     = fs.String("tls-email", "", "ACME contact email")
 		tlsCert      = fs.String("tls-cert", "", "operator certificate PEM path")
@@ -428,19 +431,20 @@ func runConfigure(args []string) error {
 		return configure.PrintStatusJSON(v)
 	}
 	opts := configure.Options{
-		ConfigPath:   *configPath,
-		PublicHost:   *publicHost,
-		DNSServers:   *dnsServers,
-		TLSDomain:    *tlsDomain,
-		TLSEmail:     *tlsEmail,
-		TLSCert:      *tlsCert,
-		TLSKey:       *tlsKey,
-		TLSReplace:   *tlsReplace,
-		DryRun:       *dryRun || *check,
-		PublicIPHint: *expectIP,
+		ConfigPath:      *configPath,
+		PublicHost:      *publicHost,
+		DNSServers:      *dnsServers,
+		ControlPlaneURL: *cpURL,
+		TLSDomain:       *tlsDomain,
+		TLSEmail:        *tlsEmail,
+		TLSCert:         *tlsCert,
+		TLSKey:          *tlsKey,
+		TLSReplace:      *tlsReplace,
+		DryRun:          *dryRun || *check,
+		PublicIPHint:    *expectIP,
 	}
-	if opts.PublicHost == "" && opts.DNSServers == "" && opts.TLSDomain == "" && opts.TLSCert == "" {
-		return fmt.Errorf("configure: specify at least one of --public-host, --dns-servers, --tls-domain, or --tls-cert/--tls-key (or --status)")
+	if opts.PublicHost == "" && opts.DNSServers == "" && opts.TLSDomain == "" && opts.TLSCert == "" && opts.ControlPlaneURL == "" {
+		return fmt.Errorf("configure: specify at least one of --public-host, --dns-servers, --control-plane-url, --tls-domain, or --tls-cert/--tls-key (or --status)")
 	}
 	res, err := configure.Apply(context.Background(), opts)
 	if res != nil {

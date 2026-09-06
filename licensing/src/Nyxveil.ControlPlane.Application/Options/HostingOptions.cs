@@ -20,7 +20,11 @@ public sealed class HostingOptions
     /// <summary>Hostname used for certificate CN/SAN and TLS client SNI validation.</summary>
     public string PublicHostname { get; set; } = "localhost";
 
-    /// <summary>Public base URL advertised to operators (e.g. https://control.example.com:8443).</summary>
+    /// <summary>
+    /// Externally advertised HTTPS base URL for operators (may include NAT port, e.g. :18443).
+    /// Not used by Kestrel listen, health probes, catalog, or node callbacks — those use
+    /// <see cref="PublicHostname"/> + <see cref="Port"/>.
+    /// </summary>
     public string PublicBaseUrl { get; set; } = string.Empty;
 
     public static bool IsValidPort(int port) => port is >= 1 and <= 65535;
