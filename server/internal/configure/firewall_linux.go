@@ -77,14 +77,3 @@ func ParseListenPort(listen string, def int) int {
 	return ParseListenPortShared(listen, def)
 }
 
-// NFTHasACME80 reports whether the managed file already opens TCP/80.
-func NFTHasACME80(nftFile string) bool {
-	if nftFile == "" {
-		nftFile = defaultNFTFile
-	}
-	b, err := os.ReadFile(nftFile)
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(b), acmeComment) || strings.Contains(string(b), "tcp dport 80")
-}

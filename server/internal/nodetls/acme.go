@@ -62,7 +62,10 @@ func IssueOrRenew(ctx context.Context, cfg ACMEConfig) (cert tls.Certificate, pr
 		if leafErr != nil {
 			return tls.Certificate{}, nil, nil, false, leafErr
 		}
-		if time.Until(leaf.NotAfter) > 30*24*time.Hour {
+		// Only skip issuance when the existing leaf is still fresh AND covers the
+		// requested domain. A valid self-signed IP cert must not short-circuit ACME
+		// for a new FQDN (existing-node TLS transition).
+		if time.Until(leaf.NotAfter) > 30*24*time.Hour && leaf.VerifyHostname(cfg.Domain) == nil {
 			return existing, pin, pin, false, nil
 		}
 		prevPin = pin

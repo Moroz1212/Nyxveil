@@ -1,4 +1,4 @@
-# Existing-node reconfigure (`nyxveilctl configure`) — server-v1.0.3
+# Existing-node reconfigure (`nyxveilctl configure`) — server-v1.0.4
 
 Transactional, idempotent reconfiguration of an **already registered** VPN node.
 Preserves `node_id`, `node.key`, and Control Plane identity. Never requires a bootstrap token.
@@ -28,20 +28,24 @@ sudo serv_configure --status
 
 `--expect-public-ip` is required for ACME when `public_host` is already an FQDN (DNS must resolve to this IP **before** any TLS change).
 
-## Behavior
+## ACME transaction order (v1.0.4)
 
-1. Snapshot `server.json`, TLS material, Nyxveil nftables file
-2. DNS check for `--tls-domain` (fail closed — no config/TLS mutation on mismatch)
-3. Stop service → apply nftables (`inet nyxveil` only; open TCP/80 for HTTP-01 if ACME) → atomic `server.json` → ACME or operator cert → validate leaf → PoP re-register (same NodeId) → start → `nyxveilctl health`
-4. On any failure: restore snapshots, restore firewall, restart previous working service
+1. Validate CLI / merge (identity preserved)
+2. DNS check for `--tls-domain` (fail closed — **no** config/TLS mutation on mismatch)
+3. Snapshot `server.json`, live TLS, Nyxveil nftables
+4. Open TCP/80 in `inet nyxveil` only (old TLS stays live)
+5. Issue ACME into **staging** (`tls.next.crt` / `tls.next.key`); reuse live leaf key when present
+6. Validate **staged** cert for target FQDN (never against live self-signed IP cert)
+7. Stop → atomic commit live TLS + `server.json` → start → health → same-node PoP re-register
+8. On any failure: restore snapshots + firewall; restart previous working service (`rolled_back=true`)
 
 ## SPKI
 
-If leaf SPKI changes, Control Plane is updated via existing `POST /api/v1/nodes/register` with NodeToken PoP (same `node_id`). Failure rolls back.
+If leaf SPKI changes after commit, Control Plane is updated via existing `POST /api/v1/nodes/register` with NodeToken PoP (same `node_id`). CP failure rolls back live TLS/config.
 
 ## Upgrade
 
-Publish `server-v1.0.3`, then on the node:
+Publish `server-v1.0.4`, then on the node:
 
 ```bash
 sudo serv_update

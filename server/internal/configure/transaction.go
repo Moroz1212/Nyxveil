@@ -16,20 +16,31 @@ import (
 
 // Result summarizes a configure run (never includes private keys).
 type Result struct {
-	DryRun           bool   `json:"dry_run"`
-	NodeID           string `json:"node_id"`
-	LocationID       string `json:"location_id"`
-	PublicHost       string `json:"public_host"`
-	DNSServers       []string `json:"dns_servers"`
-	PrevSPKI         string `json:"previous_spki_sha256,omitempty"`
-	NewSPKI          string `json:"new_spki_sha256,omitempty"`
-	SPKIChanged      bool   `json:"spki_changed"`
-	Registered       bool   `json:"control_plane_reregistered"`
-	RolledBack       bool   `json:"rolled_back,omitempty"`
-	Message          string `json:"message,omitempty"`
+	DryRun      bool     `json:"dry_run"`
+	NodeID      string   `json:"node_id"`
+	LocationID  string   `json:"location_id"`
+	PublicHost  string   `json:"public_host"`
+	DNSServers  []string `json:"dns_servers"`
+	PrevSPKI    string   `json:"previous_spki_sha256,omitempty"`
+	NewSPKI     string   `json:"new_spki_sha256,omitempty"`
+	SPKIChanged bool     `json:"spki_changed"`
+	Registered  bool     `json:"control_plane_reregistered"`
+	RolledBack  bool     `json:"rolled_back,omitempty"`
+	Message     string   `json:"message,omitempty"`
 }
 
 // Apply runs dry-run checks or a transactional reconfigure of an existing node.
+//
+// ACME / TLS transition order (existing-node):
+//  1. validate flags + load identity
+//  2. DNS must point at expected public IP (fail before any mutation)
+//  3. snapshot working config/TLS/firewall
+//  4. open TCP/80 in Nyxveil nftables (idempotent) while OLD TLS stays live
+//  5. issue ACME into staging paths only (tls.next.*)
+//  6. validate STAGED cert for target FQDN (never against live self-signed)
+//  7. only then: stop → atomic commit live TLS + server.json → start → health → PoP re-register
+//
+// On any failure after snapshot: restore snapshots, restore firewall, restart previous service.
 func Apply(ctx context.Context, opts Options) (*Result, error) {
 	if err := opts.ValidateFlags(); err != nil {
 		return nil, err
@@ -55,6 +66,10 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 
+	stateDir := paths.StateDir
+	if opts.StateDir != "" {
+		stateDir = opts.StateDir
+	}
 	certPath, keyPath := DefaultTLSPaths(merged.TLSCertFile, merged.TLSKeyFile)
 	prevSPKI, _ := CurrentSPKIHex(certPath, keyPath)
 
@@ -67,14 +82,16 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 		PrevSPKI:   prevSPKI,
 	}
 
+	wantACME := strings.TrimSpace(opts.TLSDomain) != ""
+	wantOp := opts.TLSCert != "" && opts.TLSKey != ""
+
 	// Pre-flight: DNS before any TLS mutation when ACME is requested.
-	if strings.TrimSpace(opts.TLSDomain) != "" {
+	if wantACME {
 		expect, err := ResolveExpectPublicIPs(opts, base.PublicHost)
 		if err != nil {
 			return res, err
 		}
-		lookup := opts.LookupIP
-		if err := CheckDNSpointsHere(lookup, opts.TLSDomain, expect); err != nil {
+		if err := CheckDNSpointsHere(opts.LookupIP, opts.TLSDomain, expect); err != nil {
 			return res, err
 		}
 	}
@@ -84,10 +101,7 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 		return res, nil
 	}
 
-	snapDir := filepath.Join(paths.StateDir, "configure-snapshot")
-	if opts.StateDir != "" {
-		snapDir = filepath.Join(opts.StateDir, "configure-snapshot")
-	}
+	snapDir := filepath.Join(stateDir, "configure-snapshot")
 	_ = os.RemoveAll(snapDir)
 	if err := os.MkdirAll(snapDir, 0o700); err != nil {
 		return res, err
@@ -105,14 +119,24 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 	}
 	_ = SnapshotFile(nftFile, filepath.Join(snapDir, "nyxveil.conf"))
 
+	stageCert, stageKey := StagingTLSPaths(stateDir)
+	CleanStaging(stageCert, stageKey)
+	defer CleanStaging(stageCert, stageKey)
+
+	committed := false
 	rollback := func(cause error) error {
 		res.RolledBack = true
+		CleanStaging(stageCert, stageKey)
 		_ = RestoreFile(filepath.Join(snapDir, "server.json"), cfgPath)
 		_ = RestoreFile(filepath.Join(snapDir, "tls.crt"), certPath)
 		_ = RestoreFile(filepath.Join(snapDir, "tls.key"), keyPath)
 		_ = RestoreFile(filepath.Join(snapDir, "nyxveil.conf"), nftFile)
 		if !opts.SkipFW {
-			_ = ApplyNyxveilFirewall(FirewallOpts{
+			fw := opts.ExecFirewall
+			if fw == nil {
+				fw = ApplyNyxveilFirewall
+			}
+			_ = fw(FirewallOpts{
 				NFTFile:   nftFile,
 				TLSPort:   ParseListenPort(base.TLSListen, 443),
 				QUICPort:  ParseListenPort(base.QUICListen, 443),
@@ -127,78 +151,119 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 		return fmt.Errorf("configure: rolled back after failure: %w", cause)
 	}
 
-	sysctl := opts.ExecSystemctl
-	if sysctl == nil {
-		sysctl = func(action, unit string) error {
-			return exec.Command("systemctl", action, unit).Run()
-		}
+	// Keep OLD working TLS listeners active during ACME HTTP-01.
+	// Only open Nyxveil-managed TCP/80 before requesting the challenge.
+	applyFW := opts.ExecFirewall
+	if applyFW == nil {
+		applyFW = ApplyNyxveilFirewall
 	}
-
-	if !opts.SkipSvc {
-		_ = sysctl("stop", "nyxveil-server")
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	need80 := strings.TrimSpace(merged.ACMEDomain) != "" || strings.TrimSpace(opts.TLSDomain) != ""
-	if !opts.SkipFW {
-		if err := ApplyNyxveilFirewall(FirewallOpts{
+	need80 := wantACME || strings.TrimSpace(merged.ACMEDomain) != ""
+	if !opts.SkipFW && need80 {
+		if err := applyFW(FirewallOpts{
 			NFTFile:   nftFile,
 			TLSPort:   ParseListenPort(merged.TLSListen, 443),
 			QUICPort:  ParseListenPort(merged.QUICListen, 443),
 			VPNSubnet: merged.VPNSubnetCIDR,
-			Enable80:  need80,
+			Enable80:  true,
 		}); err != nil {
 			return res, rollback(err)
 		}
+		if opts.OnBeforeACME != nil {
+			opts.OnBeforeACME()
+		}
 	}
 
-	if err := AtomicSave(cfgPath, &merged); err != nil {
-		return res, rollback(err)
+	validateHost := merged.PublicHost
+	if wantACME {
+		validateHost = opts.TLSDomain
 	}
 
-	// TLS material
-	if opts.TLSCert != "" && opts.TLSKey != "" {
+	// Stage TLS material; never validate the TARGET hostname against LIVE cert.
+	switch {
+	case wantOp:
+		if err := ValidateLeafForDomainOpts(opts.TLSCert, opts.TLSKey, validateHost, time.Now(), !opts.SkipCertTrust); err != nil {
+			return res, rollback(err)
+		}
+		res.NewSPKI, _ = CurrentSPKIHex(opts.TLSCert, opts.TLSKey)
+	case wantACME:
+		if err := SeedStagingKeyFromLive(keyPath, stageKey); err != nil {
+			return res, rollback(err)
+		}
+		acmeDir := filepath.Join(stateDir, "acme")
+		issue := opts.ExecACME
+		if issue == nil {
+			issue = defaultIssueACME
+		}
+		if err := issue(ctx, ACMEIssueArgs{
+			Domain:    opts.TLSDomain,
+			Email:     opts.TLSEmail,
+			StateDir:  acmeDir,
+			StageCert: stageCert,
+			StageKey:  stageKey,
+			Replace:   true, // staging always forces domain-targeted issuance
+		}); err != nil {
+			return res, rollback(err)
+		}
+		// Explicit staged-path validation — never pass live tls.crt here.
+		if err := ValidateLeafForDomainOpts(stageCert, stageKey, opts.TLSDomain, time.Now(), !opts.SkipCertTrust); err != nil {
+			return res, rollback(err)
+		}
+		res.NewSPKI, _ = CurrentSPKIHex(stageCert, stageKey)
+	default:
+		// Config-only (public_host / dns) — live TLS unchanged.
+		res.NewSPKI = prevSPKI
+	}
+
+	res.SPKIChanged = prevSPKI != "" && res.NewSPKI != "" && !strings.EqualFold(prevSPKI, res.NewSPKI)
+
+	// Final commit window: stop → write live TLS + server.json → start → health → CP.
+	if !opts.SkipSvc {
+		_ = systemctlAction(opts, "stop", "nyxveil-server")
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	switch {
+	case wantOp:
 		if err := InstallOperatorTLS(opts.TLSCert, opts.TLSKey, certPath, keyPath, opts.TLSReplace); err != nil {
 			return res, rollback(err)
 		}
-		host := merged.PublicHost
-		if strings.TrimSpace(opts.TLSDomain) != "" {
-			host = opts.TLSDomain
-		}
-		if err := ValidateLeafForDomainOpts(certPath, keyPath, host, time.Now(), !opts.SkipCertTrust); err != nil {
-			return res, rollback(err)
-		}
-	} else if strings.TrimSpace(opts.TLSDomain) != "" {
-		acmeState := paths.StateDir
-		if opts.StateDir != "" {
-			acmeState = opts.StateDir
-		}
-		acmeDir := filepath.Join(acmeState, "acme")
-		_, _, _, _, err := nodetls.IssueOrRenew(ctx, nodetls.ACMEConfig{
-			Domain:     opts.TLSDomain,
-			Email:      opts.TLSEmail,
-			StateDir:   acmeDir,
-			Dest:       nodetls.Paths{CertFile: certPath, KeyFile: keyPath},
-			Replace:    opts.TLSReplace,
-			AccountKey: filepath.Join(acmeDir, "acme-account.key"),
-		})
-		if err != nil {
-			return res, rollback(err)
-		}
-		if err := ValidateLeafForDomainOpts(certPath, keyPath, opts.TLSDomain, time.Now(), !opts.SkipCertTrust); err != nil {
+	case wantACME:
+		if err := AtomicCommitTLS(stageCert, stageKey, certPath, keyPath); err != nil {
 			return res, rollback(err)
 		}
 	}
 	_ = EnsureOwnerReadable(certPath, keyPath)
 
-	newSPKI, _ := CurrentSPKIHex(certPath, keyPath)
-	res.NewSPKI = newSPKI
-	res.SPKIChanged = prevSPKI != "" && newSPKI != "" && !strings.EqualFold(prevSPKI, newSPKI)
+	if err := AtomicSave(cfgPath, &merged); err != nil {
+		return res, rollback(err)
+	}
+	committed = true
+
+	// Persist port 80 for successful ACME (renewals). Already applied above when need80.
+	if !opts.SkipFW && !need80 {
+		if err := applyFW(FirewallOpts{
+			NFTFile:   nftFile,
+			TLSPort:   ParseListenPort(merged.TLSListen, 443),
+			QUICPort:  ParseListenPort(merged.QUICListen, 443),
+			VPNSubnet: merged.VPNSubnetCIDR,
+			Enable80:  false,
+		}); err != nil {
+			return res, rollback(err)
+		}
+	}
+
+	if !opts.SkipSvc {
+		if err := systemctlAction(opts, "start", "nyxveil-server"); err != nil {
+			return res, rollback(err)
+		}
+		if err := waitHealth(opts, 60); err != nil {
+			return res, rollback(err)
+		}
+	}
 
 	needRegister := res.SPKIChanged ||
 		strings.TrimSpace(opts.PublicHost) != "" ||
-		strings.TrimSpace(opts.TLSDomain) != "" ||
-		(opts.TLSCert != "" && opts.TLSKey != "")
+		wantACME || wantOp
 	if needRegister && !opts.SkipCP {
 		reg := opts.ExecRegister
 		if reg == nil {
@@ -210,17 +275,32 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 		res.Registered = true
 	}
 
-	if !opts.SkipSvc {
-		if err := sysctl("start", "nyxveil-server"); err != nil {
-			return res, rollback(err)
-		}
-		if err := waitHealth(opts, 60); err != nil {
-			return res, rollback(err)
-		}
-	}
-
-	res.Message = "configure OK: identity preserved; config/TLS/firewall applied"
+	_ = committed
+	CleanStaging(stageCert, stageKey)
+	res.Message = "configure OK: identity preserved; staged TLS validated then committed; config/firewall applied"
 	return res, nil
+}
+
+// ACMEIssueArgs are staging-targeted ACME inputs (no live cert paths).
+type ACMEIssueArgs struct {
+	Domain    string
+	Email     string
+	StateDir  string
+	StageCert string
+	StageKey  string
+	Replace   bool
+}
+
+func defaultIssueACME(ctx context.Context, a ACMEIssueArgs) error {
+	_, _, _, _, err := nodetls.IssueOrRenew(ctx, nodetls.ACMEConfig{
+		Domain:     a.Domain,
+		Email:      a.Email,
+		StateDir:   a.StateDir,
+		Dest:       nodetls.Paths{CertFile: a.StageCert, KeyFile: a.StageKey},
+		Replace:    a.Replace,
+		AccountKey: filepath.Join(a.StateDir, "acme-account.key"),
+	})
+	return err
 }
 
 func systemctlAction(opts Options, action, unit string) error {
@@ -263,15 +343,10 @@ func defaultPoPRegister(cfgPath string) error {
 	cmd.Stdin = strings.NewReader("\n")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// Prefer service user when available.
-	if err := runAsNyxveil(cmd); err != nil {
-		return err
-	}
-	return nil
+	return runAsNyxveil(cmd)
 }
 
 func runAsNyxveil(cmd *exec.Cmd) error {
-	// Best-effort: if already non-root or helpers missing, run directly.
 	if effectiveUID() != 0 {
 		return cmd.Run()
 	}

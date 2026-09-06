@@ -2,6 +2,8 @@ package configure
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -42,6 +44,36 @@ func RenderNyxveilNFT(opts FirewallOpts) string {
 	b.WriteString("  }\n")
 	b.WriteString("}\n")
 	return b.String()
+}
+
+// NFTHasACME80 reports whether the managed file already opens TCP/80.
+func NFTHasACME80(nftFile string) bool {
+	if nftFile == "" {
+		return false
+	}
+	b, err := os.ReadFile(nftFile)
+	if err != nil {
+		return false
+	}
+	s := string(b)
+	return strings.Contains(s, "nyxveil-acme-http01") || strings.Contains(s, "tcp dport 80")
+}
+
+// WriteNFTFileOnly persists RenderNyxveilNFT to opts.NFTFile (no nft/systemctl).
+// Used by tests and as a safe dry helper; production Linux uses ApplyNyxveilFirewall.
+func WriteNFTFileOnly(opts FirewallOpts) error {
+	if opts.NFTFile == "" {
+		return fmt.Errorf("configure: NFTFile required")
+	}
+	if err := os.MkdirAll(filepath.Dir(opts.NFTFile), 0o755); err != nil {
+		return err
+	}
+	body := RenderNyxveilNFT(opts)
+	tmp := opts.NFTFile + ".tmp"
+	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, opts.NFTFile)
 }
 
 // ParseListenPortShared extracts port from listen strings (all platforms).

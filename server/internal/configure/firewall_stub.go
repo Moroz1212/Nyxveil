@@ -20,5 +20,3 @@ func ApplyNyxveilFirewall(opts FirewallOpts) error {
 func ParseListenPort(listen string, def int) int {
 	return ParseListenPortShared(listen, def)
 }
-
-func NFTHasACME80(nftFile string) bool { return false }

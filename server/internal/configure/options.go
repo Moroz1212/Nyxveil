@@ -3,6 +3,7 @@
 package configure
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -15,10 +16,10 @@ type Options struct {
 	PublicHost string
 	DNSServers string // comma-separated IPv4
 
-	TLSDomain string
-	TLSEmail  string
-	TLSCert   string // operator cert path
-	TLSKey    string // operator key path
+	TLSDomain  string
+	TLSEmail   string
+	TLSCert    string // operator cert path
+	TLSKey     string // operator key path
 	TLSReplace bool
 
 	DryRun  bool // --check / --dry-run: validate only
@@ -27,15 +28,18 @@ type Options struct {
 	SkipSvc bool // tests: skip stop/start/health
 
 	// Test overrides (empty = production defaults).
-	NodeKeyPath string
-	StateDir    string
-	NFTFile     string
+	NodeKeyPath   string
+	StateDir      string
+	NFTFile       string
 	SkipCertTrust bool // tests: skip system-trust verify (still checks SAN/expiry/key)
 
 	// Hooks (overridable in tests).
 	ExecRegister  func(cfgPath string) error
 	ExecSystemctl func(action, unit string) error
 	ExecHealth    func() error
+	ExecACME      func(ctx context.Context, args ACMEIssueArgs) error
+	ExecFirewall  func(opts FirewallOpts) error // default ApplyNyxveilFirewall
+	OnBeforeACME  func()                        // fired after TCP/80 FW prep, before HTTP-01
 	LookupIP      func(host string) ([]net.IP, error)
 	PublicIPHint  string // optional expected public IP for DNS check (tests / --expect-public-ip)
 }
