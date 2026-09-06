@@ -26,8 +26,10 @@ func Merge(base localconfig.File, opts Options) (localconfig.File, error) {
 		}
 		if !strings.EqualFold(strings.TrimRight(out.ControlPlaneURL, "/"), normalized) {
 			out.ControlPlaneURL = normalized
-			// Public CP cutover: clear SelfSignedPinned pin so daemon uses SystemTrust.
+			// Public CP cutover: clear SelfSignedPinned pin AND private pinned CA
+			// so daemon uses SystemTrust (same policy as configure --check).
 			out.ControlPlaneSPKIPin = ""
+			out.PinnedCAFile = ""
 		}
 	}
 	if key := strings.TrimSpace(opts.PublicHost); key != "" {

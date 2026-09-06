@@ -23,6 +23,8 @@ type Client struct {
 	HTTP       *http.Client
 	NodeID     string
 	PrivateKey ed25519.PrivateKey
+	// TLS holds the shared-factory result used to build this client (diagnostics).
+	TLS *TLSResult
 }
 
 func NewClient(baseURL string, tlsConfig *tls.Config) (*Client, error) {
@@ -36,6 +38,22 @@ func NewClient(baseURL string, tlsConfig *tls.Config) (*Client, error) {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	if tlsConfig != nil {
 		tr.TLSClientConfig = tlsConfig
+	} else if u.Scheme == "https" {
+		// Prefer shared SystemTrust factory when caller passes nil.
+		res, err := BuildTLS(TLSOptions{BaseURL: u.String()})
+		if err != nil {
+			return nil, err
+		}
+		tr.TLSClientConfig = res.Config
+		c := &Client{
+			BaseURL: u.String(),
+			HTTP: &http.Client{
+				Timeout:   30 * time.Second,
+				Transport: tr,
+			},
+			TLS: res,
+		}
+		return c, nil
 	}
 	return &Client{
 		BaseURL: u.String(),
@@ -223,6 +241,9 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, sign
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
+		if c.TLS != nil && isTLSError(err) {
+			LogTLSFailure(c.TLS, err)
+		}
 		return err
 	}
 	defer resp.Body.Close()
@@ -253,4 +274,12 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+func isTLSError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "tls:") || strings.Contains(msg, "x509:") || strings.Contains(msg, "certificate")
 }

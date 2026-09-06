@@ -136,14 +136,15 @@ func New(opts Options) (*Node, error) {
 		return nil, err
 	}
 
-	tlsCfg, err := buildControlPlaneTLS(cfg)
+	cp, tlsRes, err := controlplane.NewClientWithTLS(controlplane.TLSOptions{
+		BaseURL:      cfg.ControlPlaneURL,
+		SPKIPinHex:   cfg.ControlPlaneSPKIPin,
+		PinnedCAFile: cfg.PinnedCAFile,
+	})
 	if err != nil {
 		return nil, err
 	}
-	cp, err := controlplane.NewClient(cfg.ControlPlaneURL, tlsCfg)
-	if err != nil {
-		return nil, err
-	}
+	_ = tlsRes
 	cp.NodeID = cfg.NodeID
 	cp.PrivateKey = key.Private
 
@@ -484,13 +485,36 @@ func (n *Node) Available() bool {
 }
 
 // Shutdown stops listeners, datapath, and background loops.
+// Order matters: close TUN before waiting on bridge pumps (Read blocks until FD close).
 func (n *Node) Shutdown(ctx context.Context) error {
 	if !n.running.Swap(false) {
 		return nil
 	}
+	n.accepting.Store(false)
+
+	// Stop accepting sessions / close VPN listeners first.
+	if n.listen != nil {
+		n.listen.Stop()
+	}
+	if n.ctl != nil {
+		_ = n.ctl.Stop()
+	}
+
+	// Cancel CP workers (heartbeat / revocation / ticket keys / ACME).
 	if n.cancel != nil {
 		n.cancel()
 	}
+
+	// Unblock TUN read loop before Bridge.Stop waits on it.
+	if n.tunDev != nil {
+		_ = n.tunDev.Close()
+		n.tunReady.Store(false)
+	}
+	if n.bridge != nil {
+		n.bridge.Stop()
+		n.bridgeOK.Store(false)
+	}
+
 	done := make(chan struct{})
 	go func() {
 		n.wg.Wait()
@@ -500,21 +524,6 @@ func (n *Node) Shutdown(ctx context.Context) error {
 	case <-done:
 	case <-ctx.Done():
 	}
-	if n.listen != nil {
-		n.listen.Stop()
-	}
-	if n.bridge != nil {
-		n.bridge.Stop()
-		n.bridgeOK.Store(false)
-	}
-	if n.tunDev != nil {
-		_ = n.tunDev.Close()
-		n.tunReady.Store(false)
-	}
-	if n.ctl != nil {
-		_ = n.ctl.Stop()
-	}
-	n.accepting.Store(false)
 	return nil
 }
 

@@ -72,9 +72,10 @@ func (s *Server) Start(ctx context.Context) error {
 		_ = os.Chmod(s.SocketPath, 0o660)
 		s.ln = ln
 		s.addr = s.SocketPath
-		s.httpServer = &http.Server{Handler: mux}
+		srv := &http.Server{Handler: mux}
+		s.httpServer = srv
 		go func() {
-			_ = s.httpServer.Serve(ln)
+			_ = srv.Serve(ln)
 		}()
 		go func() {
 			<-ctx.Done()
@@ -93,9 +94,10 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	s.ln = ln
 	s.addr = ln.Addr().String()
-	s.httpServer = &http.Server{Handler: mux}
+	srv := &http.Server{Handler: mux}
+	s.httpServer = srv
 	go func() {
-		_ = s.httpServer.Serve(ln)
+		_ = srv.Serve(ln)
 	}()
 	go func() {
 		<-ctx.Done()

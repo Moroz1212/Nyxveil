@@ -65,8 +65,11 @@ func ValidateLeafForDomainOpts(certPath, keyPath, domain string, now time.Time, 
 		return nil
 	}
 	roots, err := x509.SystemCertPool()
-	if err != nil || roots == nil {
-		roots = x509.NewCertPool()
+	if err != nil {
+		return fmt.Errorf("configure: SystemCertPool failed: %w", err)
+	}
+	if roots == nil {
+		return fmt.Errorf("configure: SystemCertPool returned nil")
 	}
 	inter := x509.NewCertPool()
 	for i := 1; i < len(cert.Certificate); i++ {

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nyxveil/server/internal/controlplane"
 	"github.com/nyxveil/server/internal/localconfig"
 )
 
@@ -146,14 +147,14 @@ func TestBuildControlPlaneTLS_PinnedCAAndSPKI(t *testing.T) {
 		PinnedCAFile:        caPath,
 		ControlPlaneSPKIPin: hex.EncodeToString(pin[:]),
 	}
-	tlsCfg, err := buildControlPlaneTLS(cfg)
+	tlsRes, err := buildControlPlaneTLS(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tlsCfg.InsecureSkipVerify {
+	if tlsRes.Config.InsecureSkipVerify {
 		t.Fatal("PinnedCA must not set InsecureSkipVerify")
 	}
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}, Timeout: 5 * time.Second}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsRes.Config}, Timeout: 5 * time.Second}
 	resp, err := client.Get("https://" + ln.Addr().String() + "/")
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +166,7 @@ func TestBuildControlPlaneTLS_PinnedCAAndSPKI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	badClient := &http.Client{Transport: &http.Transport{TLSClientConfig: badCfg}, Timeout: 5 * time.Second}
+	badClient := &http.Client{Transport: &http.Transport{TLSClientConfig: badCfg.Config}, Timeout: 5 * time.Second}
 	if _, err := badClient.Get("https://" + ln.Addr().String() + "/"); err == nil {
 		t.Fatal("expected SPKI pin failure")
 	}
@@ -179,17 +180,17 @@ func TestSelfSignedPinned_CorrectPinPassesWithoutSystemTrust(t *testing.T) {
 		ControlPlaneURL:     "https://cp.test.local/",
 		ControlPlaneSPKIPin: pin,
 	}
-	tlsCfg, err := buildControlPlaneTLS(cfg)
+	tlsRes, err := buildControlPlaneTLS(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !tlsCfg.InsecureSkipVerify {
+	if !tlsRes.Config.InsecureSkipVerify {
 		t.Fatal("SelfSignedPinned must skip system chain (pin is trust anchor)")
 	}
-	if tlsCfg.VerifyConnection == nil {
+	if tlsRes.Config.VerifyConnection == nil {
 		t.Fatal("expected VerifyConnection")
 	}
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}, Timeout: 5 * time.Second}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsRes.Config}, Timeout: 5 * time.Second}
 	resp, err := client.Get("https://" + ln.Addr().String() + "/")
 	if err != nil {
 		t.Fatal(err)
@@ -202,11 +203,11 @@ func TestSelfSignedPinned_WithoutPinFails(t *testing.T) {
 	defer cleanup()
 
 	cfg := &localconfig.File{ControlPlaneURL: "https://cp.test.local/"}
-	tlsCfg, err := buildControlPlaneTLS(cfg)
+	tlsRes, err := buildControlPlaneTLS(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}, Timeout: 5 * time.Second}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsRes.Config}, Timeout: 5 * time.Second}
 	if _, err := client.Get("https://" + ln.Addr().String() + "/"); err == nil {
 		t.Fatal("system trust must reject self-signed without pin")
 	}
@@ -220,11 +221,11 @@ func TestSelfSignedPinned_WrongPinFails(t *testing.T) {
 		ControlPlaneURL:     "https://cp.test.local/",
 		ControlPlaneSPKIPin: hex.EncodeToString(make([]byte, 32)),
 	}
-	tlsCfg, err := buildControlPlaneTLS(cfg)
+	tlsRes, err := buildControlPlaneTLS(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}, Timeout: 5 * time.Second}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsRes.Config}, Timeout: 5 * time.Second}
 	if _, err := client.Get("https://" + ln.Addr().String() + "/"); err == nil {
 		t.Fatal("expected wrong SPKI failure")
 	}
@@ -238,11 +239,11 @@ func TestSelfSignedPinned_WrongHostnameFails(t *testing.T) {
 		ControlPlaneURL:     "https://other.example/",
 		ControlPlaneSPKIPin: pin,
 	}
-	tlsCfg, err := buildControlPlaneTLS(cfg)
+	tlsRes, err := buildControlPlaneTLS(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}, Timeout: 5 * time.Second}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsRes.Config}, Timeout: 5 * time.Second}
 	if _, err := client.Get("https://" + ln.Addr().String() + "/"); err == nil {
 		t.Fatal("expected hostname failure")
 	}
@@ -256,11 +257,11 @@ func TestSelfSignedPinned_ExpiredFails(t *testing.T) {
 		ControlPlaneURL:     "https://cp.test.local/",
 		ControlPlaneSPKIPin: pin,
 	}
-	tlsCfg, err := buildControlPlaneTLS(cfg)
+	tlsRes, err := buildControlPlaneTLS(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}, Timeout: 5 * time.Second}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsRes.Config}, Timeout: 5 * time.Second}
 	if _, err := client.Get("https://" + ln.Addr().String() + "/"); err == nil {
 		t.Fatal("expected expired certificate failure")
 	}
@@ -335,5 +336,21 @@ func TestHeartbeatBackoffIncreases(t *testing.T) {
 	d3 := heartbeatBackoff(3, base)
 	if d3 < d1 {
 		t.Fatalf("expected growth %v vs %v", d3, d1)
+	}
+}
+
+func TestRuntimeCPClientUsesSharedFactory(t *testing.T) {
+	res, err := buildControlPlaneTLS(&localconfig.File{ControlPlaneURL: "https://cp.nyxveil.ru:18443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TrustMode != controlplane.TrustSystem {
+		t.Fatalf("mode=%s", res.TrustMode)
+	}
+	if !res.SystemRootPoolLoaded || res.Config.RootCAs == nil {
+		t.Fatal("SystemTrust must load SystemCertPool into RootCAs")
+	}
+	if res.Config.InsecureSkipVerify {
+		t.Fatal()
 	}
 }

@@ -46,7 +46,8 @@ func NormalizeControlPlaneURL(raw string) (string, error) {
 // LookupIPFunc optional DNS override for CP URL probes (tests).
 var LookupIPFunc func(host string) ([]net.IP, error)
 
-// ProbeControlPlaneTLS dials the Control Plane with SystemTrust (no InsecureSkipVerify).
+// ProbeControlPlaneTLS dials the Control Plane with the shared SystemTrust factory
+// (no InsecureSkipVerify, no empty RootCAs pool).
 func ProbeControlPlaneTLS(ctx context.Context, baseURL string, dialer *net.Dialer) error {
 	normalized, err := NormalizeControlPlaneURL(baseURL)
 	if err != nil {
@@ -93,12 +94,11 @@ func ProbeControlPlaneTLS(ctx context.Context, baseURL string, dialer *net.Diale
 	defer rawConn.Close()
 	_ = rawConn.SetDeadline(time.Now().Add(20 * time.Second))
 
-	tlsCfg := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		ServerName:         host,
-		InsecureSkipVerify: false,
+	tlsRes, err := controlplane.BuildTLS(controlplane.TLSOptions{BaseURL: normalized})
+	if err != nil {
+		return fmt.Errorf("configure: control plane TLS config: %w", err)
 	}
-	conn := tls.Client(rawConn, tlsCfg)
+	conn := tls.Client(rawConn, tlsRes.Config)
 	if err := conn.HandshakeContext(ctx); err != nil {
 		return fmt.Errorf("configure: control plane SystemTrust TLS failed for %s: %w", host, err)
 	}
@@ -152,14 +152,12 @@ func ProbeControlPlaneAuth(ctx context.Context, baseURL, nodeKeyPath string, nod
 	}
 
 	u, _ := url.Parse(normalized)
-	tlsCfg := &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		ServerName: u.Hostname(),
-	}
-	client, err := controlplane.NewClient(normalized, tlsCfg)
+	_ = u
+	client, tlsRes, err := controlplane.NewClientWithTLS(controlplane.TLSOptions{BaseURL: normalized})
 	if err != nil {
 		return out, err
 	}
+	_ = tlsRes
 	client.NodeID = nodeID
 	client.PrivateKey = k.Private
 
@@ -211,12 +209,11 @@ func DefaultVerifyCatalogAfterCPURL(ctx context.Context, cfgPath, nodeKeyPath, s
 	if err != nil {
 		return nil, err
 	}
-	u, err := url.Parse(cfg.ControlPlaneURL)
-	if err != nil {
-		return nil, err
-	}
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: u.Hostname()}
-	client, err := controlplane.NewClient(cfg.ControlPlaneURL, tlsCfg)
+	client, _, err := controlplane.NewClientWithTLS(controlplane.TLSOptions{
+		BaseURL:      cfg.ControlPlaneURL,
+		SPKIPinHex:   cfg.ControlPlaneSPKIPin,
+		PinnedCAFile: cfg.PinnedCAFile,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -257,15 +254,14 @@ func DefaultVerifyCatalogAfterCPURL(ctx context.Context, cfgPath, nodeKeyPath, s
 
 func boolPtr(v bool) *bool { return &v }
 
-// HTTPClientForSystemTrust is exported for tests.
+// HTTPClientForSystemTrust is exported for tests — uses the shared factory.
 func HTTPClientForSystemTrust(serverName string) *http.Client {
-	return &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
-				ServerName: serverName,
-			},
-		},
+	c, _, err := controlplane.NewHTTPClient(controlplane.TLSOptions{
+		BaseURL: "https://" + serverName + "/",
+	}, 30*time.Second)
+	if err != nil {
+		// Fail closed for production; tests that need a client without roots should inject SystemRootsLoader.
+		return &http.Client{Timeout: 30 * time.Second}
 	}
+	return c
 }

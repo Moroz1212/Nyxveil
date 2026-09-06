@@ -218,7 +218,7 @@ func resolveManifestURL(args []string) (string, error) {
 func runBootstrapCLI(args []string) error {
 	fs := flag.NewFlagSet("bootstrap-cli", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	versionFlag := fs.String("version", "1.0.9", "target server-vVERSION release")
+	versionFlag := fs.String("version", "1.0.10", "target server-vVERSION release")
 	manifestURL := fs.String("manifest-url", "", "override signed manifest URL")
 	ctlPath := fs.String("ctl-path", "", "nyxveilctl install path (default beside nyxveil-server)")
 	thenUpdate := fs.Bool("then-update", false, "after CLI replace, run full nyxveilctl update")
