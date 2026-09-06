@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/nyxveil/server/internal/updater"
@@ -102,6 +104,44 @@ func TestShellCanonicalBytesMatchGo(t *testing.T) {
 				arch, len(goCanon), sha256Hex(goCanon), len(out), sha256Hex(out),
 				truncate(goCanon, 120), truncate(out, 120))
 		}
+	}
+}
+
+func TestBootstrapShellCanonicalBytesMatchGo112Assets(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash required")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq required for shell canonicalization")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	bootstrap := filepath.Join(root, "scripts", "bootstrap-cli-update.sh")
+	manifest := &updater.Manifest{
+		Version: "1.1.2", Arch: "linux/amd64", MinCore: "1.0.0", MinProtocol: 1,
+		Assets: []updater.Asset{{
+			Name: "nyxveilctl", SHA256: strings.Repeat("a", 64), URL: "https://example.invalid/nyxveilctl",
+			Destination: "/usr/local/sbin/nyxveilctl", Mode: "0755", Required: true,
+		}},
+	}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(tempDir(t), "manifest.json")
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("bash", bootstrap, "--dump-canonical", path).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := updater.CanonicalManifestBytes(manifest)
+	if !bytes.Equal(out, want) {
+		t.Fatalf("bootstrap canonical mismatch\ngo=%q\nsh=%q", want, out)
 	}
 }
 

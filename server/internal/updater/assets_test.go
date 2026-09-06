@@ -12,7 +12,43 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/nyxveil/server/internal/paths"
 )
+
+func completeInternalTestAssets(m *Manifest, fallback Asset) {
+	seen := map[string]bool{}
+	for _, a := range m.Assets {
+		seen[a.Name] = true
+	}
+	for _, name := range RequiredAssetNames {
+		if !seen[name] {
+			a := fallback
+			a.Name = name
+			m.Assets = append(m.Assets, a)
+		}
+	}
+}
+
+func mapInternalTestAssets(u *Updater, dir string) {
+	if u.ExtraBinaries == nil {
+		u.ExtraBinaries = map[string]string{}
+	}
+	if u.ExtraPrev == nil {
+		u.ExtraPrev = map[string]string{}
+	}
+	for _, name := range RequiredAssetNames {
+		if name == "nyxveil-server" {
+			continue
+		}
+		if u.ExtraBinaries[name] == "" {
+			u.ExtraBinaries[name] = filepath.Join(dir, name)
+		}
+		if u.ExtraPrev[name] == "" {
+			u.ExtraPrev[name] = filepath.Join(dir, name+".prev")
+		}
+	}
+}
 
 func TestParseManifestMultiAsset(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -80,12 +116,14 @@ func TestApplyMultiAsset(t *testing.T) {
 			{Name: "nyxveilctl", SHA256: hex.EncodeToString(ctlSum[:]), URL: srv.URL + "/ctl"},
 		},
 	}
+	completeInternalTestAssets(m, Asset{SHA256: hex.EncodeToString(ctlSum[:]), URL: srv.URL + "/ctl"})
 	SignManifest(m, priv)
 
 	u := New(serverBin, filepath.Join(dir, "server.prev"), filepath.Join(dir, "marker"))
 	u.PublicKey = pub
 	u.ExtraBinaries = map[string]string{"nyxveilctl": ctlBin}
 	u.ExtraPrev = map[string]string{"nyxveilctl": filepath.Join(dir, "ctl.prev")}
+	mapInternalTestAssets(u, dir)
 
 	if err := u.Apply(m, func() bool { return true }); err != nil {
 		t.Fatal(err)
@@ -103,7 +141,10 @@ func TestApplyMultiAsset(t *testing.T) {
 func TestCanonicalManifestBytesIncludesAssets(t *testing.T) {
 	m := &Manifest{
 		Version: "1", Arch: "linux/amd64", MinCore: "1.0.0", MinProtocol: 1,
-		Assets:    []Asset{{Name: "nyxveil-server", SHA256: "ab", URL: "u"}},
+		Assets: []Asset{{
+			Name: "nyxveil-server", SHA256: "ab", URL: "u",
+			Destination: paths.BinaryPath(), Mode: "0755", Required: true,
+		}},
 		Signature: "ignore",
 	}
 	b := CanonicalManifestBytes(m)
@@ -117,5 +158,21 @@ func TestCanonicalManifestBytesIncludesAssets(t *testing.T) {
 	}
 	if _, ok := probe["signature"]; ok {
 		t.Fatal("signature must be omitted")
+	}
+	assets := probe["assets"].([]any)
+	asset := assets[0].(map[string]any)
+	if asset["destination"] != paths.BinaryPath() || asset["mode"] != "0755" || asset["required"] != true {
+		t.Fatalf("authoritative fields missing: %s", b)
+	}
+}
+
+func TestParseMode(t *testing.T) {
+	if got, err := ParseMode("0755"); err != nil || got.Perm() != 0o755 {
+		t.Fatalf("ParseMode(0755)=%04o, %v", got, err)
+	}
+	for _, bad := range []string{"755", "0999", "06444", ""} {
+		if _, err := ParseMode(bad); err == nil {
+			t.Errorf("ParseMode(%q) unexpectedly succeeded", bad)
+		}
 	}
 }

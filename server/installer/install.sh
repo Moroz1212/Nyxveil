@@ -14,7 +14,7 @@
 # Local --binary-dir / --skip-download skips remote verify.
 set -euo pipefail
 
-readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.1}"
+readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.2}"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 # Same Ed25519 public key as internal/updater.UpdatePublicKey
 readonly PUB_HEX="f63d2c8001df3d7b2efdd171a16463260cb7190d61ef564419cc0836777d176f"
@@ -648,6 +648,7 @@ canonical_manifest_bytes() {
 
   canonical="$(
     jq -c '
+      . as $manifest |
       {
         version: .version,
         arch: .arch
@@ -668,11 +669,23 @@ canonical_manifest_bytes() {
          then {
            assets: [
              .assets[] |
-             {
-               name: .name,
-               sha256: .sha256,
-               url: .url
-             }
+             if ($manifest.assets | any(
+               ((.destination // "") != "" or (.mode // "") != "" or (.required // false) == true)
+             ))
+             then {
+                 name: .name,
+                 sha256: .sha256,
+                 url: .url,
+                 destination: .destination,
+                 mode: .mode,
+                 required: .required
+               }
+             else {
+                 name: .name,
+                 sha256: .sha256,
+                 url: .url
+               }
+             end
            ]
          }
          else {}
@@ -821,7 +834,7 @@ download_or_copy_binaries() {
   got_arch="$(jq -r '.arch' "${tmp}/manifest.json")"
   [[ "${got_arch}" == "${want_arch}" ]] || die "manifest arch mismatch: have ${got_arch} want ${want_arch}"
 
-  local n i name sha url dest
+  local n i name sha url dest manifest_dest manifest_mode manifest_required
   local have_server=0 have_ctl=0 have_catalog=0 have_gate=0 have_ver=0 have_tp=0
   n="$(jq -r '.assets | length' "${tmp}/manifest.json")"
   [[ "${n}" -gt 0 ]] || die "manifest has no assets"
@@ -829,7 +842,12 @@ download_or_copy_binaries() {
     name="$(jq -r ".assets[${i}].name" "${tmp}/manifest.json")"
     sha="$(jq -r ".assets[${i}].sha256" "${tmp}/manifest.json")"
     url="$(jq -r ".assets[${i}].url" "${tmp}/manifest.json")"
-    [[ -n "${name}" && -n "${sha}" && -n "${url}" ]] || die "manifest asset[${i}] missing fields"
+    manifest_dest="$(jq -r ".assets[${i}].destination // empty" "${tmp}/manifest.json")"
+    manifest_mode="$(jq -r ".assets[${i}].mode // empty" "${tmp}/manifest.json")"
+    manifest_required="$(jq -r ".assets[${i}].required // false" "${tmp}/manifest.json")"
+    [[ -n "${name}" && -n "${sha}" && -n "${url}" && -n "${manifest_dest}" && -n "${manifest_mode}" ]] ||
+      die "manifest asset[${i}] missing fields"
+    [[ "${manifest_required}" == "true" ]] || die "manifest asset ${name} is not required"
     [[ "${sha}" =~ ^[0-9a-fA-F]{64}$ ]] || die "manifest asset ${name}: invalid sha256"
     dest="${tmp}/asset-${i}"
     log "downloading ${name}"
@@ -837,31 +855,43 @@ download_or_copy_binaries() {
     echo "${sha}  ${dest}" | sha256sum -c - >/dev/null || die "SHA256 mismatch for ${name}"
     case "${name}" in
       nyxveil-server|server)
+        [[ "${manifest_dest}" == "${BIN_DIR}/nyxveil-server" && "${manifest_mode}" == "0755" ]] ||
+          die "manifest contract mismatch for ${name}"
         install -m 0755 "${dest}" "${BIN_DIR}/nyxveil-server"
         have_server=1
         ;;
       nyxveilctl|ctl)
+        [[ "${manifest_dest}" == "${BIN_DIR}/nyxveilctl" && "${manifest_mode}" == "0755" ]] ||
+          die "manifest contract mismatch for ${name}"
         install -m 0755 "${dest}" "${BIN_DIR}/nyxveilctl"
         have_ctl=1
         ;;
       nyxveil-catalog-verify)
+        [[ "${manifest_dest}" == "${BIN_DIR}/nyxveil-catalog-verify" && "${manifest_mode}" == "0755" ]] ||
+          die "manifest contract mismatch for ${name}"
         install -m 0755 "${dest}" "${BIN_DIR}/nyxveil-catalog-verify"
         have_catalog=1
         ;;
       production-gate)
+        [[ "${manifest_dest}" == "${SCRIPTS_DIR}/production-gate.sh" && "${manifest_mode}" == "0755" ]] ||
+          die "manifest contract mismatch for ${name}"
         install -m 0755 "${dest}" "${SCRIPTS_DIR}/production-gate.sh"
         have_gate=1
         ;;
       share-version)
+        [[ "${manifest_dest}" == "${SHARE_DIR}/VERSION" && "${manifest_mode}" == "0644" ]] ||
+          die "manifest contract mismatch for ${name}"
         install -m 0644 "${dest}" "${SHARE_DIR}/VERSION"
         have_ver=1
         ;;
       share-third-party-core)
+        [[ "${manifest_dest}" == "${SHARE_DIR}/THIRD_PARTY_CORE.md" && "${manifest_mode}" == "0644" ]] ||
+          die "manifest contract mismatch for ${name}"
         install -m 0644 "${dest}" "${SHARE_DIR}/THIRD_PARTY_CORE.md"
         have_tp=1
         ;;
       *)
-        warn "ignoring unknown asset ${name}"
+        die "unknown required asset ${name}"
         ;;
     esac
   done

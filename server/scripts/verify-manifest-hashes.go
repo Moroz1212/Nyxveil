@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nyxveil/server/internal/paths"
 	"github.com/nyxveil/server/internal/updater"
 )
 
@@ -39,6 +40,14 @@ func main() {
 		}
 		seen := map[string]bool{}
 		for _, a := range m.Assets {
+			wantDest, wantMode, err := assetContract(a.Name)
+			if err != nil {
+				fatal("%v", err)
+			}
+			if !a.Required || a.Destination != wantDest || a.Mode != wantMode {
+				fatal("%s %s: contract required=%v destination=%q mode=%q; want true %q %q",
+					arch, a.Name, a.Required, a.Destination, a.Mode, wantDest, wantMode)
+			}
 			path, err := resolveAssetPath(*dist, arch, a.Name)
 			if err != nil {
 				fatal("%v", err)
@@ -58,6 +67,25 @@ func main() {
 			}
 		}
 		fmt.Printf("ok %s\n", arch)
+	}
+}
+
+func assetContract(name string) (string, string, error) {
+	switch name {
+	case "nyxveil-server":
+		return paths.BinaryPath(), "0755", nil
+	case "nyxveilctl":
+		return paths.BinDir + "/nyxveilctl", "0755", nil
+	case "nyxveil-catalog-verify":
+		return paths.CatalogVerify(), "0755", nil
+	case "production-gate":
+		return paths.ProductionGate(), "0755", nil
+	case "share-version":
+		return paths.ShareVersion(), "0644", nil
+	case "share-third-party-core":
+		return paths.ShareThirdParty(), "0644", nil
+	default:
+		return "", "", fmt.Errorf("unknown asset %q", name)
 	}
 }
 

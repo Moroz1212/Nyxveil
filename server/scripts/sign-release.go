@@ -11,11 +11,11 @@
 // Usage:
 //
 //	go run ./scripts/sign-release.go \
-//	  -version 1.1.1 -out dist/release \
+//	  -version 1.1.2 -out dist/release \
 //	  -amd64-server path -amd64-ctl path -amd64-catalog path \
 //	  -arm64-server path -arm64-ctl path -arm64-catalog path \
 //	  -production-gate path -share-version path -share-third-party path \
-//	  [-base-url https://github.com/org/repo/releases/download/server-v1.1.1]
+//	  [-base-url https://github.com/org/repo/releases/download/server-v1.1.2]
 package main
 
 import (
@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nyxveil/server/internal/paths"
 	"github.com/nyxveil/server/internal/updater"
 )
 
@@ -96,17 +97,19 @@ func main() {
 func writeManifest(outDir, version, goArch, baseURL, minCore string, minProto uint16,
 	serverPath, ctlPath, catalogPath, gatePath, versionPath, thirdPartyPath string, priv ed25519.PrivateKey) error {
 	type namedPath struct {
-		name string
-		path string
-		url  string
+		name        string
+		path        string
+		url         string
+		destination string
+		mode        string
 	}
 	items := []namedPath{
-		{"nyxveil-server", serverPath, baseURL + "/" + fmt.Sprintf("nyxveil-server-linux-%s", goArch)},
-		{"nyxveilctl", ctlPath, baseURL + "/" + fmt.Sprintf("nyxveilctl-linux-%s", goArch)},
-		{"nyxveil-catalog-verify", catalogPath, baseURL + "/" + fmt.Sprintf("nyxveil-catalog-verify-linux-%s", goArch)},
-		{"production-gate", gatePath, baseURL + "/production-gate.sh"},
-		{"share-version", versionPath, baseURL + "/VERSION"},
-		{"share-third-party-core", thirdPartyPath, baseURL + "/THIRD_PARTY_CORE.md"},
+		{"nyxveil-server", serverPath, baseURL + "/" + fmt.Sprintf("nyxveil-server-linux-%s", goArch), paths.BinaryPath(), "0755"},
+		{"nyxveilctl", ctlPath, baseURL + "/" + fmt.Sprintf("nyxveilctl-linux-%s", goArch), paths.BinDir + "/nyxveilctl", "0755"},
+		{"nyxveil-catalog-verify", catalogPath, baseURL + "/" + fmt.Sprintf("nyxveil-catalog-verify-linux-%s", goArch), paths.CatalogVerify(), "0755"},
+		{"production-gate", gatePath, baseURL + "/production-gate.sh", paths.ProductionGate(), "0755"},
+		{"share-version", versionPath, baseURL + "/VERSION", paths.ShareVersion(), "0644"},
+		{"share-third-party-core", thirdPartyPath, baseURL + "/THIRD_PARTY_CORE.md", paths.ShareThirdParty(), "0644"},
 	}
 
 	m := &updater.Manifest{
@@ -120,7 +123,10 @@ func writeManifest(outDir, version, goArch, baseURL, minCore string, minProto ui
 		if err != nil {
 			return fmt.Errorf("%s: %w", item.name, err)
 		}
-		m.Assets = append(m.Assets, updater.Asset{Name: item.name, SHA256: sum, URL: item.url})
+		m.Assets = append(m.Assets, updater.Asset{
+			Name: item.name, SHA256: sum, URL: item.url, Destination: item.destination,
+			Mode: item.mode, Required: true,
+		})
 	}
 	updater.SignManifest(m, priv)
 

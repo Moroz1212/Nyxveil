@@ -91,10 +91,12 @@ func TestRollbackRestoresPrevBinaries(t *testing.T) {
 			{Name: "nyxveilctl", SHA256: sumCtl, URL: hs.URL + "/ctl"},
 		},
 	}
+	completeInternalTestAssets(m, Asset{SHA256: sumCtl, URL: hs.URL + "/ctl"})
 
 	u := New(server, prev, filepath.Join(dir, "marker"))
 	u.ExtraBinaries = map[string]string{"nyxveilctl": ctl}
 	u.ExtraPrev = map[string]string{"nyxveilctl": ctlPrev}
+	mapInternalTestAssets(u, dir)
 
 	var healthCalls int
 	err := u.Apply(m, func() bool {

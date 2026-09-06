@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Fail closed when the flat release upload set is incomplete or inconsistent.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DIST="${ROOT}/dist/release"
+VERSION="$(tr -d '[:space:]' < "${ROOT}/VERSION")"
+UPLOAD_LIST="${DIST}/UPLOAD-LIST-server-v${VERSION}.txt"
+
+die() { echo "check-release-upload-set: $*" >&2; exit 1; }
+
+[[ -d "${DIST}" ]] || die "missing ${DIST}"
+[[ -f "${UPLOAD_LIST}" ]] || die "missing $(basename "${UPLOAD_LIST}")"
+
+while IFS= read -r name || [[ -n "${name}" ]]; do
+  [[ -n "${name}" ]] || continue
+  [[ "${name}" == "$(basename "${name}")" ]] || die "upload entry must be a basename: ${name}"
+  [[ -f "${DIST}/${name}" ]] || die "upload entry missing from release: ${name}"
+done < "${UPLOAD_LIST}"
+
+for arch in amd64 arm64; do
+  [[ -f "${DIST}/nyxveil-server-linux-${arch}" ]] || die "missing server ${arch}"
+  [[ -f "${DIST}/nyxveilctl-linux-${arch}" ]] || die "missing ctl ${arch}"
+  [[ -f "${DIST}/nyxveil-catalog-verify-linux-${arch}" ]] || die "missing catalog verifier ${arch}"
+  [[ -f "${DIST}/release-manifest-linux-${arch}.json" ]] || die "missing manifest ${arch}"
+done
+
+[[ -x "${DIST}/production-gate.sh" ]] || die "production-gate.sh is not executable"
+[[ -x "${DIST}/bootstrap-cli-update.sh" ]] || die "bootstrap-cli-update.sh is missing or not executable"
+[[ -x "${DIST}/live-final-update.sh" ]] || die "live-final-update.sh is missing or not executable"
+bash -n "${DIST}/bootstrap-cli-update.sh"
+bash -n "${DIST}/live-final-update.sh"
+
+(
+  cd "${DIST}"
+  sha256sum -c SHA256SUMS >/dev/null
+)
+
+# This helper parses and signature-verifies both manifests with Go ParseManifest,
+# checks all required names, and hashes each referenced flat release asset.
+go run "${ROOT}/scripts/verify-manifest-hashes.go" -dist "${DIST}" -version "${VERSION}" >/dev/null
+
+echo "RELEASE_UPLOAD_SET=PASS"

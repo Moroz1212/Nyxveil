@@ -374,14 +374,35 @@ func runUpdate(args []string) error {
 		preBaseline.VersionBlocked, preBaseline.DataplaneOK)
 
 	fmt.Printf("fetching update manifest %s\n", manifestURL)
-	resp, err := http.Get(manifestURL)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return err
+	localDir := strings.TrimSpace(os.Getenv("NYXVEIL_UPDATE_LOCAL_DIR"))
+	var b []byte
+	if localDir != "" {
+		cleanDir, err := filepath.Abs(localDir)
+		if err != nil {
+			return err
+		}
+		cleanManifest, err := filepath.Abs(manifestURL)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(cleanDir, cleanManifest)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("updater: local manifest must be inside NYXVEIL_UPDATE_LOCAL_DIR")
+		}
+		b, err = os.ReadFile(cleanManifest)
+		if err != nil {
+			return err
+		}
+	} else {
+		resp, err := http.Get(manifestURL)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		b, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if err != nil {
+			return err
+		}
 	}
 	m, err := updater.ParseManifest(b, updater.UpdatePublicKey)
 	if err != nil {
@@ -394,6 +415,7 @@ func runUpdate(args []string) error {
 	extraPrev["nyxveilctl"] = ctlPrev
 	u.ExtraBinaries = extraDest
 	u.ExtraPrev = extraPrev
+	u.LocalDir = localDir
 	u.StateDir = paths.StateDir
 	u.EnforceOwnership = filemeta.EnforceRuntimeTLS
 

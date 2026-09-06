@@ -41,15 +41,23 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 		"SHA256SUMS",
 	}
 	for _, name := range requiredAssets {
-		if !strings.Contains(wf, name) {
-			t.Errorf("workflow missing asset %s", name)
+		if !strings.Contains(pkg, name) {
+			t.Errorf("package upload list missing asset %s", name)
 		}
+	}
+	if !strings.Contains(wf, "UPLOAD-LIST-server-v${VERSION}.txt") || !strings.Contains(wf, "mapfile -t BASENAMES") {
+		t.Error("workflow must consume the generated upload list")
 	}
 	if !strings.Contains(pkg, "production-gate.sh") {
 		t.Error("package-release must ship production-gate.sh")
 	}
 	if !strings.Contains(sign, "production-gate") || !strings.Contains(sign, "share-version") {
 		t.Error("sign-release must include production-gate and share-version assets")
+	}
+	for _, field := range []string{"Destination:", "Mode:", "Required: true"} {
+		if !strings.Contains(sign, field) {
+			t.Errorf("sign-release missing authoritative asset field %s", field)
+		}
 	}
 	if !strings.Contains(inst, "production-gate") || !strings.Contains(inst, "/usr/local/share/nyxveil") {
 		t.Error("installer must install production-gate under /usr/local/share/nyxveil")
@@ -73,9 +81,31 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 	}
 }
 
+func TestProductVersionIs112(t *testing.T) {
+	root := repoRoot(t)
+	if got := strings.TrimSpace(readFile(t, filepath.Join(root, "VERSION"))); got != "1.1.2" {
+		t.Fatalf("VERSION=%q want 1.1.2", got)
+	}
+	for _, file := range []string{
+		filepath.Join(root, "internal", "version", "version.go"),
+		filepath.Join(root, "installer", "install.sh"),
+		filepath.Join(root, "scripts", "bootstrap-cli-update.sh"),
+		filepath.Join(root, "scripts", "serv_wrappers.sh"),
+		filepath.Join(root, "scripts", "production-gate.sh"),
+	} {
+		if !strings.Contains(readFile(t, file), "1.1.2") {
+			t.Errorf("%s does not contain product version 1.1.2", file)
+		}
+	}
+}
+
 func TestUpdaterManifestNamesMatchGitHubWorkflow(t *testing.T) {
 	root := repoRoot(t)
 	wf := readFile(t, filepath.Join(root, "..", ".github", "workflows", "server-release.yml"))
+	pkg := readFile(t, filepath.Join(root, "scripts", "package-release.sh"))
+	if !strings.Contains(wf, "UPLOAD_LIST") {
+		t.Fatal("release workflow must upload from the generated list")
+	}
 	url := updater.DefaultManifestURL()
 	if !strings.Contains(url, "/release-manifest-linux-") || !strings.HasSuffix(url, ".json") {
 		t.Fatalf("default manifest URL not arch-aware: %s", url)
@@ -85,11 +115,10 @@ func TestUpdaterManifestNamesMatchGitHubWorkflow(t *testing.T) {
 	}
 	for _, arch := range []string{"amd64", "arm64"} {
 		name := "release-manifest-linux-" + arch + ".json"
-		if !strings.Contains(wf, name) {
-			t.Errorf("workflow missing %s", name)
+		if !strings.Contains(pkg, name) {
+			t.Errorf("package upload list missing %s", name)
 		}
 	}
-	pkg := readFile(t, filepath.Join(root, "scripts", "package-release.sh"))
 	if !strings.Contains(pkg, "release-manifest-linux-amd64.json") {
 		t.Fatal("package-release.sh must emit amd64 manifest")
 	}

@@ -50,9 +50,12 @@ var UpdatePublicKey = ed25519.PublicKey{
 
 // Asset is one binary in a multi-asset release manifest.
 type Asset struct {
-	Name   string `json:"name"`
-	SHA256 string `json:"sha256"`
-	URL    string `json:"url"`
+	Name        string `json:"name"`
+	SHA256      string `json:"sha256"`
+	URL         string `json:"url"`
+	Destination string `json:"destination"`
+	Mode        string `json:"mode"`
+	Required    bool   `json:"required"`
 }
 
 // Manifest describes a published node binary release.
@@ -79,6 +82,7 @@ type Updater struct {
 	MarkerPath    string
 	ExtraBinaries map[string]string // asset name → install path
 	ExtraPrev     map[string]string // asset name → previous backup path
+	LocalDir      string            // optional verified offline release directory
 
 	// StateDir holds TLS + rollback marker; default paths.StateDir.
 	StateDir string
@@ -144,10 +148,18 @@ func ParseManifest(data []byte, pub ed25519.PublicKey) (*Manifest, error) {
 
 // CanonicalManifestBytes builds the signed payload (no signature field).
 func CanonicalManifestBytes(m *Manifest) []byte {
-	type signedAsset struct {
+	type legacySignedAsset struct {
 		Name   string `json:"name"`
 		SHA256 string `json:"sha256"`
 		URL    string `json:"url"`
+	}
+	type signedAsset struct {
+		Name        string `json:"name"`
+		SHA256      string `json:"sha256"`
+		URL         string `json:"url"`
+		Destination string `json:"destination"`
+		Mode        string `json:"mode"`
+		Required    bool   `json:"required"`
 	}
 	type signed struct {
 		Version     string        `json:"version"`
@@ -158,6 +170,33 @@ func CanonicalManifestBytes(m *Manifest) []byte {
 		MinProtocol uint16        `json:"min_protocol"`
 		Assets      []signedAsset `json:"assets,omitempty"`
 	}
+	legacyAssets := true
+	for _, a := range m.Assets {
+		if a.Destination != "" || a.Mode != "" || a.Required {
+			legacyAssets = false
+			break
+		}
+	}
+	if legacyAssets && len(m.Assets) > 0 {
+		type legacySigned struct {
+			Version     string              `json:"version"`
+			Arch        string              `json:"arch"`
+			SHA256      string              `json:"sha256,omitempty"`
+			URL         string              `json:"url,omitempty"`
+			MinCore     string              `json:"min_core"`
+			MinProtocol uint16              `json:"min_protocol"`
+			Assets      []legacySignedAsset `json:"assets,omitempty"`
+		}
+		s := legacySigned{
+			Version: m.Version, Arch: m.Arch, SHA256: m.SHA256, URL: m.URL,
+			MinCore: m.MinCore, MinProtocol: m.MinProtocol,
+		}
+		for _, a := range m.Assets {
+			s.Assets = append(s.Assets, legacySignedAsset{Name: a.Name, SHA256: a.SHA256, URL: a.URL})
+		}
+		b, _ := json.Marshal(s)
+		return b
+	}
 	s := signed{
 		Version:     m.Version,
 		Arch:        m.Arch,
@@ -167,7 +206,10 @@ func CanonicalManifestBytes(m *Manifest) []byte {
 		MinProtocol: m.MinProtocol,
 	}
 	for _, a := range m.Assets {
-		s.Assets = append(s.Assets, signedAsset{Name: a.Name, SHA256: a.SHA256, URL: a.URL})
+		s.Assets = append(s.Assets, signedAsset{
+			Name: a.Name, SHA256: a.SHA256, URL: a.URL, Destination: a.Destination,
+			Mode: a.Mode, Required: a.Required,
+		})
 	}
 	b, _ := json.Marshal(s)
 	return b
@@ -184,6 +226,18 @@ type replaceJob struct {
 	existed                    bool
 }
 
+// IncompleteInstallError reports a required release asset that is missing,
+// has the wrong contents, or has the wrong mode at its committed destination.
+type IncompleteInstallError struct {
+	Cause error
+}
+
+func (e *IncompleteInstallError) Error() string {
+	return "updater: incomplete release install: " + e.Cause.Error()
+}
+
+func (e *IncompleteInstallError) Unwrap() error { return e.Cause }
+
 // RequiredAssetNames must appear in every signed multi-asset release manifest.
 var RequiredAssetNames = []string{
 	"nyxveil-server",
@@ -194,13 +248,37 @@ var RequiredAssetNames = []string{
 	"share-third-party-core",
 }
 
+type assetContract struct {
+	destination string
+	mode        os.FileMode
+}
+
+var productionAssets = map[string]assetContract{
+	"nyxveil-server":         {paths.BinaryPath(), 0o755},
+	"nyxveilctl":             {paths.BinDir + "/nyxveilctl", 0o755},
+	"nyxveil-catalog-verify": {paths.CatalogVerify(), 0o755},
+	"production-gate":        {paths.ProductionGate(), 0o755},
+	"share-version":          {paths.ShareVersion(), 0o644},
+	"share-third-party-core": {paths.ShareThirdParty(), 0o644},
+}
+
 func assetMode(name string) os.FileMode {
-	switch name {
-	case "share-version", "share-third-party-core":
-		return 0o644
-	default:
-		return 0o755
+	if contract, ok := productionAssets[name]; ok {
+		return contract.mode
 	}
+	return 0o755
+}
+
+// ParseMode parses a manifest's four-digit octal permission mode.
+func ParseMode(value string) (os.FileMode, error) {
+	if len(value) != 4 || value[0] != '0' {
+		return 0, fmt.Errorf("updater: invalid asset mode %q", value)
+	}
+	n, err := strconv.ParseUint(value, 8, 32)
+	if err != nil || n > 0o777 {
+		return 0, fmt.Errorf("updater: invalid asset mode %q", value)
+	}
+	return os.FileMode(n), nil
 }
 
 // Apply downloads assets, verifies SHA-256, replaces atomically, runs health, rolls back on failure.
@@ -340,6 +418,18 @@ func (u *Updater) Apply(m *Manifest, health HealthCheck) error {
 		replaced = append(replaced, job)
 	}
 
+	if err := VerifyCommitted(replaced); err != nil {
+		binErr := u.rollbackJobs(replaced)
+		tlsErr := restoreTLS()
+		if binErr != nil {
+			return fmt.Errorf("updater: committed file verification failed: %w; rollback failed: %v (tls restore err: %v)", err, binErr, tlsErr)
+		}
+		if tlsErr != nil {
+			return fmt.Errorf("updater: committed file verification failed: %w; binaries rolled back but TLS metadata restore failed: %v", err, tlsErr)
+		}
+		return fmt.Errorf("updater: committed file verification failed: %w; rolled back", err)
+	}
+
 	if health != nil && !health() {
 		binErr := u.rollbackJobs(replaced)
 		tlsErr := restoreTLS()
@@ -371,54 +461,112 @@ func (u *Updater) enforceOwnership(stateDir string) error {
 func (u *Updater) planJobs(m *Manifest) ([]replaceJob, error) {
 	var jobs []replaceJob
 	if len(m.Assets) > 0 {
-		seen := map[string]bool{}
+		assets := make(map[string]Asset, len(m.Assets))
 		for _, a := range m.Assets {
-			dest, prev := "", ""
-			switch a.Name {
-			case "nyxveil-server", "server":
-				dest, prev = u.BinaryPath, u.PrevPath
-			default:
-				if u.ExtraBinaries != nil {
-					dest = u.ExtraBinaries[a.Name]
-				}
-				if u.ExtraPrev != nil {
-					prev = u.ExtraPrev[a.Name]
-				}
+			if _, duplicate := assets[a.Name]; duplicate {
+				return nil, fmt.Errorf("updater: duplicate asset %q", a.Name)
 			}
-			if dest == "" {
-				continue
+			if _, known := productionAssets[a.Name]; a.Required && !known {
+				return nil, fmt.Errorf("updater: required asset %q is not in the install allowlist", a.Name)
 			}
-			jobs = append(jobs, replaceJob{
-				name: a.Name, url: a.URL, sha: a.SHA256, dest: dest, prev: prev, mode: assetMode(a.Name),
-			})
-			seen[a.Name] = true
-			if a.Name == "server" {
-				seen["nyxveil-server"] = true
-			}
-		}
-		if len(jobs) == 0 {
-			return nil, fmt.Errorf("updater: no applicable assets")
+			assets[a.Name] = a
 		}
 		for _, name := range RequiredAssetNames {
-			if name == "nyxveil-server" {
-				if !seen[name] {
-					return nil, fmt.Errorf("updater: required asset %q missing from signed manifest", name)
-				}
-				continue
-			}
-			if u.ExtraBinaries == nil {
-				continue
-			}
-			if _, mapped := u.ExtraBinaries[name]; !mapped {
-				continue
-			}
-			if !seen[name] {
+			if _, ok := assets[name]; !ok {
 				return nil, fmt.Errorf("updater: required asset %q missing from signed manifest", name)
 			}
+			if name != "nyxveil-server" && u.ExtraBinaries != nil && u.ExtraBinaries[name] == "" {
+				return nil, fmt.Errorf("updater: required asset %q has no ExtraBinaries destination", name)
+			}
+		}
+
+		for _, name := range RequiredAssetNames {
+			a := assets[name]
+			contract := productionAssets[name]
+			dest := contract.destination
+			extraOverride := u.ExtraBinaries != nil && u.ExtraBinaries[name] != ""
+			if extraOverride {
+				dest = u.ExtraBinaries[name]
+			} else if a.Destination != "" {
+				if a.Destination != contract.destination {
+					return nil, fmt.Errorf("updater: asset %q destination %q does not match allowlist %q", name, a.Destination, contract.destination)
+				}
+				dest = a.Destination
+			}
+			if name == "nyxveil-server" && !extraOverride && u.BinaryPath != "" {
+				dest = u.BinaryPath
+			}
+			if dest == "" {
+				return nil, fmt.Errorf("updater: required asset %q has no destination", name)
+			}
+			mode := contract.mode
+			if a.Mode != "" {
+				parsed, err := ParseMode(a.Mode)
+				if err != nil {
+					return nil, fmt.Errorf("updater: asset %q: %w", name, err)
+				}
+				if parsed != contract.mode {
+					return nil, fmt.Errorf("updater: asset %q mode %04o does not match allowlist %04o", name, parsed, contract.mode)
+				}
+				mode = parsed
+			}
+			prev := ""
+			if name == "nyxveil-server" {
+				prev = u.PrevPath
+			} else if u.ExtraPrev != nil {
+				prev = u.ExtraPrev[name]
+			}
+			if prev == "" && extraOverride {
+				prev = dest + ".prev"
+			}
+			jobs = append(jobs, replaceJob{
+				name: name, url: a.URL, sha: a.SHA256, dest: dest, prev: prev, mode: mode,
+			})
 		}
 		return jobs, nil
 	}
 	return []replaceJob{{name: "nyxveil-server", url: m.URL, sha: m.SHA256, dest: u.BinaryPath, prev: u.PrevPath, mode: 0o755}}, nil
+}
+
+// VerifyReleaseInstall checks that every required manifest asset is present at
+// the destinations configured on u with the signed hash and required mode.
+func (u *Updater) VerifyReleaseInstall(m *Manifest) error {
+	if m == nil {
+		return fmt.Errorf("updater: nil manifest")
+	}
+	jobs, err := u.planJobs(m)
+	if err != nil {
+		return err
+	}
+	if err := VerifyCommitted(jobs); err != nil {
+		return &IncompleteInstallError{Cause: err}
+	}
+	return nil
+}
+
+// VerifyCommitted verifies every file after atomic replacement and before health.
+func VerifyCommitted(jobs []replaceJob) error {
+	for _, j := range jobs {
+		st, err := os.Stat(j.dest)
+		if err != nil {
+			return fmt.Errorf("%s missing at %s: %w", j.name, j.dest, err)
+		}
+		wantMode := j.mode.Perm()
+		gotMode := st.Mode().Perm()
+		// Windows does not preserve Unix permission bits; executable-mode
+		// enforcement is meaningful only on Unix release hosts.
+		if runtime.GOOS != "windows" && gotMode != wantMode {
+			return fmt.Errorf("%s mode at %s is %04o, want %04o", j.name, j.dest, st.Mode().Perm(), j.mode.Perm())
+		}
+		sum, err := fileSHA256(j.dest)
+		if err != nil {
+			return fmt.Errorf("%s hash at %s: %w", j.name, j.dest, err)
+		}
+		if !strings.EqualFold(sum, strings.TrimSpace(j.sha)) {
+			return fmt.Errorf("%s sha256 at %s is %s, want %s", j.name, j.dest, sum, j.sha)
+		}
+	}
+	return nil
 }
 
 func (u *Updater) rollbackJobs(jobs []replaceJob) error {
@@ -474,6 +622,17 @@ func (u *Updater) Rollback() error {
 }
 
 func (u *Updater) download(url, dest string) error {
+	if u.LocalDir != "" {
+		name := filepath.Base(strings.TrimSpace(url))
+		if name == "." || name == string(filepath.Separator) || name == "" {
+			return fmt.Errorf("updater: invalid local asset URL %q", url)
+		}
+		src := filepath.Join(u.LocalDir, name)
+		if err := copyFilePreserve(src, dest); err != nil {
+			return fmt.Errorf("updater: read local asset %s: %w", name, err)
+		}
+		return nil
+	}
 	resp, err := u.HTTP.Get(url)
 	if err != nil {
 		return err

@@ -79,7 +79,7 @@ case "${MODE}" in
   *) fail "mode" "GATE_MODE must be source|local|live" ;;
 esac
 
-EXPECTED_VERSION="1.1.1"
+EXPECTED_VERSION="1.1.2"
 VERSION="$(tr -d '[:space:]' < "${ROOT}/VERSION" 2>/dev/null || true)"
 if [[ -z "${VERSION}" ]]; then
   # Installed layout: prefer share VERSION; fall back to binary --version output later.

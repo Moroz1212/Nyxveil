@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/nyxveil/server/internal/filemeta"
 	"github.com/nyxveil/server/internal/health"
@@ -16,7 +17,18 @@ import (
 )
 
 func TestUpdateRollbackRestartsPreviousService(t *testing.T) {
-	dir := t.TempDir()
+	dir, err := os.MkdirTemp("", "nyxveil-ctl-rollback-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < 8; i++ {
+			if os.RemoveAll(dir) == nil {
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	})
 	server := filepath.Join(dir, "nyxveil-server")
 	prev := filepath.Join(dir, "nyxveil-server.prev")
 	ctl := filepath.Join(dir, "nyxveilctl")
@@ -44,6 +56,9 @@ func TestUpdateRollbackRestartsPreviousService(t *testing.T) {
 			{Name: "nyxveilctl", SHA256: sumC, URL: hs.URL + "/c"},
 		},
 	}
+	for _, name := range updater.RequiredAssetNames[2:] {
+		m.Assets = append(m.Assets, updater.Asset{Name: name, SHA256: sumC, URL: hs.URL + "/c"})
+	}
 
 	var restarts int32
 	oldRestart := restartUnit
@@ -56,13 +71,17 @@ func TestUpdateRollbackRestartsPreviousService(t *testing.T) {
 	u := updater.New(server, prev, filepath.Join(dir, "marker"))
 	u.ExtraBinaries = map[string]string{"nyxveilctl": ctl}
 	u.ExtraPrev = map[string]string{"nyxveilctl": ctlPrev}
+	for _, name := range updater.RequiredAssetNames[2:] {
+		u.ExtraBinaries[name] = filepath.Join(dir, name)
+		u.ExtraPrev[name] = filepath.Join(dir, name+".prev")
+	}
 
 	healthGate := func() bool {
 		_ = restartUnit("nyxveil-server")
 		return false
 	}
 
-	err := u.Apply(m, healthGate)
+	err = u.Apply(m, healthGate)
 	if err == nil {
 		t.Fatal("expected apply failure")
 	}

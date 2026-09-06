@@ -74,6 +74,9 @@ func TestBootstrapCLIReplacesOnlyCtl(t *testing.T) {
 	if string(gotCtl) != "CTL-1.0.5" {
 		t.Fatalf("ctl=%q", gotCtl)
 	}
+	if gotPrev := mustRead(t, ctl+".prev"); string(gotPrev) != "CTL-1.0.3" {
+		t.Fatalf("ctl backup=%q", gotPrev)
+	}
 	gotServer, _ := os.ReadFile(server)
 	if string(gotServer) != string(serverBefore) {
 		t.Fatal("server binary must not change during bootstrap")
@@ -209,6 +212,7 @@ func TestLegacy103To105BootstrapThenUpdate(t *testing.T) {
 			{Name: "nyxveilctl", SHA256: sumC, URL: hs.URL + "/ctl"},
 		},
 	}
+	completeRequiredTestAssets(m, updater.Asset{SHA256: sumC, URL: hs.URL + "/ctl"})
 	updater.SignManifest(m, priv)
 	raw, _ := json.Marshal(m)
 	mux.HandleFunc("/manifest.json", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(raw) })
@@ -232,6 +236,7 @@ func TestLegacy103To105BootstrapThenUpdate(t *testing.T) {
 	u := updater.New(server, prev, filepath.Join(state, "marker"))
 	u.ExtraBinaries = map[string]string{"nyxveilctl": ctl}
 	u.ExtraPrev = map[string]string{"nyxveilctl": ctlPrev}
+	mapRequiredTestAssets(u, dir)
 	u.StateDir = state
 	u.HTTP = hs.Client()
 	u.PublicKey = pub
@@ -290,12 +295,14 @@ func TestFullUpdateFailureAfterBootstrapRestoresServer103(t *testing.T) {
 			{Name: "nyxveilctl", SHA256: sumC, URL: hs.URL + "/ctl"},
 		},
 	}
+	completeRequiredTestAssets(m, updater.Asset{SHA256: sumC, URL: hs.URL + "/ctl"})
 	updater.SignManifest(m, priv)
 	raw, _ := json.Marshal(m)
 
 	u := updater.New(server, prev, filepath.Join(state, "marker"))
 	u.ExtraBinaries = map[string]string{"nyxveilctl": ctl}
 	u.ExtraPrev = map[string]string{"nyxveilctl": ctlPrev}
+	mapRequiredTestAssets(u, dir)
 	u.StateDir = state
 	u.HTTP = hs.Client()
 	u.PublicKey = pub

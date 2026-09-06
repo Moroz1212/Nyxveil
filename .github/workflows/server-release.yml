@@ -62,22 +62,15 @@ jobs:
             TAG="${GITHUB_REF_NAME}"
           fi
           DIST=dist/release
-          # Exact asset names — must match installer download + updater manifests.
-          ASSETS=(
-            "${DIST}/nyxveil-server-linux-amd64"
-            "${DIST}/nyxveilctl-linux-amd64"
-            "${DIST}/nyxveil-catalog-verify-linux-amd64"
-            "${DIST}/nyxveil-server-linux-arm64"
-            "${DIST}/nyxveilctl-linux-arm64"
-            "${DIST}/nyxveil-catalog-verify-linux-arm64"
-            "${DIST}/production-gate.sh"
-            "${DIST}/VERSION"
-            "${DIST}/THIRD_PARTY_CORE.md"
-            "${DIST}/release-manifest-linux-amd64.json"
-            "${DIST}/release-manifest-linux-arm64.json"
-            "${DIST}/bootstrap-cli-update.sh"
-            "${DIST}/SHA256SUMS"
-          )
+          UPLOAD_LIST="${DIST}/UPLOAD-LIST-server-v${VERSION}.txt"
+          [[ -f "${UPLOAD_LIST}" ]] || { echo "missing ${UPLOAD_LIST}"; exit 1; }
+          mapfile -t BASENAMES < "${UPLOAD_LIST}"
+          ASSETS=()
+          for name in "${BASENAMES[@]}"; do
+            [[ -n "${name}" && "${name}" == "$(basename "${name}")" ]] ||
+              { echo "invalid upload basename: ${name}"; exit 1; }
+            ASSETS+=("${DIST}/${name}")
+          done
           for a in "${ASSETS[@]}"; do
             [[ -f "${a}" ]] || { echo "missing ${a}"; exit 1; }
           done

@@ -39,7 +39,7 @@ printf '#!/bin/sh\necho mock-server\n' > "${BIN_DIR}/nyxveil-server"
 printf '#!/bin/sh\necho mock-ctl\n' > "${BIN_DIR}/nyxveilctl"
 printf '#!/bin/sh\necho mock-catalog-verify\n' > "${BIN_DIR}/nyxveil-catalog-verify"
 printf '#!/bin/sh\necho mock-gate\n' > "${BIN_DIR}/scripts/production-gate.sh"
-printf '1.1.1\n' > "${BIN_DIR}/VERSION"
+printf '1.1.2\n' > "${BIN_DIR}/VERSION"
 printf '# mock frozen core\n7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b\n' > "${BIN_DIR}/THIRD_PARTY_CORE.md"
 chmod +x "${BIN_DIR}/nyxveil-server" "${BIN_DIR}/nyxveilctl" \
   "${BIN_DIR}/nyxveil-catalog-verify" "${BIN_DIR}/scripts/production-gate.sh"

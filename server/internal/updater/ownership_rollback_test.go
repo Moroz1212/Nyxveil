@@ -112,6 +112,8 @@ func TestUpdaterRollbackRestoresAbsentFileState(t *testing.T) {
 		Version: "9.9.9", Arch: updater.ArchString(), MinCore: "0.0.1", MinProtocol: 1,
 		Assets: []updater.Asset{{Name: "nyxveil-server", SHA256: sum, URL: hs.URL}},
 	}
+	completeRequiredTestAssets(m, updater.Asset{SHA256: sum, URL: hs.URL})
+	mapRequiredTestAssets(u, dir)
 	err := u.Apply(m, func() bool {
 		// Create a TLS key only during the failed new version window.
 		_ = os.WriteFile(filepath.Join(state, "tls.key"), []byte("ephemeral"), 0o600)
@@ -219,6 +221,7 @@ func setupUpdateTLSHarness(t *testing.T) *updateTLSHarness {
 	t.Cleanup(h.hs.Close)
 
 	h.u = updater.New(h.server, h.prev, filepath.Join(state, "marker"))
+	mapRequiredTestAssets(h.u, dir)
 	h.u.StateDir = state
 	h.u.EnforceOwnership = func(stateDir string) error {
 		return filemeta.EnforceRuntimeTLS(stateDir)
@@ -227,10 +230,12 @@ func setupUpdateTLSHarness(t *testing.T) *updateTLSHarness {
 }
 
 func (h *updateTLSHarness) manifest() *updater.Manifest {
-	return &updater.Manifest{
+	m := &updater.Manifest{
 		Version: "9.9.9", Arch: updater.ArchString(), MinCore: "0.0.1", MinProtocol: 1,
 		Assets: []updater.Asset{{Name: "nyxveil-server", SHA256: h.sum, URL: h.hs.URL}},
 	}
+	completeRequiredTestAssets(m, updater.Asset{SHA256: h.sum, URL: h.hs.URL})
+	return m
 }
 
 func (h *updateTLSHarness) applyFailingHealth() error {

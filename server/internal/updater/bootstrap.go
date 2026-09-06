@@ -27,7 +27,7 @@ type BootstrapCLIOpts struct {
 	HTTP        *http.Client
 
 	// Test hooks.
-	Download    func(url, dest string) error
+	Download      func(url, dest string) error
 	AtomicInstall func(src, dest string) error
 }
 
@@ -195,6 +195,11 @@ func atomicInstallCLI(src, dest string) error {
 	_ = os.Chmod(tmp, 0o755)
 	// CLI lives under /usr/local/sbin — intended owner root:root.
 	_ = filemeta.Chown(tmp, 0, 0)
+	// Keep a best-effort rollback copy without weakening the atomic install:
+	// backup failure is non-fatal, and rename failure still leaves dest intact.
+	if _, err := os.Stat(dest); err == nil {
+		_ = copyFilePreserve(dest, dest+".prev")
+	}
 	if err := os.Rename(tmp, dest); err != nil {
 		_ = os.Remove(tmp)
 		return err

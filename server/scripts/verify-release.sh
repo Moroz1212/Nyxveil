@@ -35,7 +35,9 @@ REQUIRED=(
   release-manifest-linux-amd64.json
   release-manifest-linux-arm64.json
   bootstrap-cli-update.sh
+  live-final-update.sh
   SHA256SUMS
+  UPLOAD-LIST-server-v${VERSION}.txt
 )
 
 HASHED=(
@@ -51,6 +53,7 @@ HASHED=(
   release-manifest-linux-amd64.json
   release-manifest-linux-arm64.json
   bootstrap-cli-update.sh
+  live-final-update.sh
 )
 
 echo "==> Required assets"
@@ -86,6 +89,7 @@ done
 echo "==> No CRLF in production shell release assets"
 bash "${ROOT}/scripts/assert-no-crlf.sh" \
   "${DIST}/bootstrap-cli-update.sh" \
+  "${DIST}/live-final-update.sh" \
   "${DIST}/production-gate.sh" \
   "${DIST}/linux-amd64/scripts" \
   "${DIST}/linux-arm64/scripts" \
@@ -100,6 +104,11 @@ echo "==> bootstrap-cli-update.sh parses under bash"
 bash -n "${DIST}/bootstrap-cli-update.sh"
 bash "${DIST}/bootstrap-cli-update.sh" --help >/dev/null
 
+echo "==> live-final-update.sh parses under bash and is executable"
+[[ -x "${DIST}/live-final-update.sh" ]] || die "live-final-update.sh must be executable"
+bash -n "${DIST}/live-final-update.sh"
+bash "${DIST}/live-final-update.sh" --help >/dev/null
+
 echo "==> Manifest asset hashes match release binaries (signed ParseManifest)"
 go run ./scripts/verify-manifest-hashes.go -dist "${DIST}" -version "${VERSION}"
 
@@ -109,3 +118,4 @@ if ! grep -q "\"${VERSION}\"" "${DIST}/release-manifest-linux-amd64.json"; then
 fi
 
 echo "verify-release: OK version=${VERSION}"
+bash "${ROOT}/scripts/check-release-upload-set.sh"

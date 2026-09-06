@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bootstrap-cli-update.sh — LEGACY safe path for nodes running nyxveilctl ≤1.0.4
+# bootstrap-cli-update.sh — safe CLI-first path for legacy nyxveilctl updaters
 #
 # Replaces ONLY /usr/local/sbin/nyxveilctl with a signed release asset, then
 # optionally runs `nyxveilctl update` with the FIXED updater.
@@ -13,8 +13,8 @@
 #   3) Download nyxveilctl asset; verify SHA-256
 #   4) Atomic install (temp + fsync + rename), mode 0755, root:root
 #
-# Usage (production, from server-v1.0.3):
-#   sudo bash bootstrap-cli-update.sh --version 1.0.5 --then-update
+# Usage (production, from server-v1.1.1):
+#   sudo bash bootstrap-cli-update.sh --version 1.1.2 --then-update
 #
 # Offline:
 #   sudo bash bootstrap-cli-update.sh --manifest /path/manifest.json \
@@ -24,7 +24,7 @@ set -euo pipefail
 readonly PUB_HEX="f63d2c8001df3d7b2efdd171a16463260cb7190d61ef564419cc0836777d176f"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 
-VERSION="${NYXVEIL_BOOTSTRAP_VERSION:-1.1.1}"
+VERSION="${NYXVEIL_BOOTSTRAP_VERSION:-1.1.2}"
 BIN_DIR="${NYXVEIL_BIN_DIR:-/usr/local/sbin}"
 CTL_DEST="${BIN_DIR}/nyxveilctl"
 THEN_UPDATE=0
@@ -32,6 +32,7 @@ MANIFEST_FILE=""
 CTL_FILE=""
 BASE_URL=""
 WORK=""
+DUMP_CANONICAL=""
 
 die() { echo "bootstrap-cli: $*" >&2; exit 1; }
 log() { echo "bootstrap-cli: $*"; }
@@ -40,7 +41,7 @@ usage() {
   cat <<'EOF'
 Usage: bootstrap-cli-update.sh [options]
 
-  --version X.Y.Z     Target release version (default 1.0.5)
+  --version X.Y.Z     Target release version (default 1.1.2)
   --then-update       After CLI replace, exec: nyxveilctl update
   --manifest PATH     Use local signed manifest (skip download)
   --ctl-file PATH     Use local nyxveilctl binary (skip download)
@@ -58,30 +59,13 @@ while [[ $# -gt 0 ]]; do
     --manifest) MANIFEST_FILE="${2:-}"; shift 2 ;;
     --ctl-file) CTL_FILE="${2:-}"; shift 2 ;;
     --bin-dir) BIN_DIR="${2:-}"; CTL_DEST="${BIN_DIR}/nyxveilctl"; shift 2 ;;
+    --dump-canonical) DUMP_CANONICAL="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown arg: $1" ;;
   esac
 done
 
-[[ "$(id -u)" -eq 0 ]] || die "root required"
-
-ARCH="$(uname -m)"
-case "${ARCH}" in
-  x86_64|amd64) ARCH=amd64 ;;
-  aarch64|arm64) ARCH=arm64 ;;
-  *) die "unsupported arch ${ARCH}" ;;
-esac
-MANIFEST_ARCH="linux/${ARCH}"
-BASE_URL="${NYXVEIL_RELEASE_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/server-v${VERSION}}"
-
 command -v jq >/dev/null 2>&1 || die "jq required"
-command -v openssl >/dev/null 2>&1 || die "openssl required"
-command -v sha256sum >/dev/null 2>&1 || die "sha256sum required"
-command -v curl >/dev/null 2>&1 || die "curl required"
-
-WORK="$(mktemp -d /tmp/nyxveil-bootstrap-cli.XXXXXX)"
-cleanup() { rm -rf "${WORK}"; }
-trap cleanup EXIT
 
 hex_to_bin() {
   local hex="$1" i
@@ -120,6 +104,7 @@ canonical_manifest_bytes() {
   local canonical
   canonical="$(
     jq -c '
+      . as $manifest |
       {
         version: .version,
         arch: .arch
@@ -140,11 +125,23 @@ canonical_manifest_bytes() {
          then {
            assets: [
              .assets[] |
-             {
-               name: .name,
-               sha256: .sha256,
-               url: .url
-             }
+             if ($manifest.assets | any(
+               ((.destination // "") != "" or (.mode // "") != "" or (.required // false) == true)
+             ))
+             then {
+                 name: .name,
+                 sha256: .sha256,
+                 url: .url,
+                 destination: .destination,
+                 mode: .mode,
+                 required: .required
+               }
+             else {
+                 name: .name,
+                 sha256: .sha256,
+                 url: .url
+               }
+             end
            ]
          }
          else {}
@@ -153,6 +150,31 @@ canonical_manifest_bytes() {
   )"
   printf '%s' "${canonical}"
 }
+
+if [[ -n "${DUMP_CANONICAL}" ]]; then
+  [[ -f "${DUMP_CANONICAL}" ]] || die "manifest not found: ${DUMP_CANONICAL}"
+  canonical_manifest_bytes "${DUMP_CANONICAL}"
+  exit 0
+fi
+
+[[ "$(id -u)" -eq 0 ]] || die "root required"
+
+ARCH="$(uname -m)"
+case "${ARCH}" in
+  x86_64|amd64) ARCH=amd64 ;;
+  aarch64|arm64) ARCH=arm64 ;;
+  *) die "unsupported arch ${ARCH}" ;;
+esac
+MANIFEST_ARCH="linux/${ARCH}"
+BASE_URL="${NYXVEIL_RELEASE_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/server-v${VERSION}}"
+
+command -v openssl >/dev/null 2>&1 || die "openssl required"
+command -v sha256sum >/dev/null 2>&1 || die "sha256sum required"
+command -v curl >/dev/null 2>&1 || die "curl required"
+
+WORK="$(mktemp -d /tmp/nyxveil-bootstrap-cli.XXXXXX)"
+cleanup() { rm -rf "${WORK}"; }
+trap cleanup EXIT
 
 verify_manifest_signature() {
   local manifest="$1"
@@ -221,6 +243,13 @@ dirfd = os.open(os.path.dirname(p) or ".", os.O_RDONLY)
 os.fsync(dirfd)
 os.close(dirfd)
 PY
+# Best-effort rollback copy. A failure here does not risk the live CLI: the
+# verified replacement is still installed atomically, and rename failure leaves
+# the old destination untouched.
+if [[ -f "${CTL_DEST}" ]]; then
+  cp -a "${CTL_DEST}" "${CTL_DEST}.prev" 2>/dev/null || \
+    cp -a "${CTL_DEST}" "/var/lib/nyxveil/nyxveilctl.prev" 2>/dev/null || true
+fi
 mv -f "${TMP_INSTALL}" "${CTL_DEST}"
 chmod 0755 "${CTL_DEST}"
 chown root:root "${CTL_DEST}" 2>/dev/null || true
@@ -230,7 +259,7 @@ log "nyxveil-server was NOT modified; TLS/config/identity untouched"
 
 if [[ "${THEN_UPDATE}" -eq 1 ]]; then
   log "running fixed updater: ${CTL_DEST} update"
-  exec "${CTL_DEST}" update
+  exec "${CTL_DEST}" update "${BASE_URL}/release-manifest-linux-${ARCH}.json"
 fi
 
 log "next: sudo ${CTL_DEST} update   # or sudo serv_update"
