@@ -46,7 +46,7 @@ func TestAssertNoCRLFGateRejectsInjectedCRLF(t *testing.T) {
 	}
 
 	if runtime.GOOS != "windows" {
-		dir := t.TempDir()
+		dir := tempDir(t)
 		badPath := filepath.Join(dir, "bad.sh")
 		goodPath := filepath.Join(dir, "good.sh")
 		_ = os.WriteFile(badPath, bad, 0o755)
@@ -101,7 +101,7 @@ rm -rf "$tmp"
 		}
 		return
 	}
-	dir := t.TempDir()
+	dir := tempDir(t)
 	f := filepath.Join(dir, "crlf.sh")
 	_ = os.WriteFile(f, []byte("#!/bin/sh\r\nset -e\r\n"), 0o755)
 	if out, err := exec.Command("bash", norm, f).CombinedOutput(); err != nil {

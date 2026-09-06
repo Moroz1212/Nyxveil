@@ -25,6 +25,20 @@ public class NodeHealth
 
     public bool Healthy { get; set; }
 
+    public bool? TunReady { get; set; }
+
+    public bool? TlsOk { get; set; }
+
+    public bool? QuicOk { get; set; }
+
+    public bool? BridgeOk { get; set; }
+
+    public bool? TicketKeysLoaded { get; set; }
+
+    public bool? RevocationStale { get; set; }
+
+    public bool? CpConnected { get; set; }
+
     public DateTime UpdatedAt { get; set; }
 
     public Node Node { get; set; } = null!;

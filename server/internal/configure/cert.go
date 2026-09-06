@@ -1,6 +1,7 @@
 package configure
 
 import (
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
@@ -14,14 +15,16 @@ import (
 
 // CertInfo is operator-safe TLS status (no private key).
 type CertInfo struct {
-	Present     bool   `json:"present"`
-	Subject     string `json:"subject,omitempty"`
-	SANs        []string `json:"sans,omitempty"`
-	NotBefore   string `json:"not_before,omitempty"`
-	NotAfter    string `json:"not_after,omitempty"`
-	SPKIHex     string `json:"spki_sha256,omitempty"`
-	TLSMode     string `json:"tls_mode,omitempty"` // acme|operator|self-signed|missing
-	ACMEDomain  string `json:"acme_domain,omitempty"`
+	Present    bool     `json:"present"`
+	Subject    string   `json:"subject,omitempty"`
+	Issuer     string   `json:"issuer,omitempty"`
+	SANs       []string `json:"sans,omitempty"`
+	NotBefore  string   `json:"not_before,omitempty"`
+	NotAfter   string   `json:"not_after,omitempty"`
+	SPKIHex    string   `json:"spki_sha256,omitempty"`
+	Thumbprint string   `json:"cert_thumbprint,omitempty"`
+	TLSMode    string   `json:"tls_mode,omitempty"` // acme|operator|self-signed|missing
+	ACMEDomain string   `json:"acme_domain,omitempty"`
 }
 
 // ValidateLeafForDomain checks parse, key match (via Load), validity window, SAN, ServerAuth.
@@ -82,7 +85,7 @@ func ValidateLeafForDomainOpts(certPath, keyPath, domain string, now time.Time, 
 		Roots:         roots,
 		Intermediates: inter,
 		CurrentTime:   now,
-		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	if _, err := leaf.Verify(opts); err != nil {
 		return fmt.Errorf("configure: system trust verification failed: %w", err)
@@ -140,6 +143,7 @@ func InspectCert(certPath, keyPath, acmeDomain string) CertInfo {
 		return info
 	}
 	info.Subject = leaf.Subject.String()
+	info.Issuer = leaf.Issuer.String()
 	info.SANs = append([]string{}, leaf.DNSNames...)
 	for _, ip := range leaf.IPAddresses {
 		info.SANs = append(info.SANs, ip.String())
@@ -149,6 +153,8 @@ func InspectCert(certPath, keyPath, acmeDomain string) CertInfo {
 	if pin, err := nodetls.SPKIPinSHA256(cert); err == nil {
 		info.SPKIHex = hex.EncodeToString(pin)
 	}
+	sum := sha256.Sum256(leaf.Raw)
+	info.Thumbprint = hex.EncodeToString(sum[:])
 	if info.TLSMode == "" {
 		info.TLSMode = "operator"
 	}

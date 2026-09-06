@@ -16,6 +16,11 @@ type Sampler struct {
 	lastCPU  cpuSample
 	lastNet  netSample
 	lastTime time.Time
+	warm     bool
+	ready    bool
+	now      func() time.Time
+	readCPU  func() cpuSample
+	readNet  func() netSample
 	RxRate   float64
 	TxRate   float64
 	CPU      float64
@@ -30,35 +35,78 @@ type netSample struct {
 }
 
 func NewSampler() *Sampler {
-	s := &Sampler{lastTime: time.Now()}
-	s.lastCPU = readCPU()
-	s.lastNet = readNet()
+	s := &Sampler{now: time.Now, readCPU: readCPU, readNet: readNet}
+	s.lastTime = s.now()
+	s.lastCPU = s.readCPU()
+	s.lastNet = s.readNet()
 	return s
+}
+
+const minSampleInterval = 500 * time.Millisecond
+
+// Ready reports whether Sample has observed a sufficiently long CPU interval.
+func (s *Sampler) Ready() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ready
+}
+
+// Rates returns the most recently sampled network byte rates.
+func (s *Sampler) Rates() (rx, tx float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.RxRate, s.TxRate
 }
 
 func (s *Sampler) Sample() (cpuPct, memPct float64, memBytes int64, rxRate, txRate float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now()
-	dt := now.Sub(s.lastTime).Seconds()
-	if dt <= 0 {
-		dt = 1
+	now := s.now()
+	cpu := s.readCPU()
+	net := s.readNet()
+	if !s.warm {
+		s.lastCPU = cpu
+		s.lastNet = net
+		s.lastTime = now
+		s.warm = true
+		memBytes, memPct = readMem()
+		return -1, memPct, memBytes, s.RxRate, s.TxRate
 	}
-	cpu := readCPU()
-	idleDelta := float64(cpu.idle - s.lastCPU.idle)
-	totalDelta := float64(cpu.total - s.lastCPU.total)
-	if totalDelta > 0 {
-		s.CPU = (1 - idleDelta/totalDelta) * 100
+
+	dt := now.Sub(s.lastTime).Seconds()
+	if now.Sub(s.lastTime) < minSampleInterval {
+		memBytes, memPct = readMem()
+		if s.ready {
+			return s.CPU, memPct, memBytes, s.RxRate, s.TxRate
+		}
+		return -1, memPct, memBytes, s.RxRate, s.TxRate
+	}
+	if dt <= 0 {
+		dt = minSampleInterval.Seconds()
+	}
+	if cpu.total >= s.lastCPU.total && cpu.idle >= s.lastCPU.idle {
+		idleDelta := float64(cpu.idle - s.lastCPU.idle)
+		totalDelta := float64(cpu.total - s.lastCPU.total)
+		if totalDelta > 0 {
+			s.CPU = (1 - idleDelta/totalDelta) * 100
+			s.ready = true
+		}
 	}
 	s.lastCPU = cpu
 
-	net := readNet()
-	s.RxRate = float64(net.rx-s.lastNet.rx) / dt
-	s.TxRate = float64(net.tx-s.lastNet.tx) / dt
+	if net.rx >= s.lastNet.rx {
+		s.RxRate = float64(net.rx-s.lastNet.rx) / dt
+	}
+	if net.tx >= s.lastNet.tx {
+		s.TxRate = float64(net.tx-s.lastNet.tx) / dt
+	}
 	s.lastNet = net
 	s.lastTime = now
 
 	memBytes, memPct = readMem()
+	if !s.ready {
+		return -1, memPct, memBytes, s.RxRate, s.TxRate
+	}
 	return s.CPU, memPct, memBytes, s.RxRate, s.TxRate
 }
 

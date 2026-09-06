@@ -1,6 +1,6 @@
-/*
+﻿/*
 ================================================================================
-  Nyxveil Control Plane — Database bootstrap (idempotent)
+  Nyxveil Control Plane вЂ” Database bootstrap (idempotent)
 ================================================================================
   Product:   Nyxveil Licensing / Control Plane
   Version:   1.0.0 (see ../VERSION)
@@ -1008,4 +1008,218 @@ END;
 
 COMMIT;
 GO
+
+BEGIN TRANSACTION;
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [AcmeAutoRenew] bit NOT NULL DEFAULT CAST(0 AS bit);
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [CertIssuer] nvarchar(512) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [CertNotAfter] datetime2 NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [CertNotBefore] datetime2 NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [CertSan] nvarchar(1024) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [CertSubject] nvarchar(512) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [CertThumbprint] nvarchar(128) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [DeletedAt] datetime2 NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [DeletedBy] nvarchar(256) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [DeletionReason] nvarchar(512) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [LastRenewalAttempt] datetime2 NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [LastRenewalError] nvarchar(512) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [LastSuccessfulRenewal] datetime2 NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [LifecycleState] int NOT NULL DEFAULT 0;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [NextPlannedRenewal] datetime2 NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [TlsMode] nvarchar(32) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [NodeHealth] ADD [BridgeOk] bit NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [NodeHealth] ADD [CpConnected] bit NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [NodeHealth] ADD [QuicOk] bit NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [NodeHealth] ADD [RevocationStale] bit NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [NodeHealth] ADD [TicketKeysLoaded] bit NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [NodeHealth] ADD [TlsOk] bit NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    ALTER TABLE [NodeHealth] ADD [TunReady] bit NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    CREATE INDEX [IX_Nodes_LifecycleState] ON [Nodes] ([LifecycleState]);
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    EXEC(N'ALTER TABLE [Nodes] ADD CONSTRAINT [CK_Nodes_LifecycleState] CHECK ([LifecycleState] BETWEEN 0 AND 2)');
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260906161021_NodeLifecycleAndCertMetadata'
+)
+BEGIN
+    INSERT INTO [__EFMigrationsHistory] ([MigrationId], [ProductVersion])
+    VALUES (N'20260906161021_NodeLifecycleAndCertMetadata', N'10.0.11');
+END;
+
+COMMIT;
+GO
 -- END EF GENERATED BASELINE
+

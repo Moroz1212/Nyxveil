@@ -4,11 +4,25 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+type failingTLSTransport struct {
+	closed bool
+}
+
+func (t *failingTLSTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("tls: certificate handshake failure")
+}
+
+func (t *failingTLSTransport) CloseIdleConnections() {
+	t.closed = true
+}
 
 func TestHeartbeatSignsRequestHeaders(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -123,5 +137,39 @@ func TestRegisterDoesNotRequireSignature(t *testing.T) {
 	}
 	if sawSig != "" {
 		t.Fatal("register should not sign with node key")
+	}
+}
+
+func TestHeartbeatOptionalMetadataOmittedWhenUnknown(t *testing.T) {
+	raw, err := json.Marshal(HeartbeatRequest{NodeID: "n1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{
+		"cpu_usage", "tls_mode", "cert_subject", "cert_not_after",
+		"last_renewal_attempt", "tun_ready", "cp_connected",
+	} {
+		if _, ok := got[field]; ok {
+			t.Fatalf("unknown optional field %q must be omitted: %s", field, raw)
+		}
+	}
+}
+
+func TestTLSErrorClosesIdleConnections(t *testing.T) {
+	tr := &failingTLSTransport{}
+	c := &Client{
+		BaseURL: "https://cp.example",
+		HTTP:    &http.Client{Transport: tr},
+	}
+	err := c.doJSON(context.Background(), http.MethodGet, "/health", nil, false, nil)
+	if err == nil {
+		t.Fatal("expected TLS failure")
+	}
+	if !tr.closed {
+		t.Fatal("TLS failure must close idle connections")
 	}
 }

@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
 
@@ -11,9 +12,11 @@ using Nyxveil.ControlPlane.Infrastructure.Persistence;
 namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ControlPlaneDbContext))]
-    partial class ControlPlaneDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260906161021_NodeLifecycleAndCertMetadata")]
+    partial class NodeLifecycleAndCertMetadata
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

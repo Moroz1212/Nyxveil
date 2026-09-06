@@ -461,7 +461,7 @@ Use -InstallMode Fresh only on a clean secrets dir, or restore via scripts\resto
     $op.TrustSqlServerCertificate = $trustSql
     $op.Encrypt = $true
     $op.FirewallRuleName = $firewallRuleName
-    $op.ExpectedSchemaVersion = '1'
+    $op.ExpectedSchemaVersion = '2'
     $op.CreatedUtc = (Get-Date).ToUniversalTime().ToString('o')
     Write-OperationalConfig -Config $op -InstallDir $InstallDir
 

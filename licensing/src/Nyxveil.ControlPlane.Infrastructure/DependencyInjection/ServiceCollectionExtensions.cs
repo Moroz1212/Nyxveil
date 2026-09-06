@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Nyxveil.ControlPlane.Application.Abstractions;
+using Nyxveil.ControlPlane.Application.Common;
 using Nyxveil.ControlPlane.Application.Options;
 using Nyxveil.ControlPlane.Infrastructure.Identity;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
@@ -49,6 +50,8 @@ public static class ServiceCollectionExtensions
 
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
+        services.Configure<CertificateExpiryOptions>(
+            configuration.GetSection(CertificateExpiryOptions.SectionName));
         services.AddSingleton<IDatabaseConnectionStringProvider, DatabaseConnectionStringProvider>();
 
         // Singleton factory (options resolve Singleton connection-string provider).
@@ -95,6 +98,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IDeviceService, DeviceService>();
         services.AddScoped<INodeRegistrationService, NodeRegistrationService>();
         services.AddScoped<INodeManagementService, NodeManagementService>();
+        services.AddScoped<ILocationManagementService, LocationManagementService>();
         services.AddScoped<INodeHeartbeatService, NodeHeartbeatService>();
         services.AddScoped<ICatalogService, CatalogService>();
         services.AddScoped<ITicketService, TicketService>();

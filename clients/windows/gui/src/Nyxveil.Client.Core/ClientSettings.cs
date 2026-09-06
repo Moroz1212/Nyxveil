@@ -7,7 +7,7 @@ public sealed class ClientSettings
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
 
-    public string ControlPlaneBaseUrl { get; set; } = "https://42mou.ru";
+    public string ControlPlaneBaseUrl { get; set; } = "https://cp.nyxveil.ru:18443";
     public string? PreferredLocationId { get; set; }
     /// <summary>Launch Nyxveil GUI when Windows starts (CurrentUser Run key).</summary>
     public bool Autostart { get; set; }

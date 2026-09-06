@@ -27,6 +27,7 @@ else
         <div class="stat"><div class="label">Сеансы</div><div class="value">@_node.CurrentSessions / @(_cfg?.Capacity ?? _node.Capacity)</div></div>
         <div class="stat"><div class="label">Версия конфигурации</div><div class="value" style="font-size:1rem">v@(_cfg?.ConfigVersion ?? _node.ConfigVersion)</div></div>
         <div class="stat"><div class="label">CPU</div><div class="value">@(_health?.CpuPercent.ToString("0.0", UiText.Culture) ?? "—")%</div></div>
+        <div class="stat"><div class="label">Жизненный цикл</div><div class="value" style="font-size:1rem">@_node.LifecycleState</div></div>
     </div>
 
     @if (_cfg is not null)
@@ -55,6 +56,10 @@ else
             else
             {
                 <button class="btn btn-danger" @onclick="() => _confirmMaint = true" disabled="@_busy">Начать обслуживание</button>
+            }
+            @if (_node.LifecycleState != NodeLifecycleState.Deleted)
+            {
+                <button class="btn btn-danger" @onclick="PrepareDeleteAsync" disabled="@_busy">Удалить сервер</button>
             }
         </div>
         <div class="panel">
@@ -102,6 +107,25 @@ else
     </div>
 
     <div class="panel">
+        <h3>TLS и состояние среды</h3>
+        <p class="muted">Режим: @(_node.TlsMode ?? "—") · Субъект: @(_node.CertSubject ?? "—") · Издатель: @(_node.CertIssuer ?? "—")</p>
+        <p class="muted">SAN: @(_node.CertSan ?? "—") · Действителен до: @(_node.CertNotAfter?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? "—") · Отпечаток: @(_node.CertThumbprint ?? "—")</p>
+        <p class="muted">TUN=@Flag(_health?.TunReady) · TLS=@Flag(_health?.TlsOk) · QUIC=@Flag(_health?.QuicOk) · Bridge=@Flag(_health?.BridgeOk) · Ticket keys=@Flag(_health?.TicketKeysLoaded) · CP=@Flag(_health?.CpConnected)</p>
+        @if (!string.IsNullOrWhiteSpace(_node.LastRenewalError))
+        {
+            <div class="alert alert-error">Ошибка обновления сертификата: @_node.LastRenewalError</div>
+        }
+    </div>
+
+    @if (_node.DeletedAt is not null)
+    {
+        <div class="panel">
+            <h3>Административное удаление</h3>
+            <p class="muted">@_node.DeletedAt?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") · @(_node.DeletedBy ?? "—") · @(_node.DeletionReason ?? "причина не указана")</p>
+        </div>
+    }
+
+    <div class="panel">
         <h3>Последние метрики</h3>
         <div class="table-wrap">
             <table class="data">
@@ -127,6 +151,12 @@ else
                Message="Перевести сервер в режим обслуживания? Новые подключения не будут направляться на этот сервер. Сохранённые настройки доступности и завершения сеансов сохранятся."
                ConfirmText="Подтвердить"
                OnConfirm="EnterMaintenanceAsync" />
+<ConfirmDialog @bind-Visible="_confirmDelete"
+               Title="Удалить сервер"
+               Message="@(_deletePreview?.ImpactSummary ?? "Загрузка влияния…")"
+               RequiredConfirmation="@DeleteConfirmation"
+               ConfirmText="Удалить"
+               OnConfirm="DeleteAsync" />
 
 @code {
     [Parameter] public string NodeId { get; set; } = "";
@@ -137,10 +167,13 @@ else
     private List<NodeEndpoint> _endpoints = new();
     private List<NodeMetric> _metrics = new();
     private bool _confirmMaint;
+    private bool _confirmDelete;
+    private NodeDecommissionPreview? _deletePreview;
     private bool _busy;
     private int _editCapacity;
     private string _editLocation = "";
     private string? _error;
+    private string DeleteConfirmation => string.IsNullOrWhiteSpace(_node?.DisplayName) ? NodeId : _node.DisplayName;
 
     protected override async Task OnParametersSetAsync() => await LoadAsync();
 
@@ -212,4 +245,20 @@ else
 
     private Task ChangeLocationAsync() =>
         RunNodeActionAsync((svc, actor) => svc.ChangeLocationAsync(NodeId, _editLocation, actor));
+
+    private async Task PrepareDeleteAsync()
+    {
+        _deletePreview = await BlazorWork.RunAsync(Scopes, sp =>
+            sp.GetRequiredService<INodeManagementService>().GetDecommissionPreviewAsync(NodeId));
+        _confirmDelete = true;
+    }
+
+    private async Task DeleteAsync()
+    {
+        await RunNodeActionAsync((svc, actor) => svc.SoftDeleteAsync(NodeId, actor, "Deleted from admin panel"));
+        if (_node?.LifecycleState == NodeLifecycleState.Deleted)
+            Nav.NavigateTo("/admin/nodes");
+    }
+
+    private static string Flag(bool? value) => value switch { true => "OK", false => "FAIL", _ => "—" };
 }

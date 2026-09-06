@@ -4,6 +4,7 @@ using Nyxveil.ControlPlane.Application.Common;
 using Nyxveil.ControlPlane.Application.Contracts.V1;
 using Nyxveil.ControlPlane.Application.Exceptions;
 using Nyxveil.ControlPlane.Domain.Entities;
+using Nyxveil.ControlPlane.Domain.Enums;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
 
 namespace Nyxveil.ControlPlane.Infrastructure.Services;
@@ -107,6 +108,92 @@ public sealed class NodeManagementService : INodeManagementService
         return ToResponse(cfg);
     }
 
+    public async Task<NodeDecommissionPreview> GetDecommissionPreviewAsync(
+        string nodeId,
+        CancellationToken cancellationToken = default)
+    {
+        var node = await _db.Nodes.AsNoTracking()
+            .FirstOrDefaultAsync(n => n.NodeId == nodeId, cancellationToken).ConfigureAwait(false)
+            ?? throw new NotFoundException("node not found");
+        var endpoints = await _db.NodeEndpoints.CountAsync(e => e.NodeId == nodeId, cancellationToken).ConfigureAwait(false);
+        var metrics = await _db.NodeMetrics.CountAsync(m => m.NodeId == nodeId, cancellationToken).ConfigureAwait(false);
+        return new NodeDecommissionPreview
+        {
+            NodeId = nodeId,
+            CurrentSessions = node.CurrentSessions,
+            EndpointCount = endpoints,
+            MetricCount = metrics,
+            ImpactSummary = node.CurrentSessions > 0
+                ? $"{node.CurrentSessions} active session(s) must be drained; {endpoints} endpoint(s) will leave the catalog."
+                : $"No active sessions; {endpoints} endpoint(s) will leave the catalog. Historical metrics retained: {metrics}."
+        };
+    }
+
+    public Task SoftDeleteAsync(
+        string nodeId, string actor, string? reason, bool force = false,
+        CancellationToken cancellationToken = default) =>
+        DecommissionAsync(nodeId, actor, reason, NodeLifecycleState.Deleted, "node.deleted", force, cancellationToken);
+
+    public Task RevokeAsync(
+        string nodeId, string actor, string? reason, bool force = false,
+        CancellationToken cancellationToken = default) =>
+        DecommissionAsync(nodeId, actor, reason, NodeLifecycleState.Revoked, "node.revoked", force, cancellationToken);
+
+    private async Task DecommissionAsync(
+        string nodeId,
+        string actor,
+        string? reason,
+        NodeLifecycleState state,
+        string auditAction,
+        bool force,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(nodeId))
+            throw new ValidationException("node_id is required");
+
+        await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var node = await _db.Nodes.FirstOrDefaultAsync(n => n.NodeId == nodeId, cancellationToken)
+                .ConfigureAwait(false) ?? throw new NotFoundException("node not found");
+            var cfg = await _db.NodeConfigs.FirstOrDefaultAsync(c => c.NodeId == nodeId, cancellationToken)
+                .ConfigureAwait(false) ?? throw new NotFoundException("node config not found");
+            if (node.CurrentSessions > 0 && !force)
+                throw new ValidationException("node has active sessions; drain first or use force");
+
+            var now = _clock.UtcNow;
+            node.Enabled = false;
+            node.Draining = true;
+            node.LifecycleState = state;
+            node.DeletedAt = now;
+            node.DeletedBy = string.IsNullOrWhiteSpace(actor) ? "admin" : actor;
+            node.DeletionReason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+            cfg.Enabled = false;
+            cfg.Draining = true;
+            cfg.ConfigVersion = checked(cfg.ConfigVersion + 1);
+            cfg.UpdatedAt = now;
+            node.ConfigVersion = cfg.ConfigVersion;
+            node.UpdatedAt = now;
+
+            await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await _audit.WriteAsync(new AuditWriteRequest
+            {
+                Actor = node.DeletedBy,
+                Action = auditAction,
+                EntityType = "Node",
+                EntityId = nodeId,
+                Detail = $"reason={node.DeletionReason ?? "unspecified"}; force={force}; config_version={cfg.ConfigVersion}"
+            }, cancellationToken).ConfigureAwait(false);
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            _db.ChangeTracker.Clear();
+            throw;
+        }
+    }
+
     private async Task MutateAsync(
         string nodeId,
         string actor,
@@ -124,6 +211,8 @@ public sealed class NodeManagementService : INodeManagementService
             var node = await _db.Nodes.FirstOrDefaultAsync(n => n.NodeId == nodeId, cancellationToken)
                 .ConfigureAwait(false)
                 ?? throw new NotFoundException("node not found");
+            if (node.LifecycleState == NodeLifecycleState.Deleted)
+                throw new ForbiddenException("deleted nodes cannot be mutated");
 
             var cfg = await _db.NodeConfigs.FirstOrDefaultAsync(c => c.NodeId == nodeId, cancellationToken)
                 .ConfigureAwait(false)

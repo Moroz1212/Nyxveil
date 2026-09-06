@@ -23,11 +23,33 @@ else
     </div>
 
     <p><a class="btn" href="/admin/metrics">Метрики и графики серверов</a></p>
+        <div class="panel">
+        <h3>Control Plane</h3>
+        <p class="muted">Версия @_summary.ControlPlaneVersion · Узел @_summary.Hostname · URL @(_summary.PublicUrl.Length > 0 ? _summary.PublicUrl : "—") · Локальный порт @_summary.LocalPort · TLS @_summary.TlsStatus</p>
+        <p class="muted">Сертификат: @_summary.CertificateHealth · Осталось дней: @(_summary.CertificateDaysRemaining?.ToString() ?? "—") · Issuer @(_summary.CertificateIssuer ?? "—")</p>
+        <p class="muted">SAN: @(_summary.CertificateSan ?? "—") · Thumbprint @(_summary.CertificateThumbprint ?? "—") · Private key @(_summary.CertificatePrivateKeyPresent ? "да" : "нет") · ACL @_summary.CertificateServiceKeyAccess</p>
+        <p class="muted">NotAfter: @(_summary.CertificateNotAfter?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? "—") · Trust @_summary.CertificateTrustMode</p>
+        <p class="muted">Текущий ключ: @(_summary.CurrentSigningKeyId ?? "—") · Следующий ключ: @(_summary.NextSigningKeyId ?? "—")</p>
+    </div>
+    @if (_summary.Warnings.Count > 0)
+    {
+        <div class="panel"><h3>Предупреждения</h3>
+            @foreach (var warning in _summary.Warnings) { <div class="alert alert-error">@warning</div> }
+        </div>
+    }
     <div class="stats-grid">
         <div class="stat"><div class="label">Всего серверов</div><div class="value">@_summary.TotalNodes</div></div>
         <div class="stat"><div class="label">Работают штатно</div><div class="value">@_summary.HealthyNodes</div></div>
         <div class="stat"><div class="label">Работают с ограничениями</div><div class="value">@_summary.DegradedNodes</div></div>
         <div class="stat"><div class="label">Не в сети</div><div class="value">@_summary.OfflineNodes</div></div>
+        <div class="stat"><div class="label">Отключены</div><div class="value">@_summary.DisabledNodes</div></div>
+        <div class="stat"><div class="label">Завершают сеансы</div><div class="value">@_summary.DrainingNodes</div></div>
+        <div class="stat"><div class="label">Обслуживание</div><div class="value">@_summary.MaintenanceNodes</div></div>
+        <div class="stat"><div class="label">Удалены / отозваны</div><div class="value">@_summary.DeletedNodes / @_summary.RevokedNodes</div></div>
+        <div class="stat"><div class="label">Сертификаты истекают</div><div class="value">@_summary.CertificatesExpiring</div></div>
+        <div class="stat"><div class="label">Сертификаты истекли</div><div class="value">@_summary.CertificatesExpired</div></div>
+        <div class="stat"><div class="label">Нет связи &gt; 5 мин</div><div class="value">@_summary.StaleHeartbeatNodes</div></div>
+        <div class="stat"><div class="label">Устаревшая версия</div><div class="value">@_summary.OutdatedVersionNodes</div></div>
         <div class="stat"><div class="label">Активные сеансы</div><div class="value">@_summary.ActiveSessions</div></div>
         <div class="stat"><div class="label">Активные лицензии</div><div class="value">@_summary.ActiveLicenses</div></div>
         <div class="stat"><div class="label">Истекают за 14 дней</div><div class="value">@_summary.ExpiringLicenses</div></div>

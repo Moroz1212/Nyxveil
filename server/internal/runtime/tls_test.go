@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"net/http"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/nyxveil/server/internal/controlplane"
 	"github.com/nyxveil/server/internal/localconfig"
+	"github.com/nyxveil/server/internal/nodetls"
 )
 
 func TestListenPort(t *testing.T) {
@@ -352,5 +355,39 @@ func TestRuntimeCPClientUsesSharedFactory(t *testing.T) {
 	}
 	if res.Config.InsecureSkipVerify {
 		t.Fatal()
+	}
+}
+
+func TestRuntimeACMEStagingFailurePreservesLiveTLS(t *testing.T) {
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "tls.crt")
+	keyFile := filepath.Join(dir, "tls.key")
+	if err := generateSelfSigned(certFile, keyFile, "node.example"); err != nil {
+		t.Fatal(err)
+	}
+	beforeCert, _ := os.ReadFile(certFile)
+	beforeKey, _ := os.ReadFile(keyFile)
+
+	n := &Node{
+		acmeIssuer: func(_ context.Context, cfg nodetls.ACMEConfig) (tls.Certificate, []byte, []byte, bool, error) {
+			if cfg.Dest.CertFile == certFile || cfg.Dest.KeyFile == keyFile {
+				t.Fatal("ACME issuer received live TLS paths")
+			}
+			_ = os.WriteFile(cfg.Dest.CertFile, []byte("invalid staged cert"), 0o644)
+			return tls.Certificate{}, nil, nil, false, errors.New("simulated issuance failure")
+		},
+	}
+	_, _, _, _, err := n.issueACME(context.Background(), localconfig.File{
+		ACMEDomain:  "node.example",
+		TLSCertFile: certFile,
+		TLSKeyFile:  keyFile,
+	})
+	if err == nil {
+		t.Fatal("expected staged issuance failure")
+	}
+	afterCert, _ := os.ReadFile(certFile)
+	afterKey, _ := os.ReadFile(keyFile)
+	if string(afterCert) != string(beforeCert) || string(afterKey) != string(beforeKey) {
+		t.Fatal("live TLS changed after staged ACME failure")
 	}
 }

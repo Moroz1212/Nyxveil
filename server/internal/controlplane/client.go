@@ -114,19 +114,38 @@ type NodeConfig struct {
 }
 
 type HeartbeatRequest struct {
-	NodeID          string   `json:"node_id"`
-	Version         string   `json:"version"`
-	ProtocolVersion uint16   `json:"protocol_version"`
-	Capacity        int      `json:"capacity"`
-	CurrentSessions int      `json:"current_sessions"`
-	Load            float64  `json:"load"`
-	CPUUsage        *float64 `json:"cpu_usage,omitempty"`
-	MemoryUsage     *float64 `json:"memory_usage,omitempty"`
-	MemoryBytes     *int64   `json:"memory_bytes,omitempty"`
-	Uptime          *int64   `json:"uptime,omitempty"`
-	NetworkRxRate   *float64 `json:"network_rx_rate,omitempty"`
-	NetworkTxRate   *float64 `json:"network_tx_rate,omitempty"`
-	Healthy         *bool    `json:"healthy,omitempty"`
+	NodeID                string   `json:"node_id"`
+	Version               string   `json:"version"`
+	ProtocolVersion       uint16   `json:"protocol_version"`
+	Capacity              int      `json:"capacity"`
+	CurrentSessions       int      `json:"current_sessions"`
+	Load                  float64  `json:"load"`
+	CPUUsage              *float64 `json:"cpu_usage,omitempty"`
+	MemoryUsage           *float64 `json:"memory_usage,omitempty"`
+	MemoryBytes           *int64   `json:"memory_bytes,omitempty"`
+	Uptime                *int64   `json:"uptime,omitempty"`
+	NetworkRxRate         *float64 `json:"network_rx_rate,omitempty"`
+	NetworkTxRate         *float64 `json:"network_tx_rate,omitempty"`
+	Healthy               *bool    `json:"healthy,omitempty"`
+	TLSMode               string   `json:"tls_mode,omitempty"`
+	CertSubject           string   `json:"cert_subject,omitempty"`
+	CertIssuer            string   `json:"cert_issuer,omitempty"`
+	CertSAN               string   `json:"cert_san,omitempty"`
+	CertNotBefore         string   `json:"cert_not_before,omitempty"`
+	CertNotAfter          string   `json:"cert_not_after,omitempty"`
+	CertThumbprint        string   `json:"cert_thumbprint,omitempty"`
+	ACMEAutoRenew         *bool    `json:"acme_auto_renew,omitempty"`
+	LastRenewalAttempt    string   `json:"last_renewal_attempt,omitempty"`
+	LastSuccessfulRenewal string   `json:"last_successful_renewal,omitempty"`
+	NextPlannedRenewal    string   `json:"next_planned_renewal,omitempty"`
+	LastRenewalError      string   `json:"last_renewal_error,omitempty"`
+	TUNReady              *bool    `json:"tun_ready,omitempty"`
+	TLSOK                 *bool    `json:"tls_ok,omitempty"`
+	QUICOK                *bool    `json:"quic_ok,omitempty"`
+	BridgeOK              *bool    `json:"bridge_ok,omitempty"`
+	TicketKeysLoaded      *bool    `json:"ticket_keys_loaded,omitempty"`
+	RevocationStale       *bool    `json:"revocation_stale,omitempty"`
+	CPConnected           *bool    `json:"cp_connected,omitempty"`
 }
 
 type HeartbeatResponse struct {
@@ -241,8 +260,16 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, sign
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		if c.TLS != nil && isTLSError(err) {
-			LogTLSFailure(c.TLS, err)
+		if isTLSError(err) {
+			if c.TLS != nil {
+				LogTLSFailure(c.TLS, err)
+			}
+			// A rotated Control Plane leaf can invalidate pooled TLS state.
+			// Drop idle connections so the next backoff-controlled request
+			// performs a fresh handshake and observes the new certificate.
+			if c.HTTP != nil {
+				c.HTTP.CloseIdleConnections()
+			}
 		}
 		return err
 	}
@@ -280,6 +307,6 @@ func isTLSError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
+	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "tls:") || strings.Contains(msg, "x509:") || strings.Contains(msg, "certificate")
 }

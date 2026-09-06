@@ -81,6 +81,7 @@ public sealed class CatalogService : ICatalogService
             .ConfigureAwait(false);
 
         var nodes = await _db.Nodes.AsNoTracking()
+            .Where(n => n.LifecycleState == NodeLifecycleState.Active)
             .Include(n => n.Endpoints)
             .Include(n => n.Transports)
             .Include(n => n.Location)

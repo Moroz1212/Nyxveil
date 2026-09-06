@@ -34,8 +34,7 @@ func main() {
 	var err error
 	switch cmd {
 	case "version":
-		fmt.Printf("nyxveilctl %s (server %s, core %s, %s)\n",
-			version.ServerVersion, version.ServerVersion, version.CoreVersion, version.ProtocolVersion)
+		printVersion(os.Stdout)
 	case "status":
 		err = printJSON("/status")
 	case "health":
@@ -69,6 +68,92 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func printVersion(w io.Writer) {
+	fmt.Fprintf(w, "cli_version=%s\n", version.CLIVersion)
+	fmt.Fprintf(w, "installed_server_version=%s\n", installedServerVersion())
+	fmt.Fprintf(w, "running_server_version=%s\n", runningServerVersion())
+	fmt.Fprintf(w, "core_version=%s\n", version.CoreVersion)
+	fmt.Fprintf(w, "protocol=%s\n", version.ProtocolVersion)
+}
+
+func installedServerVersion() string {
+	candidates := []string{
+		strings.TrimSpace(os.Getenv("NYXVEIL_SERVER_BINARY")),
+		paths.BinaryPath(),
+		"/usr/local/bin/nyxveil-server",
+	}
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "nyxveil-server"))
+	}
+	seen := make(map[string]bool)
+	for _, candidate := range candidates {
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		if _, err := os.Stat(candidate); err != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		out, err := exec.CommandContext(ctx, candidate, "version").CombinedOutput()
+		cancel()
+		if err == nil {
+			if got := parseServerVersion(out); got != "" {
+				return got
+			}
+		}
+	}
+	return "unknown"
+}
+
+func runningServerVersion() string {
+	if b, err := fetchControl("/status"); err == nil {
+		var st struct {
+			Running       bool   `json:"running"`
+			ServerVersion string `json:"server_version"`
+		}
+		if json.Unmarshal(b, &st) == nil {
+			if st.Running && strings.TrimSpace(st.ServerVersion) != "" {
+				return strings.TrimSpace(st.ServerVersion)
+			}
+			return "unknown"
+		}
+	}
+	if b, err := fetchControl("/version"); err == nil {
+		if got := parseServerVersion(b); got != "" {
+			return got
+		}
+	}
+	return "unknown"
+}
+
+func parseServerVersion(raw []byte) string {
+	text := strings.TrimSpace(string(raw))
+	if strings.HasPrefix(text, "{") {
+		var v struct {
+			ServerVersion string `json:"server_version"`
+			Version       string `json:"version"`
+		}
+		if json.Unmarshal(raw, &v) == nil {
+			if v.ServerVersion != "" {
+				return strings.TrimSpace(v.ServerVersion)
+			}
+			return strings.TrimSpace(v.Version)
+		}
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "server_version=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "server_version="))
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "nyxveil-server" {
+			return fields[1]
+		}
+	}
+	return ""
 }
 
 func usage() {
@@ -218,7 +303,7 @@ func resolveManifestURL(args []string) (string, error) {
 func runBootstrapCLI(args []string) error {
 	fs := flag.NewFlagSet("bootstrap-cli", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	versionFlag := fs.String("version", "1.0.11", "target server-vVERSION release")
+	versionFlag := fs.String("version", version.ServerVersion, "target server-vVERSION release")
 	manifestURL := fs.String("manifest-url", "", "override signed manifest URL")
 	ctlPath := fs.String("ctl-path", "", "nyxveilctl install path (default beside nyxveil-server)")
 	thenUpdate := fs.Bool("then-update", false, "after CLI replace, run full nyxveilctl update")
@@ -521,19 +606,19 @@ func runConfigure(args []string) error {
 	fs := flag.NewFlagSet("configure", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var (
-		publicHost   = fs.String("public-host", "", "set public_host (FQDN after TLS cutover)")
-		dnsServers   = fs.String("dns-servers", "", "comma-separated IPv4 resolvers")
-		cpURL        = fs.String("control-plane-url", "", "set control_plane_url (https://host:port); SystemTrust validated")
-		tlsDomain    = fs.String("tls-domain", "", "ACME FQDN (Let's Encrypt HTTP-01)")
-		tlsEmail     = fs.String("tls-email", "", "ACME contact email")
-		tlsCert      = fs.String("tls-cert", "", "operator certificate PEM path")
-		tlsKey       = fs.String("tls-key", "", "operator private key PEM path")
-		tlsReplace   = fs.Bool("tls-replace", false, "overwrite existing TLS material")
-		expectIP     = fs.String("expect-public-ip", "", "expected public IP for ACME DNS check")
-		configPath   = fs.String("config", paths.ServerConfig(), "path to server.json")
-		dryRun       = fs.Bool("dry-run", false, "validate only; do not change the node")
-		check        = fs.Bool("check", false, "alias for --dry-run")
-		showStatus   = fs.Bool("status", false, "print configure/TLS status JSON and exit")
+		publicHost = fs.String("public-host", "", "set public_host (FQDN after TLS cutover)")
+		dnsServers = fs.String("dns-servers", "", "comma-separated IPv4 resolvers")
+		cpURL      = fs.String("control-plane-url", "", "set control_plane_url (https://host:port); SystemTrust validated")
+		tlsDomain  = fs.String("tls-domain", "", "ACME FQDN (Let's Encrypt HTTP-01)")
+		tlsEmail   = fs.String("tls-email", "", "ACME contact email")
+		tlsCert    = fs.String("tls-cert", "", "operator certificate PEM path")
+		tlsKey     = fs.String("tls-key", "", "operator private key PEM path")
+		tlsReplace = fs.Bool("tls-replace", false, "overwrite existing TLS material")
+		expectIP   = fs.String("expect-public-ip", "", "expected public IP for ACME DNS check")
+		configPath = fs.String("config", paths.ServerConfig(), "path to server.json")
+		dryRun     = fs.Bool("dry-run", false, "validate only; do not change the node")
+		check      = fs.Bool("check", false, "alias for --dry-run")
+		showStatus = fs.Bool("status", false, "print configure/TLS status JSON and exit")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err

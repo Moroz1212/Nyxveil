@@ -58,6 +58,8 @@ public sealed class NodeRegistrationService : INodeRegistrationService
 
         if (existing is not null)
         {
+            if (existing.LifecycleState is NodeLifecycleState.Deleted or NodeLifecycleState.Revoked)
+                throw new ForbiddenException("node deleted/revoked; operator re-approval required");
             if (existing.NodeId != request.NodeId || !existing.PublicIdentity.SequenceEqual(request.PublicIdentity))
                 throw new ConflictException("node_id already registered with different identity");
 
@@ -106,6 +108,7 @@ public sealed class NodeRegistrationService : INodeRegistrationService
             LocationId = location.LocationId,
             DisplayName = string.IsNullOrWhiteSpace(request.DisplayName) ? request.NodeId : request.DisplayName,
             Status = NodeRuntimeStatus.Offline,
+            LifecycleState = NodeLifecycleState.Active,
             Enabled = true,
             TestOnly = request.TestOnly,
             ProtocolVersion = request.ProtocolVersion,

@@ -92,7 +92,7 @@ func TestUpdaterRollbackRestoresTLSGroup(t *testing.T) {
 }
 
 func TestUpdaterRollbackRestoresAbsentFileState(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	state := filepath.Join(dir, "state")
 	_ = os.MkdirAll(state, 0o700)
 	server := filepath.Join(dir, "nyxveil-server")

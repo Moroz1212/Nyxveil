@@ -13,6 +13,11 @@
 <div class="toolbar">
     <input placeholder="Поиск по серверу, локации или имени" @bind="_filter" @bind:event="oninput" />
     <label><input type="checkbox" @bind="_showTest" /> Показывать тестовые</label>
+    <label><input type="checkbox" @bind="_showDeleted" /> Показывать удалённые</label>
+    <select @bind="_lifecycleFilter">
+        <option value="">Все состояния</option>
+        @foreach (var state in Enum.GetNames<NodeLifecycleState>()) { <option value="@state">@state</option> }
+    </select>
 </div>
 
 <div class="table-wrap">
@@ -26,6 +31,7 @@
                 <th>Память</th>
                 <th>Сеансы</th>
                 <th>Версия</th>
+                <th>Сертификат</th>
                 <th>Протокол</th>
                 <th>Последняя связь (UTC)</th>
                 <th>Режимы</th>
@@ -37,11 +43,12 @@
             <tr>
                 <td><a href="@($"/admin/nodes/{Uri.EscapeDataString(n.Node.NodeId)}")">@n.Node.DisplayName</a><div class="mono muted">@n.Node.NodeId</div></td>
                 <td>@n.Node.LocationId</td>
-                <td><StatusBadge Status="@n.Node.Status.ToString()" /></td>
+                <td><StatusBadge Status="@n.Node.Status.ToString()" /> <span class="muted">@n.Node.LifecycleState</span></td>
                 <td>@(n.Health?.CpuPercent.ToString("0.0", UiText.Culture) ?? "—")%</td>
                 <td>@(n.Health?.MemoryPercent.ToString("0.0", UiText.Culture) ?? "—")%</td>
                 <td>@n.Node.CurrentSessions / @n.Node.Capacity</td>
                 <td>@(n.Node.ServerVersion ?? "—")</td>
+                <td>@CertDays(n.Node)</td>
                 <td>@n.Node.ProtocolVersion</td>
                 <td>@(n.Node.LastSeenAt?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? "—")</td>
                 <td>
@@ -61,6 +68,8 @@
     private List<Row> _rows = new();
     private string _filter = "";
     private bool _showTest = true;
+    private bool _showDeleted;
+    private string _lifecycleFilter = "";
 
     protected override async Task OnInitializedAsync()
     {
@@ -77,6 +86,10 @@
     {
         IEnumerable<Row> q = _rows;
         if (!_showTest) q = q.Where(r => !r.Node.TestOnly);
+        if (!_showDeleted) q = q.Where(r => r.Node.LifecycleState != NodeLifecycleState.Deleted);
+        if (!string.IsNullOrWhiteSpace(_lifecycleFilter) &&
+            Enum.TryParse<NodeLifecycleState>(_lifecycleFilter, out var lifecycle))
+            q = q.Where(r => r.Node.LifecycleState == lifecycle);
         if (!string.IsNullOrWhiteSpace(_filter))
         {
             var f = _filter.Trim();
@@ -86,5 +99,11 @@
                 r.Node.LocationId.Contains(f, StringComparison.OrdinalIgnoreCase));
         }
         return q;
+    }
+
+    private static string CertDays(Node node)
+    {
+        var days = CertificateExpiry.DaysRemaining(node.CertNotAfter, DateTime.UtcNow);
+        return days is null ? "—" : $"{days} дн.";
     }
 }

@@ -145,6 +145,63 @@ public sealed class NodeHeartbeatRequest
 
     [JsonPropertyName("healthy")]
     public bool? Healthy { get; set; }
+
+    [JsonPropertyName("tls_mode")]
+    public string? TlsMode { get; set; }
+
+    [JsonPropertyName("cert_subject")]
+    public string? CertSubject { get; set; }
+
+    [JsonPropertyName("cert_issuer")]
+    public string? CertIssuer { get; set; }
+
+    [JsonPropertyName("cert_san")]
+    public string? CertSan { get; set; }
+
+    [JsonPropertyName("cert_not_before")]
+    public DateTime? CertNotBefore { get; set; }
+
+    [JsonPropertyName("cert_not_after")]
+    public DateTime? CertNotAfter { get; set; }
+
+    [JsonPropertyName("cert_thumbprint")]
+    public string? CertThumbprint { get; set; }
+
+    [JsonPropertyName("acme_auto_renew")]
+    public bool? AcmeAutoRenew { get; set; }
+
+    [JsonPropertyName("last_renewal_attempt")]
+    public DateTime? LastRenewalAttempt { get; set; }
+
+    [JsonPropertyName("last_renewal_success")]
+    public DateTime? LastRenewalSuccess { get; set; }
+
+    [JsonPropertyName("last_renewal_next")]
+    public DateTime? LastRenewalNext { get; set; }
+
+    [JsonPropertyName("last_renewal_error")]
+    public string? LastRenewalError { get; set; }
+
+    [JsonPropertyName("tun_ready")]
+    public bool? TunReady { get; set; }
+
+    [JsonPropertyName("tls_ok")]
+    public bool? TlsOk { get; set; }
+
+    [JsonPropertyName("quic_ok")]
+    public bool? QuicOk { get; set; }
+
+    [JsonPropertyName("bridge_ok")]
+    public bool? BridgeOk { get; set; }
+
+    [JsonPropertyName("ticket_keys_loaded")]
+    public bool? TicketKeysLoaded { get; set; }
+
+    [JsonPropertyName("revocation_stale")]
+    public bool? RevocationStale { get; set; }
+
+    [JsonPropertyName("cp_connected")]
+    public bool? CpConnected { get; set; }
 }
 
 public sealed class NodeHeartbeatResponse
@@ -177,7 +234,7 @@ public sealed class RevocationListResponse
 public sealed class VersionResponse
 {
     [JsonPropertyName("control_plane_version")]
-    public string ControlPlaneVersion { get; set; } = "1.0.6";
+    public string ControlPlaneVersion { get; set; } = "1.1.0";
 
     [JsonPropertyName("min_protocol_version")]
     public ushort MinProtocolVersion { get; set; } = 1;

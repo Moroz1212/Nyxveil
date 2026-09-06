@@ -24,6 +24,7 @@ import (
 
 	"github.com/nyxveil/nvp/core/auth/ticket"
 	"github.com/nyxveil/nvp/core/transport/ech"
+	"github.com/nyxveil/server/internal/configure"
 	"github.com/nyxveil/server/internal/controlplane"
 	"github.com/nyxveil/server/internal/controlsock"
 	"github.com/nyxveil/server/internal/datapath"
@@ -94,6 +95,13 @@ type Node struct {
 
 	lastTicketRefresh time.Time
 	hbFailStreak      int
+
+	renewMu               sync.RWMutex
+	lastRenewalAttempt    time.Time
+	lastSuccessfulRenewal time.Time
+	nextPlannedRenewal    time.Time
+	lastRenewalError      string
+	acmeIssuer            func(context.Context, nodetls.ACMEConfig) (tls.Certificate, []byte, []byte, bool, error)
 
 	cancel context.CancelFunc
 	runCtx context.Context
@@ -663,14 +671,16 @@ func heartbeatBackoff(streak int, base time.Duration) time.Duration {
 }
 
 func (n *Node) heartbeat(ctx context.Context) error {
-	cpu, memPct, memBytes, rx, tx := n.sampler.Sample()
+	st := n.Status()
+	cpu := st.CPUUsage
+	memPct := st.MemoryUsage
+	memBytes := st.MemoryBytes
+	rx, tx := n.sampler.Rates()
 	up := int64(time.Since(n.startedAt).Seconds())
-	healthy := n.Status().Healthy
+	healthy := st.Healthy
 	hb := controlplane.HeartbeatRequest{
 		Capacity:        n.sessions.Capacity(),
 		CurrentSessions: n.sessions.Count(),
-		Load:            cpu / 100,
-		CPUUsage:        &cpu,
 		MemoryUsage:     &memPct,
 		MemoryBytes:     &memBytes,
 		Uptime:          &up,
@@ -678,6 +688,11 @@ func (n *Node) heartbeat(ctx context.Context) error {
 		NetworkTxRate:   &tx,
 		Healthy:         &healthy,
 	}
+	if n.sampler.Ready() {
+		hb.Load = cpu / 100
+		hb.CPUUsage = &cpu
+	}
+	n.addHeartbeatMetadata(&hb, st)
 	resp, err := n.cp.Heartbeat(ctx, hb)
 	if err != nil {
 		n.cpOK.Store(false)
@@ -696,6 +711,49 @@ func (n *Node) heartbeat(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (n *Node) addHeartbeatMetadata(hb *controlplane.HeartbeatRequest, st health.Status) {
+	if hb == nil {
+		return
+	}
+	n.mu.RLock()
+	cfg := *n.local
+	n.mu.RUnlock()
+	certFile, keyFile := configure.DefaultTLSPaths(cfg.TLSCertFile, cfg.TLSKeyFile)
+	info := configure.InspectCert(certFile, keyFile, strings.TrimSpace(cfg.ACMEDomain))
+	hb.TLSMode = info.TLSMode
+	hb.CertSubject = info.Subject
+	hb.CertIssuer = info.Issuer
+	hb.CertSAN = strings.Join(info.SANs, ",")
+	hb.CertNotBefore = info.NotBefore
+	hb.CertNotAfter = info.NotAfter
+	hb.CertThumbprint = info.Thumbprint
+	acmeAutoRenew := strings.TrimSpace(cfg.ACMEDomain) != ""
+	hb.ACMEAutoRenew = boolPtr(acmeAutoRenew)
+	hb.TUNReady = boolPtr(st.TUNReady)
+	hb.TLSOK = boolPtr(st.TLSOK)
+	hb.QUICOK = boolPtr(st.QUICOK)
+	hb.BridgeOK = boolPtr(st.BridgeOK)
+	hb.TicketKeysLoaded = boolPtr(st.TicketKeysLoaded)
+	hb.RevocationStale = boolPtr(st.RevocationStale)
+	hb.CPConnected = boolPtr(st.CPConnected)
+
+	n.renewMu.RLock()
+	hb.LastRenewalAttempt = formatOptionalTime(n.lastRenewalAttempt)
+	hb.LastSuccessfulRenewal = formatOptionalTime(n.lastSuccessfulRenewal)
+	hb.NextPlannedRenewal = formatOptionalTime(n.nextPlannedRenewal)
+	hb.LastRenewalError = n.lastRenewalError
+	n.renewMu.RUnlock()
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+func formatOptionalTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 func (n *Node) syncRevocation(ctx context.Context) error {
@@ -935,15 +993,7 @@ func (n *Node) loadTLSCert(cfg localconfig.File) (tls.Certificate, error) {
 	dest := nodetls.Paths{CertFile: certFile, KeyFile: keyFile}
 
 	if domain := strings.TrimSpace(cfg.ACMEDomain); domain != "" {
-		stateDir := filepath.Join(filepath.Dir(keyFile), "acme")
-		cert, _, _, pinChanged, err := nodetls.IssueOrRenew(context.Background(), nodetls.ACMEConfig{
-			Domain:     domain,
-			Email:      strings.TrimSpace(cfg.ACMEEmail),
-			StateDir:   stateDir,
-			AccountKey: filepath.Join(stateDir, "acme-account.key"),
-			Dest:       dest,
-			Replace:    false,
-		})
+		cert, _, _, pinChanged, err := n.issueACME(context.Background(), cfg)
 		if err != nil {
 			return tls.Certificate{}, fmt.Errorf("runtime: ACME TLS for %s: %w", domain, err)
 		}
@@ -980,13 +1030,16 @@ func (n *Node) loadTLSCert(cfg localconfig.File) (tls.Certificate, error) {
 // without rewriting server.json. Stable leaf key keeps SPKI pin constant when possible.
 func (n *Node) acmeRenewLoop(ctx context.Context) {
 	defer n.wg.Done()
-	ticker := time.NewTicker(12 * time.Hour)
+	const interval = 12 * time.Hour
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	n.setNextPlannedRenewal(time.Now().Add(interval))
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			n.setNextPlannedRenewal(time.Now().Add(interval))
 			n.mu.RLock()
 			cfg := *n.local
 			n.mu.RUnlock()
@@ -1027,18 +1080,122 @@ func (n *Node) issueACME(ctx context.Context, cfg localconfig.File) (cert tls.Ce
 	if keyFile == "" {
 		keyFile = paths.TLSKey()
 	}
+	domain := strings.TrimSpace(cfg.ACMEDomain)
 	stateDir := filepath.Join(filepath.Dir(keyFile), "acme")
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return nodetls.IssueOrRenew(ctx, nodetls.ACMEConfig{
-		Domain:     strings.TrimSpace(cfg.ACMEDomain),
+
+	live := nodetls.Paths{CertFile: certFile, KeyFile: keyFile}
+	if nodetls.Exists(live) &&
+		configure.ValidateLeafForDomain(certFile, keyFile, domain, time.Now()) == nil {
+		existing, loadErr := nodetls.Load(live)
+		if loadErr == nil && len(existing.Certificate) > 0 {
+			leaf, parseErr := x509.ParseCertificate(existing.Certificate[0])
+			if parseErr == nil && time.Until(leaf.NotAfter) > 30*24*time.Hour {
+				prevPin, err = nodetls.SPKIPinSHA256(existing)
+				if err != nil {
+					return tls.Certificate{}, nil, nil, false, err
+				}
+				return existing, prevPin, append([]byte(nil), prevPin...), false, nil
+			}
+		}
+	}
+
+	n.recordRenewalAttempt()
+	defer func() {
+		n.recordRenewalResult(err)
+	}()
+
+	stageCert, stageKey := configure.StagingTLSPaths(filepath.Dir(keyFile))
+	configure.CleanStaging(stageCert, stageKey)
+	defer configure.CleanStaging(stageCert, stageKey)
+	if err = configure.SeedStagingKeyFromLive(keyFile, stageKey); err != nil {
+		return tls.Certificate{}, nil, nil, false, err
+	}
+	if nodetls.Exists(live) {
+		if current, loadErr := nodetls.Load(live); loadErr == nil {
+			prevPin, _ = nodetls.SPKIPinSHA256(current)
+		}
+	}
+	issuer := n.acmeIssuer
+	if issuer == nil {
+		issuer = nodetls.IssueOrRenew
+	}
+	_, _, _, _, err = issuer(ctx, nodetls.ACMEConfig{
+		Domain:     domain,
 		Email:      strings.TrimSpace(cfg.ACMEEmail),
 		StateDir:   stateDir,
 		AccountKey: filepath.Join(stateDir, "acme-account.key"),
-		Dest:       nodetls.Paths{CertFile: certFile, KeyFile: keyFile},
-		Replace:    false,
+		Dest:       nodetls.Paths{CertFile: stageCert, KeyFile: stageKey},
+		Replace:    true,
 	})
+	if err != nil {
+		return tls.Certificate{}, prevPin, nil, false, err
+	}
+	if err = configure.ValidateLeafForDomain(stageCert, stageKey, domain, time.Now()); err != nil {
+		return tls.Certificate{}, prevPin, nil, false, err
+	}
+	if err = configure.AtomicCommitTLS(stageCert, stageKey, certFile, keyFile); err != nil {
+		return tls.Certificate{}, prevPin, nil, false, err
+	}
+	cert, err = nodetls.Load(live)
+	if err != nil {
+		return tls.Certificate{}, prevPin, nil, false, err
+	}
+	newPin, err = nodetls.SPKIPinSHA256(cert)
+	if err != nil {
+		return tls.Certificate{}, prevPin, nil, false, err
+	}
+	pinChanged = nodetls.PinChanged(prevPin, newPin)
+	return cert, prevPin, newPin, pinChanged, nil
+}
+
+func (n *Node) recordRenewalAttempt() {
+	n.renewMu.Lock()
+	n.lastRenewalAttempt = time.Now().UTC()
+	n.lastRenewalError = ""
+	n.renewMu.Unlock()
+}
+
+func (n *Node) recordRenewalResult(err error) {
+	n.renewMu.Lock()
+	defer n.renewMu.Unlock()
+	if err == nil {
+		n.lastSuccessfulRenewal = time.Now().UTC()
+		n.lastRenewalError = ""
+		return
+	}
+	n.lastRenewalError = safeRenewalError(err)
+}
+
+func (n *Node) setNextPlannedRenewal(t time.Time) {
+	n.renewMu.Lock()
+	n.nextPlannedRenewal = t.UTC()
+	n.renewMu.Unlock()
+}
+
+func safeRenewalError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "ACME renewal canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "ACME renewal timed out"
+	case strings.Contains(msg, "dns"):
+		return "ACME renewal failed DNS validation"
+	case strings.Contains(msg, "listen") || strings.Contains(msg, "port 80"):
+		return "ACME renewal failed HTTP-01 listener setup"
+	case strings.Contains(msg, "authorization") || strings.Contains(msg, "challenge"):
+		return "ACME renewal failed domain authorization"
+	case strings.Contains(msg, "certificate") || strings.Contains(msg, "x509"):
+		return "ACME renewal returned an invalid certificate"
+	default:
+		return "ACME renewal failed; details are available in local logs"
+	}
 }
 
 func generateSelfSigned(certFile, keyFile, serverName string) error {

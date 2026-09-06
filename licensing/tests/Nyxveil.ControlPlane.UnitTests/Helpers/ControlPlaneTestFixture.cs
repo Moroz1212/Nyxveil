@@ -56,6 +56,7 @@ public sealed class ControlPlaneTestFixture : IAsyncDisposable
         services.AddScoped<IDeviceService, DeviceService>();
         services.AddScoped<INodeRegistrationService, NodeRegistrationService>();
         services.AddScoped<INodeManagementService, NodeManagementService>();
+        services.AddScoped<ILocationManagementService, LocationManagementService>();
         services.AddScoped<INodeHeartbeatService, NodeHeartbeatService>();
         services.AddScoped<ICatalogService, CatalogService>();
         services.AddScoped<ITicketService, TicketService>();
@@ -73,6 +74,7 @@ public sealed class ControlPlaneTestFixture : IAsyncDisposable
         Bootstrap = Scope.ServiceProvider.GetRequiredService<IBootstrapTokenService>();
         Nodes = Scope.ServiceProvider.GetRequiredService<INodeRegistrationService>();
         NodeManagement = Scope.ServiceProvider.GetRequiredService<INodeManagementService>();
+        LocationManagement = Scope.ServiceProvider.GetRequiredService<ILocationManagementService>();
         Heartbeats = Scope.ServiceProvider.GetRequiredService<INodeHeartbeatService>();
         Catalog = Scope.ServiceProvider.GetRequiredService<ICatalogService>();
         NodeAuth = Scope.ServiceProvider.GetRequiredService<NodeAuthService>();
@@ -92,6 +94,7 @@ public sealed class ControlPlaneTestFixture : IAsyncDisposable
     public IBootstrapTokenService Bootstrap { get; }
     public INodeRegistrationService Nodes { get; }
     public INodeManagementService NodeManagement { get; }
+    public ILocationManagementService LocationManagement { get; }
     public INodeHeartbeatService Heartbeats { get; }
     public ICatalogService Catalog { get; }
     public NodeAuthService NodeAuth { get; }

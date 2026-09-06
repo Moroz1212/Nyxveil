@@ -3,6 +3,7 @@ using Nyxveil.ControlPlane.Application.Abstractions;
 using Nyxveil.ControlPlane.Application.Contracts.V1;
 using Nyxveil.ControlPlane.Application.Exceptions;
 using Nyxveil.ControlPlane.Domain.Entities;
+using Nyxveil.ControlPlane.Domain.Enums;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
 
 namespace Nyxveil.ControlPlane.Infrastructure.Services;
@@ -32,6 +33,8 @@ public sealed class NodeHeartbeatService : INodeHeartbeatService
         var node = await _db.Nodes.FirstOrDefaultAsync(n => n.NodeId == request.NodeId, cancellationToken)
             .ConfigureAwait(false)
             ?? throw new NotFoundException("node not found");
+        if (node.LifecycleState is NodeLifecycleState.Deleted or NodeLifecycleState.Revoked)
+            throw new ForbiddenException("node deleted/revoked; operator re-approval required");
 
         var cfg = await _db.NodeConfigs.AsNoTracking()
             .FirstOrDefaultAsync(c => c.NodeId == node.NodeId, cancellationToken)
@@ -43,6 +46,18 @@ public sealed class NodeHeartbeatService : INodeHeartbeatService
         node.CurrentSessions = Math.Max(0, request.CurrentSessions);
         node.LastSeenAt = now;
         node.UpdatedAt = now;
+        if (request.TlsMode is not null) node.TlsMode = request.TlsMode.Trim();
+        if (request.CertSubject is not null) node.CertSubject = request.CertSubject.Trim();
+        if (request.CertIssuer is not null) node.CertIssuer = request.CertIssuer.Trim();
+        if (request.CertSan is not null) node.CertSan = request.CertSan.Trim();
+        if (request.CertNotBefore.HasValue) node.CertNotBefore = request.CertNotBefore;
+        if (request.CertNotAfter.HasValue) node.CertNotAfter = request.CertNotAfter;
+        if (request.CertThumbprint is not null) node.CertThumbprint = request.CertThumbprint.Trim();
+        if (request.AcmeAutoRenew.HasValue) node.AcmeAutoRenew = request.AcmeAutoRenew.Value;
+        if (request.LastRenewalAttempt.HasValue) node.LastRenewalAttempt = request.LastRenewalAttempt;
+        if (request.LastRenewalSuccess.HasValue) node.LastSuccessfulRenewal = request.LastRenewalSuccess;
+        if (request.LastRenewalNext.HasValue) node.NextPlannedRenewal = request.LastRenewalNext;
+        if (request.LastRenewalError is not null) node.LastRenewalError = request.LastRenewalError.Trim();
 
         // Runtime capacity may be reported, but never exceeds admin-configured NodeConfig.Capacity.
         if (request.Capacity > 0)
@@ -71,6 +86,13 @@ public sealed class NodeHeartbeatService : INodeHeartbeatService
         health.NetworkTxRate = request.NetworkTxRate;
         health.LoadAverage = request.Load;
         health.Healthy = request.Healthy ?? true;
+        if (request.TunReady.HasValue) health.TunReady = request.TunReady;
+        if (request.TlsOk.HasValue) health.TlsOk = request.TlsOk;
+        if (request.QuicOk.HasValue) health.QuicOk = request.QuicOk;
+        if (request.BridgeOk.HasValue) health.BridgeOk = request.BridgeOk;
+        if (request.TicketKeysLoaded.HasValue) health.TicketKeysLoaded = request.TicketKeysLoaded;
+        if (request.RevocationStale.HasValue) health.RevocationStale = request.RevocationStale;
+        if (request.CpConnected.HasValue) health.CpConnected = request.CpConnected;
         health.UpdatedAt = now;
 
         _db.NodeMetrics.Add(new NodeMetric

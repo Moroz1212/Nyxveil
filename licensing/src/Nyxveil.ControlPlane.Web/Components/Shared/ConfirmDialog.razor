@@ -4,9 +4,15 @@
         <div class="modal" @onclick:stopPropagation="true">
             <h3>@Title</h3>
             <p>@Message</p>
+            @if (!string.IsNullOrEmpty(RequiredConfirmation))
+            {
+                <label>Введите <strong>@RequiredConfirmation</strong> для подтверждения
+                    <input @bind="_typedConfirmation" autocomplete="off" />
+                </label>
+            }
             <div class="actions">
                 <button type="button" class="btn btn-ghost" @onclick="Cancel">Отмена</button>
-                <button type="button" class="btn btn-danger" @onclick="Confirm">@ConfirmText</button>
+                <button type="button" class="btn btn-danger" @onclick="Confirm" disabled="@(!CanConfirm)">@ConfirmText</button>
             </div>
         </div>
     </div>
@@ -17,19 +23,25 @@
     [Parameter] public string Title { get; set; } = "Подтвердить";
     [Parameter] public string Message { get; set; } = "Подтвердить действие?";
     [Parameter] public string ConfirmText { get; set; } = "Подтвердить";
+    [Parameter] public string? RequiredConfirmation { get; set; }
     [Parameter] public EventCallback OnConfirm { get; set; }
     [Parameter] public EventCallback OnCancel { get; set; }
     [Parameter] public EventCallback<bool> VisibleChanged { get; set; }
+    private string _typedConfirmation = string.Empty;
+    private bool CanConfirm => string.IsNullOrEmpty(RequiredConfirmation) ||
+        string.Equals(_typedConfirmation.Trim(), RequiredConfirmation, StringComparison.Ordinal);
 
     private async Task Confirm()
     {
         await OnConfirm.InvokeAsync();
+        _typedConfirmation = string.Empty;
         await VisibleChanged.InvokeAsync(false);
     }
 
     private async Task Cancel()
     {
         await OnCancel.InvokeAsync();
+        _typedConfirmation = string.Empty;
         await VisibleChanged.InvokeAsync(false);
     }
 }

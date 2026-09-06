@@ -17,7 +17,7 @@ import (
 )
 
 func TestBootstrapCLIReplacesOnlyCtl(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	server := filepath.Join(dir, "nyxveil-server")
 	ctl := filepath.Join(dir, "nyxveilctl")
 	state := filepath.Join(dir, "state")
@@ -85,7 +85,7 @@ func TestBootstrapCLIReplacesOnlyCtl(t *testing.T) {
 }
 
 func TestBootstrapCLIBadSignatureKeepsOld(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	ctl := filepath.Join(dir, "nyxveilctl")
 	_ = os.WriteFile(ctl, []byte("CTL-1.0.3"), 0o755)
 	pub, _, _ := ed25519.GenerateKey(nil)
@@ -113,7 +113,7 @@ func TestBootstrapCLIBadSignatureKeepsOld(t *testing.T) {
 }
 
 func TestBootstrapCLIBadHashKeepsOld(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	ctl := filepath.Join(dir, "nyxveilctl")
 	_ = os.WriteFile(ctl, []byte("CTL-1.0.3"), 0o755)
 	pub, priv, _ := ed25519.GenerateKey(nil)
@@ -142,7 +142,7 @@ func TestBootstrapCLIBadHashKeepsOld(t *testing.T) {
 }
 
 func TestBootstrapCLIAtomicRenameFailureKeepsOld(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	ctl := filepath.Join(dir, "nyxveilctl")
 	_ = os.WriteFile(ctl, []byte("CTL-1.0.3"), 0o755)
 	pub, priv, _ := ed25519.GenerateKey(nil)
@@ -174,7 +174,7 @@ func TestBootstrapCLIAtomicRenameFailureKeepsOld(t *testing.T) {
 }
 
 func TestLegacy103To105BootstrapThenUpdate(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	state := filepath.Join(dir, "state")
 	_ = os.MkdirAll(state, 0o700)
 	server := filepath.Join(dir, "nyxveil-server")
@@ -261,7 +261,7 @@ func TestLegacy103To105BootstrapThenUpdate(t *testing.T) {
 }
 
 func TestFullUpdateFailureAfterBootstrapRestoresServer103(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	state := filepath.Join(dir, "state")
 	_ = os.MkdirAll(state, 0o700)
 	server := filepath.Join(dir, "nyxveil-server")
@@ -332,7 +332,7 @@ func TestBootstrapCLIUpdateDoesNotRestartServer(t *testing.T) {
 }
 
 func TestBootstrapCLIUpdateDoesNotTouchConfig(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	cfg := filepath.Join(dir, "server.json")
 	orig := []byte(`{"node_id":"nv-test-227e939e","location_id":"fi-helsinki"}`)
 	_ = os.WriteFile(cfg, orig, 0o644)

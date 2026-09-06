@@ -155,10 +155,20 @@ public class ControlPlaneDbContext : IdentityDbContext<ApplicationUser>
             e.Property(x => x.ServerVersion).HasMaxLength(64);
             e.Property(x => x.ServerName).HasMaxLength(256);
             e.Property(x => x.HealthStatus).HasMaxLength(64);
+            e.Property(x => x.LifecycleState).HasConversion<int>();
+            e.Property(x => x.DeletedBy).HasMaxLength(256);
+            e.Property(x => x.DeletionReason).HasMaxLength(512);
+            e.Property(x => x.TlsMode).HasMaxLength(32);
+            e.Property(x => x.CertSubject).HasMaxLength(512);
+            e.Property(x => x.CertIssuer).HasMaxLength(512);
+            e.Property(x => x.CertSan).HasMaxLength(1024);
+            e.Property(x => x.CertThumbprint).HasMaxLength(128);
+            e.Property(x => x.LastRenewalError).HasMaxLength(512);
             e.Property(x => x.SpkiPin).HasMaxLength(32);
             e.Property(x => x.PublicIdentity).HasMaxLength(32).IsRequired();
             e.HasIndex(x => x.LocationId);
             e.HasIndex(x => x.Status);
+            e.HasIndex(x => x.LifecycleState);
             e.HasIndex(x => new { x.Enabled, x.TestOnly });
             e.HasOne(x => x.Location).WithMany().HasForeignKey(x => x.LocationId).OnDelete(DeleteBehavior.Restrict);
             e.ToTable(t =>
@@ -167,6 +177,7 @@ public class ControlPlaneDbContext : IdentityDbContext<ApplicationUser>
                 t.HasCheckConstraint("CK_Nodes_ProtocolVersion", "[ProtocolVersion] >= 0 AND [ProtocolVersion] <= 65535");
                 t.HasCheckConstraint("CK_Nodes_Capacity", "[Capacity] >= 0");
                 t.HasCheckConstraint("CK_Nodes_CurrentSessions", "[CurrentSessions] >= 0");
+                t.HasCheckConstraint("CK_Nodes_LifecycleState", "[LifecycleState] BETWEEN 0 AND 2");
                 t.HasCheckConstraint("CK_Nodes_PublicIdentityLen", "DATALENGTH([PublicIdentity]) = 32");
             });
         });

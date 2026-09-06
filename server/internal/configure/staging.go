@@ -51,6 +51,9 @@ func CleanStaging(stageCert, stageKey string) {
 
 // AtomicCommitTLS writes validated staged cert/key onto live paths with nyxveil ownership.
 func AtomicCommitTLS(stageCert, stageKey, liveCert, liveKey string) error {
+	if _, err := nodetls.Load(nodetls.Paths{CertFile: stageCert, KeyFile: stageKey}); err != nil {
+		return fmt.Errorf("configure: staged TLS pair invalid: %w", err)
+	}
 	certPEM, err := os.ReadFile(stageCert)
 	if err != nil {
 		return fmt.Errorf("configure: read staged cert: %w", err)
@@ -63,13 +66,32 @@ func AtomicCommitTLS(stageCert, stageKey, liveCert, liveKey string) error {
 	if prev, err := filemeta.CaptureMeta(liveKey); err == nil && prev.Exists && prev.UID >= 0 {
 		uid, gid = prev.UID, prev.GID
 	}
+	oldCert, oldCertErr := os.ReadFile(liveCert)
+	oldKey, oldKeyErr := os.ReadFile(liveKey)
+	rollback := func() {
+		if oldCertErr == nil {
+			_ = filemeta.AtomicWrite(liveCert, oldCert, filemeta.RuntimeTLSCertMode, uid, gid)
+		} else if os.IsNotExist(oldCertErr) {
+			_ = os.Remove(liveCert)
+		}
+		if oldKeyErr == nil {
+			_ = filemeta.AtomicWrite(liveKey, oldKey, filemeta.RuntimeTLSKeyMode, uid, gid)
+		} else if os.IsNotExist(oldKeyErr) {
+			_ = os.Remove(liveKey)
+		}
+	}
 	if err := filemeta.AtomicWrite(liveCert, certPEM, filemeta.RuntimeTLSCertMode, uid, gid); err != nil {
 		return err
 	}
 	if err := filemeta.AtomicWrite(liveKey, keyPEM, filemeta.RuntimeTLSKeyMode, uid, gid); err != nil {
+		rollback()
 		return err
 	}
-	return filemeta.EnforceRuntimeTLS(filepath.Dir(liveKey))
+	if err := filemeta.EnforceRuntimeTLS(filepath.Dir(liveKey)); err != nil {
+		rollback()
+		return err
+	}
+	return nil
 }
 
 // FileBytesEqual reports whether two files have identical contents (missing = unequal unless both missing).

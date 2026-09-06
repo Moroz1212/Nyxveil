@@ -7,6 +7,22 @@ public interface IDashboardQueryService
 
 public sealed class DashboardSummary
 {
+    public string ControlPlaneVersion { get; set; } = "1.1.0";
+    public string Hostname { get; set; } = string.Empty;
+    public string PublicUrl { get; set; } = string.Empty;
+    public int LocalPort { get; set; } = 8443;
+    public string TlsStatus { get; set; } = "unknown";
+    public string? CertificateSubject { get; set; }
+    public string? CertificateSan { get; set; }
+    public string? CertificateIssuer { get; set; }
+    public string? CertificateThumbprint { get; set; }
+    public DateTimeOffset? CertificateNotBefore { get; set; }
+    public DateTimeOffset? CertificateNotAfter { get; set; }
+    public int? CertificateDaysRemaining { get; set; }
+    public string CertificateHealth { get; set; } = "Unknown";
+    public string CertificateTrustMode { get; set; } = string.Empty;
+    public bool CertificatePrivateKeyPresent { get; set; }
+    public string CertificateServiceKeyAccess { get; set; } = string.Empty;
     public int ActiveLicenses { get; set; }
     public int ExpiringLicenses { get; set; }
     public int RevokedLicenses { get; set; }
@@ -17,6 +33,18 @@ public sealed class DashboardSummary
     public int OfflineNodes { get; set; }
     public int OnlineNodes { get; set; }
     public int TotalNodes { get; set; }
+    public int DisabledNodes { get; set; }
+    public int DrainingNodes { get; set; }
+    public int MaintenanceNodes { get; set; }
+    public int DeletedNodes { get; set; }
+    public int RevokedNodes { get; set; }
+    public int CertificatesExpiring { get; set; }
+    public int CertificatesExpired { get; set; }
+    public int StaleHeartbeatNodes { get; set; }
+    public int OutdatedVersionNodes { get; set; }
     public int ActiveSessions { get; set; }
     public int PendingBootstrapTokens { get; set; }
+    public string? CurrentSigningKeyId { get; set; }
+    public string? NextSigningKeyId { get; set; }
+    public List<string> Warnings { get; set; } = new();
 }
