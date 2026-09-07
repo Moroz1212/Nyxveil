@@ -78,7 +78,7 @@ Usage:
   nyxveilctl health
   nyxveilctl start|stop|restart
   nyxveilctl logs [-f]
-  nyxveilctl update [manifest-url]
+  nyxveilctl update [manifest-url]      # signed update + installed production gate (one command)
   nyxveilctl bootstrap-cli --version 1.0.5 [--then-update]
   nyxveilctl config [path]              # dump server.json
   nyxveilctl configure [flags]          # existing-node reconfigure (transactional)
@@ -363,7 +363,11 @@ func runUpdate(args []string) error {
 		return true
 	}
 
-	if err := u.Apply(m, health); err != nil {
+	return finishUpdate(m, u, health, preBaseline, preTLS)
+}
+
+func finishUpdate(m *updater.Manifest, u *updater.Updater, health updater.HealthCheck, preBaseline health.Baseline, preTLS filemeta.TLSOwnershipSnapshot) error {
+	if err := applyUpdate(u, m, health); err != nil {
 		// After Apply rolls binaries + TLS metadata back, restart previous and
 		// evaluate against the PRE-UPDATE baseline (not absolute global healthy).
 		if runtime.GOOS != "windows" && isUpdateRollback(err) {
@@ -392,6 +396,63 @@ func runUpdate(args []string) error {
 		return err
 	}
 	fmt.Printf("updated to %s\n", m.Version)
+	// Single operator command contract: update is not complete until the
+	// installed production gate PASSes (unless explicitly skipped).
+	return afterSuccessfulUpdate(m.Version)
+}
+
+// applyUpdate is the binary replace + health hook (overridable in tests).
+var applyUpdate = func(u *updater.Updater, m *updater.Manifest, health updater.HealthCheck) error {
+	return u.Apply(m, health)
+}
+
+// afterSuccessfulUpdate runs the installed production gate (overridable in tests).
+var afterSuccessfulUpdate = defaultAfterSuccessfulUpdate
+
+func defaultAfterSuccessfulUpdate(ver string) error {
+	if strings.TrimSpace(os.Getenv("NYXVEIL_SKIP_GATE")) == "1" {
+		fmt.Println("NYXVEIL_SKIP_GATE=1 - skipping production gate after update")
+		return nil
+	}
+	fmt.Printf("running installed production gate after update to %s\n", ver)
+	return execInstalledProductionGate()
+}
+
+func productionGatePath() string {
+	if p := strings.TrimSpace(os.Getenv("NYXVEIL_PRODUCTION_GATE")); p != "" {
+		return p
+	}
+	return paths.ProductionGate()
+}
+
+func execInstalledProductionGate() error {
+	gate := productionGatePath()
+	st, err := os.Stat(gate)
+	if err != nil {
+		return fmt.Errorf("production gate missing after update (%s): %w", gate, err)
+	}
+	if st.IsDir() {
+		return fmt.Errorf("production gate path is a directory: %s", gate)
+	}
+	mode := strings.TrimSpace(os.Getenv("GATE_MODE"))
+	if mode == "" {
+		mode = "live"
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		return fmt.Errorf("bash required to run production gate: %w", err)
+	}
+	cmd := exec.Command(bash, gate)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	env := append([]string{}, os.Environ()...)
+	env = append(env, "GATE_MODE="+mode)
+	cmd.Env = env
+	if err := cmd.Run(); err != nil {
+		// Gate already printed RESULT=FAIL failed_gate=... diagnostic_bundle=...
+		return fmt.Errorf("production gate failed after update: %w", err)
+	}
 	return nil
 }
 

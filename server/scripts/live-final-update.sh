@@ -22,7 +22,7 @@ set -euo pipefail
 umask 077
 
 readonly PUB_HEX="${NYXVEIL_UPDATE_PUB_HEX:-caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af}"
-readonly DEFAULT_VERSION="1.1.4"
+readonly DEFAULT_VERSION="1.1.5"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 
 VERSION=""
@@ -42,7 +42,7 @@ usage() {
   cat <<'EOF'
 Usage: live-final-update.sh [options]
 
-  --version X.Y.Z   Target version (default: fetch VERSION from --base-url, else 1.1.4)
+  --version X.Y.Z   Target version (default: fetch VERSION from --base-url, else 1.1.5)
   --base-url URL    Release asset base URL (online mode)
   --local-dir DIR   Flat release directory (no network; still signature-verifies)
   --verify-chain    Download/verify trust chain only; do not modify the system
@@ -422,10 +422,11 @@ test -x "${SHARE_DIR}/scripts/production-gate.sh" ||
   die "production gate missing or not executable after update"
 test -f "${SHARE_DIR}/VERSION" || die "share VERSION missing after update"
 
-log "release assets complete; executing ${GATE_MODE:-live} production gate"
+# nyxveilctl update now runs the installed production gate as part of the
+# single operator command contract. Do not invoke the gate a second time here.
+log "release assets complete; production gate already executed by nyxveilctl update"
 if [[ "${NYXVEIL_SKIP_GATE:-0}" == "1" ]]; then
-  log "NYXVEIL_SKIP_GATE=1 вЂ” skipping production gate"
+  log "NYXVEIL_SKIP_GATE=1 - update skipped production gate"
   echo "RESULT=PASS"
-  exit 0
 fi
-GATE_MODE="${GATE_MODE:-live}" exec "${SHARE_DIR}/scripts/production-gate.sh"
+exit 0

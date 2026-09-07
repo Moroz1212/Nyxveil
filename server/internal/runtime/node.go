@@ -98,6 +98,15 @@ type Node struct {
 	lastTicketRefresh time.Time
 	hbFailStreak      int
 
+	cpMu                 sync.RWMutex
+	lastCPSuccess        time.Time
+	lastHeartbeatSuccess time.Time
+	lastConfigSuccess    time.Time
+	lastTicketKeysOK     time.Time
+	lastRevocationOK     time.Time
+	cpLastError          string
+	cpTLSMode            string
+
 	renewMu               sync.RWMutex
 	lastRenewalAttempt    time.Time
 	lastSuccessfulRenewal time.Time
@@ -128,7 +137,11 @@ func New(opts Options) (*Node, error) {
 		opts.AppliedPath = paths.AppliedConfig()
 	}
 	if opts.ControlSock == "" {
-		opts.ControlSock = paths.ControlSocket()
+		// TestMode + ControlHTTP: force loopback HTTP so process tests can
+		// drive nyxveilctl via NYXVEIL_CONTROL_HTTP (no unix socket).
+		if !(opts.TestMode && strings.TrimSpace(opts.ControlHTTP) != "") {
+			opts.ControlSock = paths.ControlSocket()
+		}
 	}
 	if opts.TicketIssuer == "" {
 		opts.TicketIssuer = "nyxveil-control-plane"
@@ -512,6 +525,19 @@ func (n *Node) Start(parent context.Context) error {
 	return nil
 }
 
+// ControlHTTPAddr returns the loopback control HTTP host:port when bound
+// (TestMode / Windows). Empty when using a Unix control socket only.
+func (n *Node) ControlHTTPAddr() string {
+	if n == nil || n.ctl == nil {
+		return ""
+	}
+	addr := n.ctl.Addr()
+	if strings.Contains(addr, "/") || strings.HasPrefix(addr, "@") {
+		return ""
+	}
+	return addr
+}
+
 // Accepting implements listeners.Gate.
 func (n *Node) Accepting() bool {
 	return n.accepting.Load() && n.enabled.Load() && !n.draining.Load() && !n.maintenance.Load() && !n.versionBlocked.Load()
@@ -610,6 +636,7 @@ func (n *Node) Status() health.Status {
 		NodeID:           cfg.NodeID,
 		LocationID:       cfg.LocationID,
 		CPConnected:      n.cpOK.Load(),
+		CPURL:            strings.TrimSpace(cfg.ControlPlaneURL),
 		Sessions:         n.sessions.Count(),
 		Capacity:         n.sessions.Capacity(),
 		CPUUsage:         cpu,
@@ -627,6 +654,37 @@ func (n *Node) Status() health.Status {
 		TicketKeysLoaded: n.ticketKeysLoaded.Load(),
 		IdentityPresent:  n.key != nil && len(n.key.Public) == ed25519.PublicKeySize,
 		VersionBlocked:   n.versionBlocked.Load(),
+	}
+	n.cpMu.RLock()
+	st.CPTLSMode = n.cpTLSMode
+	if st.CPTLSMode != "" {
+		st.CPTLSStatus = "ok"
+	}
+	if !n.lastCPSuccess.IsZero() {
+		st.LastCPSuccess = n.lastCPSuccess.UTC().Format(time.RFC3339)
+	}
+	if !n.lastHeartbeatSuccess.IsZero() {
+		st.LastHeartbeatOK = n.lastHeartbeatSuccess.UTC().Format(time.RFC3339)
+	}
+	if !n.lastConfigSuccess.IsZero() {
+		st.LastConfigOK = n.lastConfigSuccess.UTC().Format(time.RFC3339)
+	}
+	if !n.lastTicketKeysOK.IsZero() {
+		st.LastTicketKeysOK = n.lastTicketKeysOK.UTC().Format(time.RFC3339)
+	}
+	if !n.lastRevocationOK.IsZero() {
+		st.LastRevocationOK = n.lastRevocationOK.UTC().Format(time.RFC3339)
+	}
+	st.CPLastError = n.cpLastError
+	if !st.CPConnected && st.CPLastError != "" {
+		st.CPTLSStatus = "error"
+	}
+	n.cpMu.RUnlock()
+	if n.cp != nil && n.cp.TLS != nil {
+		st.CPTLSMode = string(n.cp.TLS.TrustMode)
+		if st.CPTLSStatus == "" {
+			st.CPTLSStatus = "configured"
+		}
 	}
 	if !n.startedAt.IsZero() {
 		st.UptimeSeconds = int64(time.Since(n.startedAt).Seconds())
@@ -719,9 +777,11 @@ func (n *Node) heartbeat(ctx context.Context) error {
 	resp, err := n.cp.Heartbeat(ctx, hb)
 	if err != nil {
 		n.cpOK.Store(false)
+		n.recordCPError(err)
 		return err
 	}
 	n.cpOK.Store(true)
+	n.recordCPSuccess("heartbeat")
 	n.mu.RLock()
 	curVer := n.applied.ConfigVersion
 	if curVer == 0 {
@@ -734,6 +794,45 @@ func (n *Node) heartbeat(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (n *Node) recordCPSuccess(kind string) {
+	now := time.Now().UTC()
+	n.cpMu.Lock()
+	defer n.cpMu.Unlock()
+	n.lastCPSuccess = now
+	n.cpLastError = ""
+	if n.cp != nil && n.cp.TLS != nil {
+		n.cpTLSMode = string(n.cp.TLS.TrustMode)
+	}
+	switch kind {
+	case "heartbeat":
+		n.lastHeartbeatSuccess = now
+	case "config":
+		n.lastConfigSuccess = now
+	case "ticket_keys":
+		n.lastTicketKeysOK = now
+	case "revocation":
+		n.lastRevocationOK = now
+	}
+}
+
+func (n *Node) recordCPError(err error) {
+	if err == nil {
+		return
+	}
+	msg := err.Error()
+	// Sanitize obvious secrets / tokens from error text.
+	msg = strings.ReplaceAll(msg, "\n", " ")
+	if len(msg) > 240 {
+		msg = msg[:240] + "…"
+	}
+	n.cpMu.Lock()
+	n.cpLastError = msg
+	if n.cp != nil && n.cp.TLS != nil {
+		n.cpTLSMode = string(n.cp.TLS.TrustMode)
+	}
+	n.cpMu.Unlock()
 }
 
 func (n *Node) addHeartbeatMetadata(hb *controlplane.HeartbeatRequest, st health.Status) {
@@ -782,18 +881,26 @@ func formatOptionalTime(t time.Time) string {
 func (n *Node) syncRevocation(ctx context.Context) error {
 	snap, err := n.cp.GetRevocation(ctx)
 	if err != nil {
+		n.recordCPError(err)
 		return err
 	}
 	n.rev.Apply(*snap)
+	n.recordCPSuccess("revocation")
 	return nil
 }
 
 func (n *Node) pullAndApplyConfig(ctx context.Context) error {
 	cfg, err := n.cp.GetConfig(ctx)
 	if err != nil {
+		n.recordCPError(err)
 		return err
 	}
-	return n.ApplyConfig(*cfg)
+	if err := n.ApplyConfig(*cfg); err != nil {
+		n.recordCPError(err)
+		return err
+	}
+	n.recordCPSuccess("config")
+	return nil
 }
 
 // ApplyConfig atomically applies a Control Plane node config.
@@ -913,20 +1020,25 @@ func (n *Node) copyPublicKeys() map[string]ed25519.PublicKey {
 func (n *Node) fetchTicketKeys(ctx context.Context) error {
 	resp, err := n.cp.GetTicketKeys(ctx)
 	if err != nil {
+		n.recordCPError(err)
 		return err
 	}
 	keys, err := ticketkeys.DecodeKeys(resp.Keys)
 	if err != nil {
+		n.recordCPError(err)
 		return err
 	}
 	if len(keys) == 0 {
-		return errors.New("runtime: ticket keys response empty")
+		err := errors.New("runtime: ticket keys response empty")
+		n.recordCPError(err)
+		return err
 	}
 	issuer := resp.Issuer
 	if issuer == "" {
 		issuer = n.opts.TicketIssuer
 	}
 	if err := ticketkeys.Save(n.ticketKeysPath, issuer, keys, resp.UpdatedAt); err != nil {
+		n.recordCPError(err)
 		return err
 	}
 	n.mu.Lock()
@@ -943,6 +1055,7 @@ func (n *Node) fetchTicketKeys(ctx context.Context) error {
 			Revoked:    n.rev,
 		})
 	}
+	n.recordCPSuccess("ticket_keys")
 	return nil
 }
 

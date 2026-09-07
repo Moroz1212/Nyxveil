@@ -74,7 +74,7 @@ func TestMissingVersionFailsBeforeModification(t *testing.T) {
 }
 
 func TestMissingBootstrapFailsBeforeModification(t *testing.T) {
-	fx := buildSignedReleaseFixture(t, "1.1.4", false)
+	fx := buildSignedReleaseFixture(t, "1.1.5", false)
 	os.Remove(filepath.Join(fx.dir, "bootstrap-cli-update.sh"))
 	prefix := t.TempDir()
 	bin := filepath.Join(prefix, "usr", "local", "sbin")
@@ -100,7 +100,7 @@ func TestMissingBootstrapFailsBeforeModification(t *testing.T) {
 }
 
 func TestTamperedBootstrapFails(t *testing.T) {
-	fx := buildSignedReleaseFixture(t, "1.1.4", false)
+	fx := buildSignedReleaseFixture(t, "1.1.5", false)
 	evil := []byte("#!/bin/bash\necho evil-no-pubkey\n")
 	if err := os.WriteFile(filepath.Join(fx.dir, "bootstrap-cli-update.sh"), evil, 0o755); err != nil {
 		t.Fatal(err)
@@ -130,7 +130,7 @@ func TestTamperedBootstrapFails(t *testing.T) {
 }
 
 func TestTamperedCtlFails(t *testing.T) {
-	fx := buildSignedReleaseFixture(t, "1.1.4", false)
+	fx := buildSignedReleaseFixture(t, "1.1.5", false)
 	arch := "amd64"
 	if runtime.GOARCH == "arm64" {
 		arch = "arm64"
@@ -203,7 +203,7 @@ func runLiveFinalProcessFixture(t *testing.T, opts fixtureOpts) {
 	if _, err := exec.LookPath("openssl"); err != nil {
 		t.Skip("openssl required")
 	}
-	fx := buildSignedReleaseFixture(t, "1.1.4", opts.crlfSums)
+	fx := buildSignedReleaseFixture(t, "1.1.5", opts.crlfSums)
 	work := t.TempDir()
 	dst := filepath.Join(work, "live-final-update.sh")
 	copyFile(t, filepath.Join(repoRootFromUpdaterTest(t), "scripts", "live-final-update.sh"), dst)
@@ -264,7 +264,7 @@ func runLiveFinalProcessFixture(t *testing.T, opts fixtureOpts) {
 		if _, err := os.Stat(filepath.Join(share, "scripts", "production-gate.sh")); err != nil {
 			t.Fatalf("missing gate: %v\nout=%s", err, out)
 		}
-		if got := strings.TrimSpace(string(mustRead(t, filepath.Join(share, "VERSION")))); got != "1.1.4" {
+		if got := strings.TrimSpace(string(mustRead(t, filepath.Join(share, "VERSION")))); got != "1.1.5" {
 			t.Fatalf("share VERSION=%q", got)
 		}
 	}

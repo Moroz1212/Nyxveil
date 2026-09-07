@@ -12,6 +12,15 @@ type Status struct {
 	NodeID           string  `json:"node_id"`
 	LocationID       string  `json:"location_id"`
 	CPConnected      bool    `json:"cp_connected"`
+	CPURL            string  `json:"cp_url,omitempty"`
+	CPTLSMode        string  `json:"cp_tls_mode,omitempty"`
+	CPTLSStatus      string  `json:"cp_tls_status,omitempty"`
+	LastCPSuccess    string  `json:"last_cp_success,omitempty"`
+	LastHeartbeatOK  string  `json:"last_heartbeat_success,omitempty"`
+	LastConfigOK     string  `json:"last_config_success,omitempty"`
+	LastTicketKeysOK string  `json:"last_ticket_keys_success,omitempty"`
+	LastRevocationOK string  `json:"last_revocation_success,omitempty"`
+	CPLastError      string  `json:"cp_last_error,omitempty"`
 	Sessions         int     `json:"sessions"`
 	Capacity         int     `json:"capacity"`
 	CPUUsage         float64 `json:"cpu_usage"`

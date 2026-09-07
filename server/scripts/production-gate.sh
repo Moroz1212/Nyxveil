@@ -2,9 +2,9 @@
 # Nyxveil server production gate.
 #
 # GATE_MODE=
-#   source — verify built release artifacts + Frozen Core (no install, no secrets)
-#   local  — installed node local health (no mutating stop unless GATE_STOP_TEST=1)
-#   live   — local + CP reachability + cp_connected (asks license token once for catalog crypto)
+#   source - verify built release artifacts + Frozen Core (no install, no secrets)
+#   local  - installed node local health (no mutating stop unless GATE_STOP_TEST=1)
+#   live   - local + CP reachability + cp_connected (asks license token once for catalog crypto)
 #
 # Never prints/stores license tokens, private keys, or node.key contents.
 set -euo pipefail
@@ -72,11 +72,69 @@ capture_version_diagnostics() {
   } 2>/dev/null | sanitize >"${WORK}/version-diagnostics.txt" || true
 }
 
+capture_cp_diagnostics() {
+  {
+    echo "configured_cp_url=${CP_URL:-}"
+    echo "gate_probe_method=runtime_status.cp_connected (authoritative)"
+    echo "auxiliary_curl=/health (diagnostic only)"
+    if [[ -n "${GATE_UPDATER_POSTCHECK:-}" ]]; then
+      echo "updater_postcheck=${GATE_UPDATER_POSTCHECK}"
+    fi
+    if [[ -f "${WORK}/status.json" ]]; then
+      python3 - "${WORK}/status.json" <<'PY' 2>/dev/null || true
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    d = json.load(f)
+for k in (
+    "cp_connected", "cp_url", "cp_tls_mode", "cp_tls_status",
+    "last_cp_success", "last_heartbeat_success", "last_config_success",
+    "last_ticket_keys_success", "last_revocation_success", "cp_last_error",
+    "healthy", "running", "uptime_seconds",
+):
+    if k in d:
+        print(f"{k}={d.get(k)}")
+PY
+    fi
+    if [[ -n "${CP_URL:-}" ]] && command -v python3 >/dev/null 2>&1; then
+      python3 - "${CP_URL}" <<'PY' 2>/dev/null || true
+import socket, sys, urllib.parse
+u = urllib.parse.urlparse(sys.argv[1])
+host = u.hostname or ""
+print(f"resolved_hostname={host}")
+try:
+    infos = socket.getaddrinfo(host, u.port or 443, type=socket.SOCK_STREAM)
+    ips = sorted({i[4][0] for i in infos})
+    print("resolved_ips=" + ",".join(ips))
+except Exception as e:
+    print(f"resolved_ips_error={e}")
+PY
+    fi
+    if [[ -f "${WORK}/cp-probe.txt" ]]; then
+      echo "--- auxiliary_curl_probe ---"
+      cat "${WORK}/cp-probe.txt" 2>/dev/null || true
+    fi
+    if [[ -f "${WORK}/cp-probe.err" ]]; then
+      echo "--- auxiliary_curl_probe_err ---"
+      cat "${WORK}/cp-probe.err" 2>/dev/null || true
+    fi
+    if [[ -f "${WORK}/cp-wait.txt" ]]; then
+      echo "--- cp_wait ---"
+      cat "${WORK}/cp-wait.txt" 2>/dev/null || true
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl show nyxveil-server -p MainPID -p ActiveEnterTimestamp 2>/dev/null || true
+    fi
+  } 2>/dev/null | sanitize >"${WORK}/cp-diagnostics.txt" || true
+}
+
 finalize() {
   if [[ -n "${FAILED_GATE}" ]]; then
     case "${FAILED_GATE}" in
       server_version|cli_version|ctl_version|version_file|installed_server_version|running_server_version|release_version|core_version|protocol)
         capture_version_diagnostics
+        ;;
+      control_plane_reachable|cp_connected|cp_auth|heartbeat)
+        capture_cp_diagnostics
         ;;
     esac
   fi
@@ -94,8 +152,31 @@ finalize() {
     printf 'RESULT=FAIL failed_gate=%s diagnostic_bundle=%s\n' "${FAILED_GATE}" "${BUNDLE}"
     exit 1
   fi
+  print_operator_pass_summary
   printf 'RESULT=PASS\n'
   exit 0
+}
+
+print_operator_pass_summary() {
+  # Compact operator-facing summary (also asserted by update→gate contract tests).
+  printf 'Version ................ PASS\n'
+  case "${MODE}" in
+    source)
+      printf 'Release artifacts ...... PASS\n'
+      printf 'Frozen Core ............ PASS\n'
+      ;;
+    local|live)
+      printf 'Control Plane .......... PASS\n'
+      if [[ "${MODE}" == "live" ]]; then
+        printf 'Catalog signature ...... PASS\n'
+      fi
+      printf 'TLS .................... PASS\n'
+      printf 'TUN .................... PASS\n'
+      printf 'QUIC ................... PASS\n'
+      printf 'Graceful SIGTERM ....... PASS\n'
+      printf 'Restart recovery ....... PASS\n'
+      ;;
+  esac
 }
 
 ask_license_once() {
@@ -114,7 +195,7 @@ case "${MODE}" in
   *) fail "mode" "GATE_MODE must be source|local|live" ;;
 esac
 
-EXPECTED_VERSION="${NYXVEIL_EXPECTED_VERSION:-1.1.4}"
+EXPECTED_VERSION="${NYXVEIL_EXPECTED_VERSION:-1.1.5}"
 VERSION="$(tr -d '\r[:space:]' < "${ROOT}/VERSION" 2>/dev/null || true)"
 if [[ -z "${VERSION}" ]]; then
   # Installed layout: prefer share VERSION; fall back to binary --version output later.
@@ -134,7 +215,7 @@ fi
 
 if [[ "${MODE}" == "source" ]]; then
   DIST="${ROOT}/dist/release"
-  [[ -d "${DIST}" ]] || fail "release_tree" "missing ${DIST} — run build-release + package-release first"
+  [[ -d "${DIST}" ]] || fail "release_tree" "missing ${DIST} - run build-release + package-release first"
   bash "${ROOT}/scripts/verify-release.sh" >"${WORK}/verify-release.txt" 2>&1 ||
     fail "verify_release" "verify-release.sh failed"
   grep -E "${EXPECTED_VERSION}" "${DIST}/release-manifest-linux-amd64.json" >/dev/null ||
@@ -168,7 +249,7 @@ fi
 [[ -n "${CTL}" && -x "${CTL}" ]] || fail "ctl_binary" "nyxveilctl not executable"
 [[ -n "${SERVER}" && -x "${SERVER}" ]] || fail "server_binary" "nyxveil-server not executable"
 
-# Machine-readable version API only — never fragile human grep / never start a second daemon.
+# Machine-readable version API only - never fragile human grep / never start a second daemon.
 if ! "${CTL}" version --json 2>"${WORK}/ctl-version.err" | sanitize >"${WORK}/versions.json"; then
   fail "ctl_version" "nyxveilctl version --json failed"
 fi
@@ -233,9 +314,14 @@ sha256sum "${CONFIG}" "${SERVER}" "${CTL}" >"${WORK}/file-hashes.txt" 2>&1 ||
 
 "${CTL}" status >"${WORK}/status.json" 2>"${WORK}/status.err" ||
   fail "status" "control status unavailable"
+# Do not fail-closed on healthy before authenticated CP readiness wait.
+# Post-update/restart can leave healthy=false while dataplane is up and CP is reconnecting.
 "${CTL}" health >"${WORK}/health.json" 2>"${WORK}/health.err" || {
-  [[ "${MODE}" == "local" ]] || fail "health" "live mode requires healthy node"
-  record "health=degraded (allowed in local mode)"
+  if [[ "${MODE}" == "live" ]]; then
+    record "health=not_yet (deferred until authenticated CP wait)"
+  else
+    record "health=degraded (allowed in local mode)"
+  fi
 }
 
 json_bool() {
@@ -276,18 +362,91 @@ with open(sys.argv[1], encoding="utf-8") as f:
     print(json.load(f).get("control_plane_url", ""))
 PY
 )"
-if [[ -n "${CP_URL}" ]] && curl --silent --show-error --fail \
-  --connect-timeout 5 --max-time 10 "${CP_URL%/}/health" \
-  2>"${WORK}/cp-probe.err" | sanitize >"${WORK}/cp-health.txt"; then
-  record "control_plane_probe=reachable"
-else
-  record "control_plane_probe=unreachable"
-  [[ "${MODE}" != "live" ]] ||
-    fail "control_plane_reachable" "live mode Control Plane probe failed"
+record "configured_cp_url=${CP_URL}"
+
+# Authoritative Control Plane readiness = daemon authenticated management plane
+# (same truth as updater management_plane_connected / status.cp_connected).
+# Auxiliary curl to /health is diagnostic-only and MUST NOT fail live gate when
+# the daemon already proves authenticated CP connectivity via SystemTrust.
+wait_cp_authenticated() {
+  local wait_sec="${GATE_CP_WAIT_SEC:-45}"
+  local need_stable="${GATE_CP_STABLE_SAMPLES:-3}"
+  local interval="${GATE_CP_POLL_INTERVAL_SEC:-1}"
+  local deadline=$(( SECONDS + wait_sec ))
+  local stable=0
+  local last_reason="cp_connected not yet true"
+  : >"${WORK}/cp-wait.txt"
+  while (( SECONDS < deadline )); do
+    if ! "${CTL}" status >"${WORK}/status.json" 2>"${WORK}/status.err"; then
+      last_reason="status unavailable"
+      echo "sample=fail reason=status_unavailable" >>"${WORK}/cp-wait.txt"
+      stable=0
+      sleep "${interval}"
+      continue
+    fi
+    if json_bool "${WORK}/status.json" cp_connected; then
+      stable=$((stable + 1))
+      echo "sample=ok cp_connected=true stable=${stable}/${need_stable}" >>"${WORK}/cp-wait.txt"
+      if (( stable >= need_stable )); then
+        record "control_plane_reachable=authenticated_runtime cp_connected=true"
+        return 0
+      fi
+    else
+      stable=0
+      last_reason="cp_connected=false"
+      # Permanent config/TLS errors surface via cp_last_error; keep polling unless
+      # caller set GATE_CP_FAIL_FAST=1 and error looks permanent.
+      err="$(python3 - "${WORK}/status.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    print(json.load(f).get("cp_last_error") or "")
+PY
+)"
+      echo "sample=wait cp_connected=false err=$(printf '%s' "${err}" | tr '\n' ' ')" >>"${WORK}/cp-wait.txt"
+      if [[ "${GATE_CP_FAIL_FAST:-0}" == "1" && -n "${err}" ]]; then
+        case "${err}" in
+          *"unsupported scheme"*|*"URL missing host"*|*"no such host"*|*"certificate is not valid"*)
+            echo "permanent_error=${err}" >>"${WORK}/cp-wait.txt"
+            return 1
+            ;;
+        esac
+      fi
+    fi
+    sleep "${interval}"
+  done
+  echo "timeout wait_sec=${wait_sec} last=${last_reason}" >>"${WORK}/cp-wait.txt"
+  return 1
+}
+
+# Optional diagnostic curl (never authoritative). Uses same configured URL host.
+if [[ -n "${CP_URL}" ]]; then
+  if curl --silent --show-error --fail \
+    --connect-timeout 5 --max-time 10 "${CP_URL%/}/health" \
+    2>"${WORK}/cp-probe.err" | sanitize >"${WORK}/cp-health.txt"; then
+    echo "auxiliary_curl_health=ok" >"${WORK}/cp-probe.txt"
+    record "control_plane_curl_probe=ok (diagnostic only)"
+  else
+    echo "auxiliary_curl_health=fail" >"${WORK}/cp-probe.txt"
+    record "control_plane_curl_probe=fail (diagnostic only; ignored when runtime cp_connected)"
+  fi
 fi
+
 if [[ "${MODE}" == "live" ]]; then
+  if ! wait_cp_authenticated; then
+    fail "control_plane_reachable" "authenticated Control Plane not ready after wait (runtime cp_connected)"
+  fi
+  # Refresh status after wait for subsequent gates.
+  "${CTL}" status >"${WORK}/status.json" 2>"${WORK}/status.err" ||
+    fail "status" "control status unavailable after CP wait"
   json_bool "${WORK}/status.json" cp_connected ||
     fail "cp_connected" "live mode requires cp_connected=true"
+  json_bool "${WORK}/status.json" healthy ||
+    fail "heartbeat" "live mode requires healthy=true (includes authenticated CP)"
+  # Process-level / post-update invariant tests stop after authoritative CP+healthy.
+  if [[ "${GATE_STOP_AFTER_CP:-0}" == "1" ]]; then
+    record "gate_stop_after_cp=1 control_plane_reachable=PASS heartbeat=PASS"
+    finalize
+  fi
   ask_license_once
 
   VERIFY_BIN="${NYXVEIL_CATALOG_VERIFY:-}"

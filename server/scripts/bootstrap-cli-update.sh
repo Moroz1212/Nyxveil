@@ -14,7 +14,7 @@
 #   4) Atomic install (temp + fsync + rename), mode 0755, root:root
 #
 # Usage (production, from server-v1.1.1):
-#   sudo bash bootstrap-cli-update.sh --version 1.1.4 --then-update
+#   sudo bash bootstrap-cli-update.sh --version 1.1.5 --then-update
 #
 # Offline:
 #   sudo bash bootstrap-cli-update.sh --manifest /path/manifest.json \
@@ -24,7 +24,7 @@ set -euo pipefail
 readonly PUB_HEX="caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 
-VERSION="${NYXVEIL_BOOTSTRAP_VERSION:-1.1.4}"
+VERSION="${NYXVEIL_BOOTSTRAP_VERSION:-1.1.5}"
 BIN_DIR="${NYXVEIL_BIN_DIR:-/usr/local/sbin}"
 CTL_DEST="${BIN_DIR}/nyxveilctl"
 THEN_UPDATE=0
@@ -41,7 +41,7 @@ usage() {
   cat <<'EOF'
 Usage: bootstrap-cli-update.sh [options]
 
-  --version X.Y.Z     Target release version (default 1.1.4)
+  --version X.Y.Z     Target release version (default 1.1.5)
   --then-update       After CLI replace, exec: nyxveilctl update
   --manifest PATH     Use local signed manifest (skip download)
   --ctl-file PATH     Use local nyxveilctl binary (skip download)
