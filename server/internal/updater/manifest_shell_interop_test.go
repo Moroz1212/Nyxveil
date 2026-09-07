@@ -80,8 +80,8 @@ func TestCurrentDistReleaseManifestsVerifyWithUpdatePublicKey(t *testing.T) {
 		if err != nil {
 			t.Fatalf("current %s manifest: %v", arch, err)
 		}
-		if m.Version != "1.1.5" {
-			t.Fatalf("version=%s want 1.1.5", m.Version)
+		if m.Version != "1.1.6" {
+			t.Fatalf("version=%s want 1.1.6", m.Version)
 		}
 	}
 }

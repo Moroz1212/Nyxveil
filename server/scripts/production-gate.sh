@@ -195,7 +195,7 @@ case "${MODE}" in
   *) fail "mode" "GATE_MODE must be source|local|live" ;;
 esac
 
-EXPECTED_VERSION="${NYXVEIL_EXPECTED_VERSION:-1.1.5}"
+EXPECTED_VERSION="${NYXVEIL_EXPECTED_VERSION:-1.1.6}"
 VERSION="$(tr -d '\r[:space:]' < "${ROOT}/VERSION" 2>/dev/null || true)"
 if [[ -z "${VERSION}" ]]; then
   # Installed layout: prefer share VERSION; fall back to binary --version output later.
@@ -260,15 +260,19 @@ path, expected, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(path, encoding="utf-8") as f:
     data = json.load(f)
 required = [
-    ("cli_version", expected),
+    ("installed_cli_version", expected),
     ("installed_server_version", expected),
     ("running_server_version", expected),
     ("release_version", expected),
     ("core_version", "1.0.0"),
     ("protocol", "NVP/1"),
 ]
+# Fall back to cli_version only when installed_cli_version is absent (pre-1.1.6 ctl).
+if not data.get("installed_cli_version"):
+    required[0] = ("cli_version", expected)
 gate_map = {
     "cli_version": "cli_version",
+    "installed_cli_version": "cli_version",
     "installed_server_version": "installed_server_version",
     "running_server_version": "running_server_version",
     "release_version": "release_version",

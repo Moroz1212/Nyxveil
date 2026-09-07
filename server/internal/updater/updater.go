@@ -601,7 +601,7 @@ func (u *Updater) rollbackJobs(jobs []replaceJob) error {
 
 // Rollback restores PrevPath over BinaryPath (and extras).
 func (u *Updater) Rollback() error {
-	jobs := []replaceJob{{name: "nyxveil-server", dest: u.BinaryPath, prev: u.PrevPath}}
+	jobs := []replaceJob{{name: "nyxveil-server", dest: u.BinaryPath, prev: u.PrevPath, existed: true, mode: 0o755}}
 	for name, prev := range u.ExtraPrev {
 		dest := ""
 		if u.ExtraBinaries != nil {
@@ -610,7 +610,7 @@ func (u *Updater) Rollback() error {
 		if dest == "" {
 			continue
 		}
-		jobs = append(jobs, replaceJob{name: name, dest: dest, prev: prev})
+		jobs = append(jobs, replaceJob{name: name, dest: dest, prev: prev, existed: true, mode: assetMode(name)})
 	}
 	if u.PrevPath == "" {
 		return fmt.Errorf("updater: no previous binary path")
@@ -619,6 +619,12 @@ func (u *Updater) Rollback() error {
 		return fmt.Errorf("updater: previous binary missing: %w", err)
 	}
 	return u.rollbackJobs(jobs)
+}
+
+// RollbackInstalled restores every backed-up asset from *.prev after a failed
+// post-check that already committed new files (self-update handoff failure).
+func (u *Updater) RollbackInstalled() error {
+	return u.Rollback()
 }
 
 func (u *Updater) download(url, dest string) error {

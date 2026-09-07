@@ -14,7 +14,7 @@
 # Local --binary-dir / --skip-download skips remote verify.
 set -euo pipefail
 
-readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.5}"
+readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.6}"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 # Same Ed25519 public key as internal/updater.UpdatePublicKey
 readonly PUB_HEX="caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af"

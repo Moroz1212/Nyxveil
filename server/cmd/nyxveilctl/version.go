@@ -18,10 +18,11 @@ import (
 // VersionReport is the authoritative machine-readable version model.
 // Fields are independent — UNKNOWN is never substituted from another source.
 type VersionReport struct {
-	CLIVersion             string `json:"cli_version"`
-	InstalledServerVersion string `json:"installed_server_version"`
-	RunningServerVersion   string `json:"running_server_version"`
-	ReleaseVersion         string `json:"release_version"`
+	CLIVersion             string `json:"cli_version"`              // current process (may be old during self-update)
+	InstalledCLIVersion    string `json:"installed_cli_version"`    // from on-disk nyxveilctl binary (new process)
+	InstalledServerVersion string `json:"installed_server_version"` // from on-disk nyxveil-server binary
+	RunningServerVersion   string `json:"running_server_version"`   // from daemon control socket
+	ReleaseVersion         string `json:"release_version"`          // share VERSION
 	CoreVersion            string `json:"core_version"`
 	Protocol               string `json:"protocol"`
 }
@@ -31,6 +32,7 @@ const versionUnknown = "unknown"
 func collectVersionReport() VersionReport {
 	return VersionReport{
 		CLIVersion:             version.CLIVersion,
+		InstalledCLIVersion:    installedCLIVersion(),
 		InstalledServerVersion: installedServerVersion(),
 		RunningServerVersion:   runningServerVersion(),
 		ReleaseVersion:         releaseVersion(),
@@ -51,6 +53,7 @@ func printVersionReport(w io.Writer, r VersionReport, asJSON bool) {
 		return
 	}
 	fmt.Fprintf(w, "cli_version=%s\n", r.CLIVersion)
+	fmt.Fprintf(w, "installed_cli_version=%s\n", r.InstalledCLIVersion)
 	fmt.Fprintf(w, "installed_server_version=%s\n", r.InstalledServerVersion)
 	fmt.Fprintf(w, "running_server_version=%s\n", r.RunningServerVersion)
 	fmt.Fprintf(w, "release_version=%s\n", r.ReleaseVersion)
@@ -98,6 +101,55 @@ func releaseVersion() string {
 		v := strings.TrimSpace(strings.ReplaceAll(string(b), "\r", ""))
 		if v != "" {
 			return v
+		}
+	}
+	return versionUnknown
+}
+
+func installedCLIVersion() string {
+	candidates := []string{
+		strings.TrimSpace(os.Getenv("NYXVEIL_CTL_BINARY")),
+		filepath.Join(paths.BinDir, "nyxveilctl"),
+		"/usr/local/bin/nyxveilctl",
+	}
+	// Avoid recursive probe forks when this process is itself a version probe.
+	if os.Getenv("NYXVEIL_VERSION_PROBE") == "1" {
+		return version.CLIVersion
+	}
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, exe)
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "nyxveilctl"))
+	}
+	seen := make(map[string]bool)
+	for _, candidate := range candidates {
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		if _, err := os.Stat(candidate); err != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		cmd := exec.CommandContext(ctx, candidate, "version", "--json")
+		cmd.Env = append(os.Environ(), "NYXVEIL_VERSION_PROBE=1")
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			continue
+		}
+		var wrap struct {
+			CLIVersion          string `json:"cli_version"`
+			InstalledCLIVersion string `json:"installed_cli_version"`
+		}
+		if json.Unmarshal(out, &wrap) == nil {
+			// When probing the installed binary as a NEW process, its cli_version
+			// IS the installed CLI version (compile-time of that file).
+			if v := strings.TrimSpace(wrap.CLIVersion); v != "" && v != versionUnknown {
+				return v
+			}
+			if v := strings.TrimSpace(wrap.InstalledCLIVersion); v != "" && v != versionUnknown {
+				return v
+			}
 		}
 	}
 	return versionUnknown
@@ -185,7 +237,9 @@ func parseServerVersion(raw []byte) string {
 	return ""
 }
 
-// assertVersionsMatchTarget verifies installed+running+cli+release match the update target.
+// assertVersionsMatchTarget verifies installed+running+release match the update target.
+// current_process cli_version (version.CLIVersion) is intentionally NOT required to
+// match after a self-update — the old process image remains until handoff/re-exec.
 func assertVersionsMatchTarget(want string) error {
 	want = strings.TrimSpace(want)
 	if want == "" {
@@ -193,8 +247,8 @@ func assertVersionsMatchTarget(want string) error {
 	}
 	r := collectVersionReport()
 	var errs []string
-	if r.CLIVersion != want {
-		errs = append(errs, fmt.Sprintf("cli_version=%s", r.CLIVersion))
+	if r.InstalledCLIVersion != want {
+		errs = append(errs, fmt.Sprintf("installed_cli_version=%s", r.InstalledCLIVersion))
 	}
 	if r.InstalledServerVersion != want {
 		errs = append(errs, fmt.Sprintf("installed_server_version=%s", r.InstalledServerVersion))

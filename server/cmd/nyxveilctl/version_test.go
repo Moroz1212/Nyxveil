@@ -34,12 +34,13 @@ func TestPrintVersionSeparatesCLIInstalledAndRunning(t *testing.T) {
 	text := out.String()
 	for _, line := range []string{
 		"cli_version=" + version.CLIVersion,
+		"installed_cli_version=",
 		"running_server_version=9.8.7",
 		"release_version=9.9.9",
 		"core_version=" + version.CoreVersion,
 		"protocol=" + version.ProtocolVersion,
 	} {
-		if !strings.Contains(text, line+"\n") {
+		if !strings.Contains(text, line) {
 			t.Fatalf("missing %q in:\n%s", line, text)
 		}
 	}

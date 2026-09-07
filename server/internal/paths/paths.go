@@ -25,6 +25,12 @@ func ControlSocket() string  { return path.Join(RunDir, "control.sock") }
 func BinaryPath() string     { return path.Join(BinDir, "nyxveil-server") }
 func PreviousBinary() string { return path.Join(StateDir, "nyxveil-server.prev") }
 func RollbackMarker() string { return path.Join(StateDir, "update-rollback") }
+func UpdateTransactionDir() string {
+	return path.Join(StateDir, "update-transactions")
+}
+func UpdateTransactionLock() string {
+	return path.Join(StateDir, "update-transaction.lock")
+}
 func ScriptsDir() string     { return path.Join(ShareDir, "scripts") }
 func ProductionGate() string { return path.Join(ScriptsDir(), "production-gate.sh") }
 func CatalogVerify() string  { return path.Join(BinDir, "nyxveil-catalog-verify") }

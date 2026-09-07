@@ -49,6 +49,9 @@ func main() {
 		err = journalctl(args)
 	case "update":
 		err = runUpdate(args)
+	case "update-resume":
+		// Internal self-update handoff — requires a valid on-disk transaction journal.
+		err = runUpdateResume(args)
 	case "bootstrap-cli":
 		err = runBootstrapCLI(args)
 	case "config":
@@ -334,33 +337,32 @@ func runUpdate(args []string) error {
 	u.EnforceOwnership = filemeta.EnforceRuntimeTLS
 
 	health := func() bool {
-		if runtime.GOOS == "windows" {
-			return true
+		tx := &updateTransaction{
+			ID:                fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid()),
+			TargetVersion:     m.Version,
+			ManifestURL:       manifestURL,
+			LocalDir:          localDir,
+			ServerPath:        server,
+			CtlPath:           ctlPath,
+			CtlPrev:           ctlPrev,
+			PreBaseline:       preBaseline,
+			PreTLS:            preTLS,
+			Phase:             txPhaseAssetsInstalled,
+			OwnerPID:          os.Getpid(),
+			CreatedAt:         time.Now().UTC(),
+			ProcessCLIAtStart: version.CLIVersion,
 		}
-		prePID := unitMainPID("nyxveil-server")
-		if err := restartUnit("nyxveil-server"); err != nil {
-			fmt.Printf("update restart failed: %v\n", err)
+		if err := writeUpdateTransaction(tx); err != nil {
+			fmt.Printf("update_success=false reason=transaction_journal detail=%v\n", err)
 			return false
 		}
-		res, ok := verifyPostUpdateHealth(preBaseline, 45)
-		if !ok {
-			return false
+
+		// Prefer handoff so post-check/gate run under the NEW installed ctl image.
+		// Old process BuildVersion must never be treated as installed CLI version.
+		if strings.TrimSpace(os.Getenv("NYXVEIL_SKIP_HANDOFF")) == "1" {
+			return performPostUpdateVerification(tx)
 		}
-		postPID := unitMainPID("nyxveil-server")
-		if prePID > 0 && postPID > 0 && prePID == postPID {
-			fmt.Printf("update_success=false reason=same_pid_after_restart pre_pid=%d post_pid=%d\n", prePID, postPID)
-			return false
-		}
-		if err := assertVersionsMatchTarget(m.Version); err != nil {
-			fmt.Printf("update_success=false reason=version_mismatch detail=%v\n", err)
-			return false
-		}
-		fmt.Printf("update_success=%v dataplane_healthy=%v management_plane_connected=%v preexisting_management_degradation=%v pre_pid=%d post_pid=%d\n",
-			res.UpdateSuccess, res.DataplaneHealthy, res.ManagementPlaneConnected, res.PreexistingManagementDegradation, prePID, postPID)
-		if res.Reason != "" {
-			fmt.Printf("update note: %s\n", res.Reason)
-		}
-		return true
+		return handoffPostCheckToNewCtl(tx)
 	}
 
 	return finishUpdate(m, u, health, preBaseline, preTLS)
