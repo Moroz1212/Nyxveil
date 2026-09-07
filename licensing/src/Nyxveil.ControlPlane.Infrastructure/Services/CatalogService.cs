@@ -219,11 +219,11 @@ public sealed class CatalogService : ICatalogService
             Draining = draining,
             ProtocolVersion = node.ProtocolVersion,
             ServerVersion = node.ServerVersion ?? string.Empty,
-            ServerName = node.ServerName,
-            SpkiPin = node.SpkiPin,
+            ServerName = string.IsNullOrEmpty(node.ServerName) ? null : node.ServerName,
+            SpkiPin = node.SpkiPin is { Length: > 0 } ? node.SpkiPin : null,
             Capacity = cfg is not null ? Math.Min(node.Capacity, cfg.Capacity) : node.Capacity,
             CurrentSessions = node.CurrentSessions,
-            LastSeen = node.LastSeenAt ?? default,
+            LastSeen = NormalizeUtcTimestamp(node.LastSeenAt),
             Endpoints = node.Endpoints.Where(e => e.Enabled)
                 .GroupBy(e => $"{e.Host}|{e.Port}|{MapIpFamily(e.AddressFamily)}", StringComparer.OrdinalIgnoreCase)
                 .Select(g => g.OrderBy(e => e.Priority).First())
@@ -267,6 +267,20 @@ public sealed class CatalogService : ICatalogService
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         return signed;
+    }
+
+    /// <summary>
+    /// EF / SQL often return Unspecified UTC wall times. Treat them as UTC (never host-local).
+    /// </summary>
+    internal static DateTime NormalizeUtcTimestamp(DateTime? value)
+    {
+        var dt = value ?? default;
+        return dt.Kind switch
+        {
+            DateTimeKind.Utc => dt,
+            DateTimeKind.Local => dt.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(dt, DateTimeKind.Utc)
+        };
     }
 
     internal static IReadOnlyList<string> MapProfiles(IEnumerable<NodeTransport> transports)

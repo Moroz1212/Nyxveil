@@ -21,7 +21,7 @@ public sealed class UtcDateTimeJsonConverter : JsonConverter<DateTime>
         writer.WriteStringValue(FormatUtc(value));
     }
 
-    internal static string FormatUtc(DateTime value)
+    public static string FormatUtc(DateTime value)
     {
         var utc = value.Kind switch
         {
