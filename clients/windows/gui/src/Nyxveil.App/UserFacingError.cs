@@ -11,12 +11,14 @@ internal static class UserFacingError
             return "Ошибка доверия TLS / SPKI. Нужен доверенный сертификат узла и корректный pin из каталога.";
         if (ContainsAny(msg, "license", "expired", "credential"))
             return "Лицензия недействительна или истекла.";
-        if (ContainsAny(msg, "dns_servers", "dns"))
-            return "Сервер не передал DNS (TypeConfig). Подключение невозможно.";
+        if (ContainsAny(msg, "verify", "full-tunnel", "network apply", "dataplane incomplete"))
+            return "Не удалось применить маршруты/DNS VPN. Подключение отменено.";
+        if (ContainsAny(msg, "Wintun", "ErrNotLinked", "CreateAdapter", "adapter"))
+            return "Ошибка сетевого адаптера VPN (Wintun). Переустановите клиент или повторите подключение.";
         if (ContainsAny(msg, "TypeConfig", "config timeout"))
             return "Сервер не прислал сетевую конфигурацию.";
-        if (ContainsAny(msg, "Wintun", "ErrNotLinked", "tun"))
-            return "Ошибка драйвера Wintun. Переустановите клиент.";
+        if (ContainsAny(msg, "dns_servers") || (ContainsAny(msg, "routeplan") && ContainsAny(msg, "dns")))
+            return "Сервер не передал DNS (TypeConfig). Подключение невозможно.";
         if (ContainsAny(msg, "unavailable", "refused", "timeout", "transport"))
             return "Сервер недоступен. Проверьте сеть и повторите.";
         return msg;

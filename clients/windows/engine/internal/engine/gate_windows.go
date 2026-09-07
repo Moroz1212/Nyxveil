@@ -122,6 +122,122 @@ func RunGateNetTransaction() error {
 	return nil
 }
 
+// RunGateFullTunnelRoutes exercises the production full-tunnel path on a temporary
+// Wintun adapter: CreateAdapter → ifIndex/LUID → addr/DNS → 0.0.0.0/1 + 128.0.0.0/1
+// on-link → OS VerifyTunnel → stickiness re-check → full restore.
+// Briefly diverts IPv4 via the test adapter; always restores before return.
+func RunGateFullTunnelRoutes() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	dev, err := wintundev.Open(ctx, tunnel.Config{Name: gateAdapterName, MTU: 1280})
+	if err != nil {
+		return fmt.Errorf("gate full-tunnel wintun: %w", err)
+	}
+	defer func() { _ = dev.Close() }()
+
+	luid, ok := wintundev.AdapterLUID(dev)
+	if !ok || luid == 0 {
+		return fmt.Errorf("gate full-tunnel: missing AdapterLUID")
+	}
+	ifIdx, err := winnet.InterfaceIndexByAlias(gateAdapterName)
+	if err != nil || ifIdx == 0 {
+		return fmt.Errorf("gate full-tunnel: adapter not visible: %w", err)
+	}
+
+	applier := NewWindowsApplier()
+	applier.JournalPath = recoverylog.DefaultPath() + ".fulltunnel-gate"
+	_ = os.Remove(applier.JournalPath)
+
+	plan := NewPlan()
+	if err := applier.Capture(plan); err != nil {
+		return fmt.Errorf("capture: %w", err)
+	}
+	// Do not install host bypass for this gate — keep physical path for CP/tests.
+	plan.CapturedIPv6Phys = nil
+	plan.CapturedIPv6IfIndex = 0
+	plan.CapturedIPv6 = nil
+
+	wantDNS := "10.77.0.1"
+	if err := plan.ApplyTypeConfig(gateAdapterName, "10.77.0.2", 24, "10.77.0.1", []string{wantDNS}, 1280); err != nil {
+		return err
+	}
+	plan.TunIfIndex = ifIdx
+	plan.TunLUID = luid
+	plan.Gate.AdapterOpen = true
+	plan.Gate.TypeConfigOK = true
+
+	if err := applier.ApplyTunnel(plan); err != nil {
+		_ = applier.Restore(plan)
+		return fmt.Errorf("full-tunnel ApplyTunnel: %w", err)
+	}
+	if err := applier.VerifyTunnel(plan); err != nil {
+		_ = applier.Restore(plan)
+		return fmt.Errorf("full-tunnel VerifyTunnel: %w", err)
+	}
+
+	// Stickiness + release-blocking dataplane soak (adapter/routes/DNS must hold).
+	checkpoints := []time.Duration{0, time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second}
+	var elapsed time.Duration
+	for _, want := range checkpoints {
+		if want > elapsed {
+			time.Sleep(want - elapsed)
+			elapsed = want
+		}
+		if err := applier.VerifyTunnel(plan); err != nil {
+			_ = applier.Restore(plan)
+			return fmt.Errorf("full-tunnel soak T+%v VerifyTunnel: %w", want, err)
+		}
+		curIdx, err := winnet.InterfaceIndexByAlias(gateAdapterName)
+		if err != nil || curIdx != ifIdx {
+			_ = applier.Restore(plan)
+			return fmt.Errorf("full-tunnel soak T+%v adapter ifIndex changed: got %d want %d err=%v", want, curIdx, ifIdx, err)
+		}
+		onLink := netip.IPv4Unspecified()
+		for _, dest := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
+			ok, err := winnet.HasIPv4Route(winnet.RouteSpec{
+				Destination:    netip.MustParsePrefix(dest),
+				NextHop:        onLink,
+				InterfaceIndex: ifIdx,
+				InterfaceLUID:  luid,
+				Metric:         1,
+			})
+			if err != nil || !ok {
+				_ = applier.Restore(plan)
+				return fmt.Errorf("full-tunnel soak T+%v missing %s (ok=%v err=%v)", want, dest, ok, err)
+			}
+		}
+		dns, err := winnet.DNSServersOnInterface(ifIdx)
+		if err != nil || len(dns) == 0 || dns[0] != wantDNS {
+			_ = applier.Restore(plan)
+			return fmt.Errorf("full-tunnel soak T+%v DNS got %v err=%v want %s", want, dns, err, wantDNS)
+		}
+	}
+
+	if err := applier.Restore(plan); err != nil {
+		return fmt.Errorf("full-tunnel restore: %w", err)
+	}
+	onLink := netip.IPv4Unspecified()
+	for _, dest := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
+		ok, err := winnet.HasIPv4Route(winnet.RouteSpec{
+			Destination:    netip.MustParsePrefix(dest),
+			NextHop:        onLink,
+			InterfaceIndex: ifIdx,
+			InterfaceLUID:  luid,
+			Metric:         1,
+		})
+		if err != nil {
+			return fmt.Errorf("full-tunnel post-restore lookup %s: %w", dest, err)
+		}
+		if ok {
+			return fmt.Errorf("full-tunnel residue: %s still present after restore", dest)
+		}
+	}
+	_ = os.Remove(applier.JournalPath)
+	fmt.Println("GATE_FULL_TUNNEL_OK ifIndex=", ifIdx, "luid=", luid, "soak=10s")
+	fmt.Println("GATE_DATAPLANE_SOAK_OK duration=10s ifIndex=", ifIdx, "luid=", luid)
+	return nil
+}
+
 func dnsContains(list []string, want string) bool {
 	for _, s := range list {
 		if s == want {

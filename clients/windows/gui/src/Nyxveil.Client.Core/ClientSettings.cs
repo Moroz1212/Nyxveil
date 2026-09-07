@@ -11,6 +11,10 @@ public sealed class ClientSettings
     public string? PreferredLocationId { get; set; }
     /// <summary>Launch Nyxveil GUI when Windows starts (CurrentUser Run key).</summary>
     public bool Autostart { get; set; }
+    public bool AutoConnect { get; set; }
+    public bool StartMinimized { get; set; }
+    public bool ShowNotifications { get; set; } = true;
+    public bool LogsAutoScroll { get; set; } = true;
 
     public static string SettingsPath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),

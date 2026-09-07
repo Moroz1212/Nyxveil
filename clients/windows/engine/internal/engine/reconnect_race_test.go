@@ -1,4 +1,4 @@
-package engine_test
+﻿package engine_test
 
 import (
 	"context"
@@ -41,7 +41,7 @@ func TestDisconnectWhileReconnectWaitingForTicketDoesNotReconnect(t *testing.T) 
 		},
 		SessionOpener: func(ctx context.Context, _ model.Catalog, _ engine.ConnectRequest) (*session.Session, transport.Conn, model.NodeRegistryEntry, error) {
 			connects.Add(1)
-			return session.New(session.DefaultConfig(true)), nopConn{}, model.NodeRegistryEntry{NodeID: "n1", LocationID: "fi-hel"}, nil
+			return openTestSession(ctx, "n1", "fi-hel")
 		},
 	})
 	if err := mgr.Connect(context.Background(), connectReq(raw, keys, dpriv)); err != nil {
@@ -97,7 +97,7 @@ func TestDisconnectAfterTicketBeforeReconnectDoesNotReconnect(t *testing.T) {
 		},
 		SessionOpener: func(ctx context.Context, _ model.Catalog, _ engine.ConnectRequest) (*session.Session, transport.Conn, model.NodeRegistryEntry, error) {
 			connects.Add(1)
-			return session.New(session.DefaultConfig(true)), nopConn{}, model.NodeRegistryEntry{NodeID: "n1", LocationID: "fi-hel"}, nil
+			return openTestSession(ctx, "n1", "fi-hel")
 		},
 	})
 	if err := mgr.Connect(context.Background(), connectReq(raw, keys, dpriv)); err != nil {
@@ -139,7 +139,7 @@ func TestSessionLostAfterManualDisconnectDoesNotReconnect(t *testing.T) {
 			}, nil
 		},
 		SessionOpener: func(ctx context.Context, _ model.Catalog, _ engine.ConnectRequest) (*session.Session, transport.Conn, model.NodeRegistryEntry, error) {
-			return session.New(session.DefaultConfig(true)), nopConn{}, model.NodeRegistryEntry{NodeID: "n1", LocationID: "fi-hel"}, nil
+			return openTestSession(ctx, "n1", "fi-hel")
 		},
 	})
 	if err := mgr.Connect(context.Background(), connectReq(raw, keys, dpriv)); err != nil {
@@ -177,7 +177,7 @@ func TestRepeatedSessionLossSingleReconnect(t *testing.T) {
 			}, nil
 		},
 		SessionOpener: func(ctx context.Context, _ model.Catalog, _ engine.ConnectRequest) (*session.Session, transport.Conn, model.NodeRegistryEntry, error) {
-			return session.New(session.DefaultConfig(true)), nopConn{}, model.NodeRegistryEntry{NodeID: "n1", LocationID: "fi-hel"}, nil
+			return openTestSession(ctx, "n1", "fi-hel")
 		},
 	})
 	if err := mgr.Connect(context.Background(), connectReq(raw, keys, dpriv)); err != nil {

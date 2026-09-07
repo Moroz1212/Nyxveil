@@ -44,7 +44,7 @@ func TestRealSelfUpdateOldProcessDoesNotFailCliVersion(t *testing.T) {
 		serverBin += ".exe"
 	}
 
-	const want = "1.1.6"
+	const want = "1.1.7"
 	buildCtlWithVersion(t, root, oldCtl, "1.1.4")
 	buildCtlWithVersion(t, root, newCtl, want)
 	buildServerWithVersion(t, root, serverBin, want)
@@ -144,7 +144,7 @@ func TestSelfUpdateExecsNewCtl(t *testing.T) {
 	}
 	t.Setenv("NYXVEIL_STATE_DIR", state)
 	tx := &updateTransaction{
-		ID: "handoff-spy", TargetVersion: "1.1.6", CtlPath: spy,
+		ID: "handoff-spy", TargetVersion: "1.1.7", CtlPath: spy,
 		Phase: txPhaseAssetsInstalled, ProcessCLIAtStart: "1.1.4",
 	}
 	_ = writeUpdateTransaction(tx)
@@ -161,15 +161,15 @@ func TestOldCliProcessVersionDoesNotRepresentInstalledCli(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		installed += ".exe"
 	}
-	buildCtlWithVersion(t, root, installed, "1.1.6")
+	buildCtlWithVersion(t, root, installed, "1.1.7")
 	t.Setenv("NYXVEIL_CTL_BINARY", installed)
 
 	prev := version.CLIVersion
 	version.CLIVersion = "1.1.4"
 	t.Cleanup(func() { version.CLIVersion = prev })
 
-	if got := installedCLIVersion(); got != "1.1.6" {
-		t.Fatalf("installed_cli_version=%q want 1.1.6", got)
+	if got := installedCLIVersion(); got != "1.1.7" {
+		t.Fatalf("installed_cli_version=%q want 1.1.7", got)
 	}
 }
 
@@ -184,9 +184,9 @@ func TestInstalledCliVersionFromActualBinary(t *testing.T) {
 }
 
 func TestRunningServerVersionFromControlSocket(t *testing.T) {
-	srv := startStatusHTTP(t, "1.1.6")
+	srv := startStatusHTTP(t, "1.1.7")
 	t.Setenv("NYXVEIL_CONTROL_HTTP", srv)
-	if got := runningServerVersion(); got != "1.1.6" {
+	if got := runningServerVersion(); got != "1.1.7" {
 		t.Fatalf("running=%q", got)
 	}
 }

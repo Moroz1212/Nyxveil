@@ -1,0 +1,48 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:controls="clr-namespace:Nyxveil.App.Controls">
+  <Style TargetType="{x:Type controls:ConnectStatusRing}">
+    <Setter Property="Width" Value="208"/>
+    <Setter Property="Height" Value="208"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="{x:Type controls:ConnectStatusRing}">
+          <Grid Width="208" Height="208">
+            <!-- Soft outer halo -->
+            <Ellipse x:Name="PART_Glow" Width="208" Height="208" Opacity="0.95">
+              <Ellipse.Effect>
+                <BlurEffect Radius="42" KernelType="Gaussian"/>
+              </Ellipse.Effect>
+            </Ellipse>
+            <!-- Thin outer rim -->
+            <Ellipse Width="182" Height="182" Stroke="#662DEED0" StrokeThickness="1.15" Fill="Transparent"/>
+            <!-- Dark core with radial depth -->
+            <Ellipse Width="168" Height="168">
+              <Ellipse.Fill>
+                <RadialGradientBrush GradientOrigin="0.35,0.3" Center="0.5,0.5" RadiusX="0.75" RadiusY="0.75">
+                  <GradientStop Color="#FF0E1C26" Offset="0"/>
+                  <GradientStop Color="#F208131C" Offset="0.65"/>
+                  <GradientStop Color="#E6050B10" Offset="1"/>
+                </RadialGradientBrush>
+              </Ellipse.Fill>
+            </Ellipse>
+            <!-- Primary bright ring -->
+            <Ellipse x:Name="PART_Ring" Width="168" Height="168" Fill="Transparent"
+                     StrokeThickness="3.4" Stroke="#2DEED0">
+              <Ellipse.Effect>
+                <DropShadowEffect BlurRadius="16" ShadowDepth="0" Color="#2DEED0" Opacity="0.8"/>
+              </Ellipse.Effect>
+            </Ellipse>
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+              <ContentControl x:Name="PART_Icon" HorizontalAlignment="Center" Margin="0,0,0,6"/>
+              <TextBlock Text="{TemplateBinding StatusText}" FontSize="17" FontWeight="SemiBold"
+                         Foreground="#F2F7FA" HorizontalAlignment="Center"/>
+              <TextBlock Text="{TemplateBinding TimerText}" FontSize="13"
+                         Foreground="#9BB0BC" HorizontalAlignment="Center" Margin="0,3,0,0"/>
+            </StackPanel>
+          </Grid>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+</ResourceDictionary>

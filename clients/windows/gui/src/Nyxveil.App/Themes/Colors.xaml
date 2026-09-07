@@ -1,0 +1,60 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Color x:Key="BgDeepC">#061018</Color>
+  <Color x:Key="BgPanelC">#0B1720</Color>
+  <Color x:Key="BgGlassC">#CC0B1720</Color>
+  <Color x:Key="AccentC">#2DEED0</Color>
+  <Color x:Key="AccentSoftC">#27DCC7</Color>
+  <Color x:Key="AccentCyanC">#37DFF3</Color>
+  <Color x:Key="FgPrimaryC">#F2F7FA</Color>
+  <Color x:Key="FgSecondaryC">#8FA3B0</Color>
+  <Color x:Key="FgMutedC">#6B7F8C</Color>
+  <Color x:Key="BorderGlassC">#33FFFFFF</Color>
+  <Color x:Key="OkGreenC">#3DDC97</Color>
+  <Color x:Key="WarnAmberC">#E6B84D</Color>
+  <Color x:Key="ErrRedC">#E57373</Color>
+  <Color x:Key="TitleBarC">#0A1218</Color>
+
+  <SolidColorBrush x:Key="BgDeep" Color="{StaticResource BgDeepC}"/>
+  <SolidColorBrush x:Key="BgPanel" Color="{StaticResource BgPanelC}"/>
+  <SolidColorBrush x:Key="BgGlass" Color="#E608131C"/>
+  <SolidColorBrush x:Key="Accent" Color="{StaticResource AccentC}"/>
+  <SolidColorBrush x:Key="AccentSoft" Color="{StaticResource AccentSoftC}"/>
+  <SolidColorBrush x:Key="AccentCyan" Color="{StaticResource AccentCyanC}"/>
+  <SolidColorBrush x:Key="FgPrimary" Color="{StaticResource FgPrimaryC}"/>
+  <SolidColorBrush x:Key="FgSecondary" Color="{StaticResource FgSecondaryC}"/>
+  <SolidColorBrush x:Key="FgMuted" Color="{StaticResource FgMutedC}"/>
+  <SolidColorBrush x:Key="BorderGlass" Color="{StaticResource BorderGlassC}"/>
+  <SolidColorBrush x:Key="OkGreen" Color="{StaticResource OkGreenC}"/>
+  <SolidColorBrush x:Key="WarnAmber" Color="{StaticResource WarnAmberC}"/>
+  <SolidColorBrush x:Key="ErrRed" Color="{StaticResource ErrRedC}"/>
+  <SolidColorBrush x:Key="TitleBar" Color="{StaticResource TitleBarC}"/>
+
+  <!-- Legacy aliases for LicenseWindow / older markup -->
+  <SolidColorBrush x:Key="Bg" Color="{StaticResource BgDeepC}"/>
+  <SolidColorBrush x:Key="Fg" Color="{StaticResource FgPrimaryC}"/>
+  <SolidColorBrush x:Key="BgDeepBrush" Color="{StaticResource BgDeepC}"/>
+  <SolidColorBrush x:Key="FgPrimaryBrush" Color="{StaticResource FgPrimaryC}"/>
+  <SolidColorBrush x:Key="FgSecondaryBrush" Color="{StaticResource FgSecondaryC}"/>
+  <SolidColorBrush x:Key="FgMutedBrush" Color="{StaticResource FgMutedC}"/>
+  <SolidColorBrush x:Key="TealAccentBrush" Color="{StaticResource AccentC}"/>
+  <SolidColorBrush x:Key="GlassBorderBrush" Color="{StaticResource BorderGlassC}"/>
+  <SolidColorBrush x:Key="TitleBarBrush" Color="{StaticResource TitleBarC}"/>
+  <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource ErrRedC}"/>
+
+  <LinearGradientBrush x:Key="CtaGradient" StartPoint="0.5,0" EndPoint="0.5,1">
+    <GradientStop Color="#3AE8F5" Offset="0"/>
+    <GradientStop Color="#2AD4C8" Offset="0.45"/>
+    <GradientStop Color="#1FA8B8" Offset="1"/>
+  </LinearGradientBrush>
+  <LinearGradientBrush x:Key="CtaGradientBrush" StartPoint="0.5,0" EndPoint="0.5,1">
+    <GradientStop Color="#3AE8F5" Offset="0"/>
+    <GradientStop Color="#2AD4C8" Offset="0.45"/>
+    <GradientStop Color="#1FA8B8" Offset="1"/>
+  </LinearGradientBrush>
+  <LinearGradientBrush x:Key="RingGradientBrush" StartPoint="0,0" EndPoint="1,1">
+    <GradientStop Color="#5CFFF0" Offset="0"/>
+    <GradientStop Color="#2DEED0" Offset="0.45"/>
+    <GradientStop Color="#149988" Offset="1"/>
+  </LinearGradientBrush>
+</ResourceDictionary>

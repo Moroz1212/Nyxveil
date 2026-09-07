@@ -4,6 +4,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -47,7 +48,7 @@ func (m *LifecycleMonitor) OnPowerResume() {
 		return
 	}
 	log.Printf("lifecycle: power resume — safe disconnect (stale transport risk)")
-	_ = m.mgr.Disconnect(context.Background())
+	_ = m.mgr.DisconnectWithReason(context.Background(), "lifecycle: power resume")
 }
 
 func (m *LifecycleMonitor) loop() {
@@ -87,6 +88,16 @@ func (m *LifecycleMonitor) checkRouteDrift() {
 	if err != nil || !def.Present {
 		return
 	}
+	// Expected VPN path: best route lands on the session Wintun LUID.
+	m.mgr.mu.Lock()
+	tunLUID := uint64(0)
+	if m.mgr.plan != nil {
+		tunLUID = m.mgr.plan.TunLUID
+	}
+	m.mgr.mu.Unlock()
+	if tunLUID != 0 && def.InterfaceLUID == tunLUID {
+		return
+	}
 	m.mu.Lock()
 	prevLUID, prevIdx := m.lastLUID, m.lastIdx
 	m.mu.Unlock()
@@ -103,8 +114,9 @@ func (m *LifecycleMonitor) checkRouteDrift() {
 		if def.Metric <= 1 {
 			return
 		}
-		log.Printf("lifecycle: default route LUID changed %d→%d — safe disconnect", prevLUID, def.InterfaceLUID)
-		_ = m.mgr.Disconnect(context.Background())
+		log.Printf("lifecycle: default route LUID changed %d→%d metric=%d — safe disconnect", prevLUID, def.InterfaceLUID, def.Metric)
+		_ = m.mgr.DisconnectWithReason(context.Background(),
+			fmt.Sprintf("lifecycle: default route LUID changed %d→%d", prevLUID, def.InterfaceLUID))
 		m.snapshotRoute()
 	}
 }
@@ -128,7 +140,7 @@ func (m *LifecycleMonitor) checkIPv6EgressDrift() {
 	idxs, err := winnet.ListActiveEgressIfIndexes(tunAdapterName)
 	if err != nil {
 		log.Printf("lifecycle: IPv6 egress enum failed — safe disconnect: %v", err)
-		_ = m.mgr.Disconnect(context.Background())
+		_ = m.mgr.DisconnectWithReason(context.Background(), "lifecycle: IPv6 egress enum failed: "+err.Error())
 		return
 	}
 	for _, idx := range idxs {
@@ -136,12 +148,14 @@ func (m *LifecycleMonitor) checkIPv6EgressDrift() {
 			continue
 		}
 		// New adapter: verify we can still evaluate IPv6; either way disconnect.
+		reason := fmt.Sprintf("lifecycle: new egress if %d appeared while Connected", idx)
 		if _, err := winnet.CaptureIPv6State(idx); err != nil {
-			log.Printf("lifecycle: new egress if %d IPv6 unevaluable — disconnect: %v", idx, err)
+			reason = fmt.Sprintf("lifecycle: new egress if %d IPv6 unevaluable: %v", idx, err)
+			log.Printf("%s", reason)
 		} else {
-			log.Printf("lifecycle: new egress if %d appeared while Connected — safe disconnect", idx)
+			log.Printf("%s", reason)
 		}
-		_ = m.mgr.Disconnect(context.Background())
+		_ = m.mgr.DisconnectWithReason(context.Background(), reason)
 		return
 	}
 }

@@ -14,7 +14,9 @@ public static class CatalogVerifier
         JsonSerializer.Deserialize<SignedCatalogDto>(signedCatalogJson)
         ?? throw new InvalidOperationException("Пустой ответ каталога.");
 
-    public static void Verify(SignedCatalogDto signed, IReadOnlyDictionary<string, string> catalogKeysKidToStdBase64)
+    public static CatalogVerifyReport Verify(SignedCatalogDto signed,
+        IReadOnlyDictionary<string, string> catalogKeysKidToStdBase64,
+        DateTimeOffset? nowUtc = null)
     {
         if (string.IsNullOrWhiteSpace(signed.KeyId))
             throw new InvalidOperationException("В каталоге отсутствует key_id.");
@@ -39,14 +41,57 @@ public static class CatalogVerifier
         var payload = CatalogCanonicalJson.BuildCanonicalPayload(signed.Catalog);
         var algo = SignatureAlgorithm.Ed25519;
         var publicKey = PublicKey.Import(algo, pub, KeyBlobFormat.RawPublicKey);
-        if (!algo.Verify(publicKey, payload, signed.Signature))
+        var signatureOk = algo.Verify(publicKey, payload, signed.Signature);
+        if (!signatureOk)
             throw new InvalidOperationException("Подпись каталога недействительна.");
 
-        var now = DateTime.UtcNow;
-        var issued = DateTime.SpecifyKind(signed.Catalog.IssuedAt.ToUniversalTime(), DateTimeKind.Utc);
-        var expires = DateTime.SpecifyKind(signed.Catalog.ExpiresAt.ToUniversalTime(), DateTimeKind.Utc);
-        if (now > expires || now < issued)
-            throw new InvalidOperationException("Срок действия каталога истёк или ещё не начался.");
+        var now = nowUtc ?? DateTimeOffset.UtcNow;
+        var issued = CatalogTime.AsUtcInstant(signed.Catalog.IssuedAt);
+        var expires = CatalogTime.AsUtcInstant(signed.Catalog.ExpiresAt);
+        var temporalOk = CatalogTime.IsTemporallyValid(now, issued, expires);
+        var remaining = (long)Math.Floor((expires - now).TotalSeconds);
+
+        var report = new CatalogVerifyReport
+        {
+            KeyId = signed.KeyId,
+            IssuedAt = issued,
+            ExpiresAt = expires,
+            NowUtc = now,
+            RemainingSeconds = remaining,
+            Signature = "PASS",
+            TemporalValidation = temporalOk ? "PASS" : "FAIL"
+        };
+
+        if (!temporalOk)
+        {
+            throw new CatalogTemporalException(
+                "Срок действия каталога истёк или ещё не начался.",
+                report);
+        }
+
+        return report;
+    }
+}
+
+public sealed class CatalogVerifyReport
+{
+    public string KeyId { get; init; } = "";
+    public DateTimeOffset IssuedAt { get; init; }
+    public DateTimeOffset ExpiresAt { get; init; }
+    public DateTimeOffset NowUtc { get; init; }
+    public long RemainingSeconds { get; init; }
+    public string Signature { get; init; } = "";
+    public string TemporalValidation { get; init; } = "";
+}
+
+public sealed class CatalogTemporalException : InvalidOperationException
+{
+    public CatalogVerifyReport Report { get; }
+
+    public CatalogTemporalException(string message, CatalogVerifyReport report)
+        : base(message)
+    {
+        Report = report;
     }
 }
 
@@ -69,8 +114,8 @@ public static class CatalogCanonicalJson
             Version = catalog.Version,
             Locations = locations.Count == 0 ? null : locations,
             Nodes = nodes.Count == 0 ? null : nodes,
-            IssuedAt = DateTime.SpecifyKind(catalog.IssuedAt.ToUniversalTime(), DateTimeKind.Utc),
-            ExpiresAt = DateTime.SpecifyKind(catalog.ExpiresAt.ToUniversalTime(), DateTimeKind.Utc)
+            IssuedAt = CatalogTime.NormalizeUtcWall(catalog.IssuedAt),
+            ExpiresAt = CatalogTime.NormalizeUtcWall(catalog.ExpiresAt)
         };
 
         return JsonSerializer.SerializeToUtf8Bytes(canon, CanonOptions);
@@ -112,12 +157,13 @@ public sealed class Rfc3339NanoDateTimeConverter : JsonConverter<DateTime>
     public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         var s = reader.GetString() ?? throw new JsonException("expected date string");
-        return DateTime.Parse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind).ToUniversalTime();
+        var parsed = DateTime.Parse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+        return CatalogTime.NormalizeUtcWall(parsed);
     }
 
     public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options)
     {
-        var utc = DateTime.SpecifyKind(value.ToUniversalTime(), DateTimeKind.Utc);
+        var utc = CatalogTime.NormalizeUtcWall(value);
         var formatted = utc.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture);
         var dot = formatted.IndexOf('.');
         if (dot >= 0)

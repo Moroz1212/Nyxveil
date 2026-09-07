@@ -75,9 +75,19 @@ func (m *Machine) Get() (State, string) {
 func (m *Machine) Set(s State) {
 	m.mu.Lock()
 	m.cur = s
-	if s != Error {
+	// Clear LastError only on a successful new Connected so the GUI can still
+	// show why the prior session died after Disconnected/Reconnecting.
+	if s == Connected {
 		m.errMsg = ""
 	}
+	m.mu.Unlock()
+}
+
+// SetDetail transitions state while keeping a user-visible LastError (e.g. Reconnecting).
+func (m *Machine) SetDetail(s State, detail string) {
+	m.mu.Lock()
+	m.cur = s
+	m.errMsg = detail
 	m.mu.Unlock()
 }
 

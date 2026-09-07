@@ -34,6 +34,8 @@ public sealed class ServicePipeClient : IAsyncDisposable
     public event Action<NeedAccessTicketMessage>? NeedAccessTicket;
     public event Action<string>? ErrorReceived;
     public event Action? Disconnected;
+    public event Action<LogsSnapshotMessage>? LogsSnapshotReceived;
+    public event Action<LogLineDto>? LogEventReceived;
 
     public async Task ConnectAsync(CancellationToken ct = default)
     {
@@ -96,6 +98,15 @@ public sealed class ServicePipeClient : IAsyncDisposable
 
     public Task SendCancelAsync(CancellationToken ct = default) =>
         SendAsync(new IpcEnvelope { Type = IpcProtocol.TypeCancel }, ct);
+
+    public Task SendGetLogsAsync(CancellationToken ct = default) =>
+        SendAsync(new IpcEnvelope { Type = IpcProtocol.TypeGetLogs, Id = Guid.NewGuid().ToString("N") }, ct);
+
+    public Task SendSubscribeLogsAsync(CancellationToken ct = default) =>
+        SendAsync(new IpcEnvelope { Type = IpcProtocol.TypeSubscribeLogs, Id = Guid.NewGuid().ToString("N") }, ct);
+
+    public Task SendUnsubscribeLogsAsync(CancellationToken ct = default) =>
+        SendAsync(new IpcEnvelope { Type = IpcProtocol.TypeUnsubscribeLogs, Id = Guid.NewGuid().ToString("N") }, ct);
 
     private async Task SendAsync(object message, CancellationToken ct)
     {
@@ -183,6 +194,20 @@ public sealed class ServicePipeClient : IAsyncDisposable
             case IpcProtocol.TypeError:
                 ErrorReceived?.Invoke(env.Error ?? "Ошибка службы.");
                 break;
+            case IpcProtocol.TypeLogsSnapshot:
+            {
+                var snap = JsonSerializer.Deserialize<LogsSnapshotMessage>(line, JsonOpts);
+                if (snap is not null)
+                    LogsSnapshotReceived?.Invoke(snap);
+                break;
+            }
+            case IpcProtocol.TypeLogEvent:
+            {
+                var ev = JsonSerializer.Deserialize<LogEventMessage>(line, JsonOpts);
+                if (ev?.Entry is not null)
+                    LogEventReceived?.Invoke(ev.Entry);
+                break;
+            }
         }
     }
 

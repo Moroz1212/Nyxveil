@@ -30,6 +30,7 @@ const (
 type DefaultRoute struct {
 	Present        bool
 	NextHop        netip.Addr
+	BestSource     netip.Addr
 	InterfaceIndex uint32
 	InterfaceLUID  uint64
 	Metric         uint32
@@ -129,9 +130,11 @@ func ResolveIPv4BestRoute(dest netip.Addr) (DefaultRoute, error) {
 	if !ok || !nh.Is4() {
 		return DefaultRoute{}, fmt.Errorf("winnet: GetBestRoute2: invalid next hop")
 	}
+	src, _ := parseAddr(&bestSrc)
 	return DefaultRoute{
 		Present:        true,
 		NextHop:        nh,
+		BestSource:     src,
 		InterfaceIndex: row.InterfaceIndex,
 		InterfaceLUID:  row.InterfaceLuid,
 		Metric:         row.Metric,
@@ -179,13 +182,18 @@ func getIPv4DefaultRouteFromTable() (DefaultRoute, error) {
 
 
 // AddRoute creates an IPv4 forward entry via CreateIpForwardEntry2.
+// ValidLifetime/PreferredLifetime must be 0xffffffff (infinite); zero lifetime
+// yields routes that vanish immediately and break full-tunnel VPN.
 func AddRoute(spec RouteSpec) error {
+	const infinite uint32 = 0xffffffff
 	row := mibIpForwardRow2{
-		InterfaceLuid:  spec.InterfaceLUID,
-		InterfaceIndex: spec.InterfaceIndex,
-		Metric:         spec.Metric,
-		Protocol:       3, // MIB_IPPROTO_NETMGMT
-		Origin:         4, // NlroManual
+		InterfaceLuid:    spec.InterfaceLUID,
+		InterfaceIndex:   spec.InterfaceIndex,
+		Metric:           spec.Metric,
+		ValidLifetime:     infinite,
+		PreferredLifetime: infinite,
+		Protocol:         3, // MIB_IPPROTO_NETMGMT
+		Origin:           4, // NlroManual
 	}
 	if err := putPrefix(&row.DestinationPrefix.Prefix, &row.DestinationPrefix.PrefixLength, spec.Destination); err != nil {
 		return err
@@ -200,7 +208,7 @@ func AddRoute(spec RouteSpec) error {
 	return nil
 }
 
-// HasIPv4Route reports whether a matching forward entry exists.
+// HasIPv4Route reports whether a matching forward entry exists on the requested interface.
 func HasIPv4Route(spec RouteSpec) (bool, error) {
 	var table *mibIpForwardTable2
 	r1, _, e1 := procGetIpForwardTable2.Call(uintptr(afINET), uintptr(unsafe.Pointer(&table)))
@@ -225,9 +233,21 @@ func HasIPv4Route(spec RouteSpec) (bool, error) {
 		if !ok {
 			continue
 		}
-		if nh == spec.NextHop {
-			return true, nil
+		if nh != spec.NextHop {
+			continue
 		}
+		// Fail-closed: when caller binds to a TUN interface, require that binding.
+		if spec.InterfaceIndex != 0 && row.InterfaceIndex != spec.InterfaceIndex {
+			continue
+		}
+		if spec.InterfaceLUID != 0 && row.InterfaceLuid != spec.InterfaceLUID {
+			continue
+		}
+		// Reject already-expired / zero-lifetime entries (pre-1.0.3 AddRoute bug).
+		if row.ValidLifetime == 0 {
+			continue
+		}
+		return true, nil
 	}
 	return false, nil
 }

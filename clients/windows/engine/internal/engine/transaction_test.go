@@ -36,6 +36,19 @@ func (r *RecordingApplier) ApplyTunnel(p *engine.Plan) error {
 	r.Steps = append(r.Steps, "tunnel")
 	r.Stack = append(r.Stack, "tunnel")
 	p.DefaultViaTUN = true
+	p.Gate.AddressApplied = true
+	p.Gate.RoutesApplied = true
+	p.Gate.DNSApplied = true
+	return nil
+}
+func (r *RecordingApplier) VerifyTunnel(p *engine.Plan) error {
+	if r.FailAt == "verify" {
+		return errors.New("verify fail")
+	}
+	r.Steps = append(r.Steps, "verify")
+	if !p.DefaultViaTUN || !p.Gate.AddressApplied || !p.Gate.RoutesApplied || !p.Gate.DNSApplied {
+		return errors.New("verify: network apply absent")
+	}
 	return nil
 }
 func (r *RecordingApplier) Restore(p *engine.Plan) error {

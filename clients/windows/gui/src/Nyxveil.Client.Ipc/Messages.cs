@@ -17,6 +17,11 @@ public static class IpcProtocol
     public const string TypeAccessTicket = "access_ticket"; // legacy
     public const string TypeError = "error";
     public const string TypeCancel = "cancel";
+    public const string TypeGetLogs = "get_logs";
+    public const string TypeSubscribeLogs = "subscribe_logs";
+    public const string TypeUnsubscribeLogs = "unsubscribe_logs";
+    public const string TypeLogsSnapshot = "logs_snapshot";
+    public const string TypeLogEvent = "log_event";
 }
 
 public class IpcEnvelope
@@ -112,4 +117,55 @@ public sealed class StatusSnapshotMessage : IpcEnvelope
 
     [JsonPropertyName("protocol")]
     public string? Protocol { get; set; }
+
+    [JsonPropertyName("vpn_ip")]
+    public string? VpnIp { get; set; }
+
+    [JsonPropertyName("dns_servers")]
+    public List<string>? DnsServers { get; set; }
+
+    [JsonPropertyName("connected_at_unix")]
+    public long ConnectedAtUnix { get; set; }
+
+    [JsonPropertyName("tx_bytes")]
+    public ulong TxBytes { get; set; }
+
+    [JsonPropertyName("rx_bytes")]
+    public ulong RxBytes { get; set; }
+
+    [JsonPropertyName("effective_mtu")]
+    public int EffectiveMtu { get; set; }
+}
+
+public sealed class LogLineDto
+{
+    [JsonPropertyName("time")]
+    public string Time { get; set; } = "";
+
+    [JsonPropertyName("level")]
+    public string Level { get; set; } = "";
+
+    [JsonPropertyName("component")]
+    public string Component { get; set; } = "";
+
+    [JsonPropertyName("event")]
+    public string Event { get; set; } = "";
+
+    [JsonPropertyName("message")]
+    public string? Message { get; set; }
+
+    [JsonPropertyName("line")]
+    public string Line { get; set; } = "";
+}
+
+public sealed class LogsSnapshotMessage : IpcEnvelope
+{
+    [JsonPropertyName("entries")]
+    public List<LogLineDto> Entries { get; set; } = new();
+}
+
+public sealed class LogEventMessage : IpcEnvelope
+{
+    [JsonPropertyName("entry")]
+    public LogLineDto Entry { get; set; } = new();
 }

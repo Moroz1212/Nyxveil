@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 
 	nvpwin "github.com/nyxveil/nvp/core/platform/windows"
@@ -13,6 +15,24 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wintun"
 )
+
+func preloadWintunBesideExecutable() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("wintun: resolve executable: %w", err)
+	}
+	dir := filepath.Dir(exe)
+	dll := filepath.Join(dir, "wintun.dll")
+	if _, err := os.Stat(dll); err != nil {
+		return fmt.Errorf("%w: wintun.dll missing beside service binary (%s): %v", nvpwin.ErrWintunNotLinked, dll, err)
+	}
+	// Absolute LoadLibrary so LocalSystem does not depend on service cwd (often System32).
+	if _, err := windows.LoadLibraryEx(dll, 0, windows.LOAD_WITH_ALTERED_SEARCH_PATH); err != nil {
+		return fmt.Errorf("%w: LoadLibraryEx(%s): %v", nvpwin.ErrWintunNotLinked, dll, err)
+	}
+	_ = windows.SetDllDirectory(dir)
+	return nil
+}
 
 // Open creates a Wintun adapter implementing tunnel.Device.
 // Requires wintun.dll beside the service binary (WireGuard redistributable).
@@ -22,6 +42,9 @@ func Open(ctx context.Context, cfg tunnel.Config) (tunnel.Device, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
+	}
+	if err := preloadWintunBesideExecutable(); err != nil {
+		return nil, err
 	}
 	name := cfg.Name
 	if name == "" {
@@ -33,7 +56,12 @@ func Open(ctx context.Context, cfg tunnel.Config) (tunnel.Device, error) {
 	}
 	adapter, err := wintun.CreateAdapter(name, "Wintun", nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: CreateAdapter: %v", nvpwin.ErrWintunNotLinked, err)
+		// Reuse existing adapter name if a previous crash left one behind.
+		if existing, openErr := wintun.OpenAdapter(name); openErr == nil {
+			adapter = existing
+		} else {
+			return nil, fmt.Errorf("%w: CreateAdapter: %v", nvpwin.ErrWintunNotLinked, err)
+		}
 	}
 	session, err := adapter.StartSession(0x800000) // 8 MiB ring
 	if err != nil {

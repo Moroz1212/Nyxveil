@@ -9,8 +9,18 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        string? visualQa = null;
+        string? screenshotPath = null;
+        foreach (var arg in e.Args)
+        {
+            if (arg.StartsWith("--visual-qa=", StringComparison.OrdinalIgnoreCase))
+                visualQa = arg["--visual-qa=".Length..];
+            else if (arg.StartsWith("--screenshot=", StringComparison.OrdinalIgnoreCase))
+                screenshotPath = arg["--screenshot=".Length..];
+        }
+
         var settings = ClientSettings.Load();
-        if (!LicenseCredentialStore.Exists())
+        if (visualQa is null && !LicenseCredentialStore.Exists())
         {
             var licenseWindow = new LicenseWindow(settings);
             var ok = licenseWindow.ShowDialog();
@@ -21,7 +31,7 @@ public partial class App : Application
             }
         }
 
-        var main = new MainWindow(settings);
+        var main = new MainWindow(settings, visualQa, screenshotPath);
         MainWindow = main;
         main.Show();
     }

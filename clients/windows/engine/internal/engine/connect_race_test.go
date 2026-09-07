@@ -1,4 +1,4 @@
-package engine_test
+﻿package engine_test
 
 import (
 	"context"
@@ -65,7 +65,7 @@ func TestDisconnectSupersedesInFlightConnectCommit(t *testing.T) {
 			}, nil
 		},
 		SessionOpener: func(ctx context.Context, _ model.Catalog, _ engine.ConnectRequest) (*session.Session, transport.Conn, model.NodeRegistryEntry, error) {
-			return session.New(session.DefaultConfig(true)), nopConn{}, model.NodeRegistryEntry{NodeID: "a"}, nil
+			return openTestSession(ctx, "a", "")
 		},
 	})
 	done := make(chan error, 1)
@@ -119,7 +119,7 @@ func TestConnectAfterCancelAllowsNewConnect(t *testing.T) {
 			}, nil
 		},
 		SessionOpener: func(ctx context.Context, _ model.Catalog, _ engine.ConnectRequest) (*session.Session, transport.Conn, model.NodeRegistryEntry, error) {
-			return session.New(session.DefaultConfig(true)), nopConn{}, model.NodeRegistryEntry{NodeID: "b"}, nil
+			return openTestSession(ctx, "b", "")
 		},
 	})
 	go func() { mgr2Done <- mgrB.Connect(context.Background(), connectReq(raw, keys, dpriv)) }()

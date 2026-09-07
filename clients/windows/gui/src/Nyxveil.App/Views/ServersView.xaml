@@ -1,0 +1,99 @@
+<UserControl x:Class="Nyxveil.App.Views.ServersView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:Nyxveil.App.Controls"
+             xmlns:vm="clr-namespace:Nyxveil.App.ViewModels"
+             UseLayoutRounding="True" SnapsToDevicePixels="True"
+             TextOptions.TextFormattingMode="Display">
+  <Grid Margin="16">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <DockPanel Grid.Row="0" Margin="0,0,0,12">
+      <Button Content="← Назад" Style="{StaticResource GhostButton}" Click="Back_OnClick" DockPanel.Dock="Left"/>
+      <TextBlock Text="Серверы" FontSize="20" FontWeight="SemiBold" Foreground="{StaticResource FgPrimary}"
+                 Margin="12,0,0,0" VerticalAlignment="Center"/>
+    </DockPanel>
+
+    <TextBox Grid.Row="1" Margin="0,0,0,12" Padding="10,8"
+             Text="{Binding Server.Search, UpdateSourceTrigger=PropertyChanged}"
+             ToolTip="Поиск по стране или городу"/>
+
+    <Border Grid.Row="2" Style="{StaticResource GlassCard}" Padding="0">
+      <ListBox x:Name="ServerList"
+               ItemsSource="{Binding Server.VisibleLocations}"
+               Background="Transparent" BorderThickness="0"
+               ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+               MouseDoubleClick="List_OnDoubleClick">
+        <ListBox.ItemContainerStyle>
+          <Style TargetType="ListBoxItem">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Template">
+              <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                  <Border x:Name="Bd" Background="Transparent" Padding="12,10"
+                          BorderBrush="#22FFFFFF" BorderThickness="0,0,0,1">
+                    <ContentPresenter/>
+                  </Border>
+                  <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                      <Setter TargetName="Bd" Property="Background" Value="#22FFFFFF"/>
+                    </Trigger>
+                    <Trigger Property="IsSelected" Value="True">
+                      <Setter TargetName="Bd" Property="Background" Value="#332DEED0"/>
+                    </Trigger>
+                  </ControlTemplate.Triggers>
+                </ControlTemplate>
+              </Setter.Value>
+            </Setter>
+          </Style>
+        </ListBox.ItemContainerStyle>
+        <ListBox.ItemTemplate>
+          <DataTemplate DataType="{x:Type vm:LocationItemViewModel}">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <controls:CountryFlagControl Grid.Column="0" CountryCode="{Binding CountryCode}"
+                                           FlagSize="32" Margin="0,0,10,0"/>
+              <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                <TextBlock Text="{Binding TitleLine}" FontWeight="SemiBold"
+                           Foreground="{StaticResource FgPrimary}"/>
+                <TextBlock FontSize="11" Foreground="{StaticResource FgMuted}">
+                  <Run Text="{Binding LocationId, Mode=OneWay}"/>
+                  <Run Text=" · "/>
+                  <Run Text="{Binding PingText, Mode=OneWay}"/>
+                  <Run Text=" · нагрузка "/>
+                  <Run Text="{Binding LoadText, Mode=OneWay}"/>
+                </TextBlock>
+              </StackPanel>
+              <TextBlock Grid.Column="2" Text="✓" Foreground="{StaticResource Accent}" FontSize="16"
+                         VerticalAlignment="Center">
+                <TextBlock.Style>
+                  <Style TargetType="TextBlock">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                      <DataTrigger Binding="{Binding Selected}" Value="True">
+                        <Setter Property="Visibility" Value="Visible"/>
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </TextBlock.Style>
+              </TextBlock>
+            </Grid>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </Border>
+
+    <Button Grid.Row="3" Style="{StaticResource CtaButton}" Content="Выбрать сервер"
+            Margin="0,12,0,0" Click="Select_OnClick"/>
+  </Grid>
+</UserControl>

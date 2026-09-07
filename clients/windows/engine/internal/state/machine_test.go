@@ -24,8 +24,13 @@ func TestMachineSetAndFail(t *testing.T) {
 	}
 	m.Set(state.Disconnected)
 	st, errMsg = m.Get()
-	if st != state.Disconnected || errMsg != "" {
-		t.Fatalf("error should clear on Set: %v %q", st, errMsg)
+	if st != state.Disconnected || errMsg != "boom" {
+		t.Fatalf("LastError must survive Disconnected: %v %q", st, errMsg)
+	}
+	m.Set(state.Connected)
+	st, errMsg = m.Get()
+	if st != state.Connected || errMsg != "" {
+		t.Fatalf("LastError clears on Connected: %v %q", st, errMsg)
 	}
 }
 

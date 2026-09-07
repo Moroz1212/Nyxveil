@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/nyxveil/client-windows/internal/diag"
 	"github.com/nyxveil/client-windows/internal/recoverylog"
 	"github.com/nyxveil/client-windows/internal/winnet"
 )
@@ -146,6 +147,11 @@ func (w *WindowsApplier) ApplyBypass(p *Plan) error {
 				return fmt.Errorf("routes: bypass %s: %v / %v", dst, err, err2)
 			}
 		}
+		diag.InfoFields("ROUTE", "bypass_added", map[string]string{
+			"prefix":  dst.String(),
+			"nexthop": gw.String(),
+			"ifIndex": strconv.Itoa(int(ifIdx)),
+		})
 		w.journal.Pending = nil
 		w.journal.Applied = append(w.journal.Applied, mut)
 		if err := w.persist(); err != nil {
@@ -179,8 +185,55 @@ func (w *WindowsApplier) ApplyTunnel(p *Plan) error {
 		_ = w.rollbackLocked(p)
 		return fmt.Errorf("routes: set address: %w", err)
 	}
+	// netsh alone is insufficient for dataplane: Wintun may keep WeakHostSend /
+	// Tentative DAD / SkipAsSource, so Windows selects the physical NIC source while
+	// still forwarding via the tunnel — anti-spoof then drops every packet.
+	if p.TunLUID != 0 && p.TunIfIndex != 0 {
+		info, err := winnet.EnsureTunnelUnicastIPv4(p.TunLUID, p.TunIfIndex, p.TunPrefix.Addr(), p.TunPrefix.Bits())
+		if err != nil {
+			w.journal.Pending = nil
+			_ = w.rollbackLocked(p)
+			return fmt.Errorf("routes: ensure tunnel unicast: %w", err)
+		}
+		diag.InfoFields("NETWORK", "unicast_ok", map[string]string{
+			"addr":           info.Addr.String(),
+			"prefix":         strconv.Itoa(int(info.OnLinkPrefixLength)),
+			"dad":            info.DadStateName(),
+			"skip_as_source": strconv.FormatBool(info.SkipAsSource),
+			"ifIndex":        strconv.Itoa(int(info.InterfaceIndex)),
+		})
+		harden, err := winnet.HardenTunnelIPv4Interface(p.TunLUID, p.TunIfIndex, 1)
+		if err != nil {
+			w.journal.Pending = nil
+			_ = w.rollbackLocked(p)
+			return fmt.Errorf("routes: harden tunnel interface: %w", err)
+		}
+		b := harden.Before
+		diag.InfoFields("NETWORK", "iface_harden_before", map[string]string{
+			"family":             strconv.Itoa(int(b.Family)),
+			"ifIndex":            strconv.Itoa(int(b.InterfaceIndex)),
+			"luid":               strconv.FormatUint(b.InterfaceLUID, 10),
+			"site_prefix_length": strconv.FormatUint(uint64(b.SitePrefixLength), 10),
+			"weak_host_send":     strconv.Itoa(int(b.WeakHostSend)),
+			"weak_host_receive":  strconv.Itoa(int(b.WeakHostReceive)),
+			"metric":             strconv.FormatUint(uint64(b.Metric), 10),
+			"nl_mtu":             strconv.FormatUint(uint64(b.NlMtu), 10),
+		})
+		a := harden.After
+		diag.InfoFields("NETWORK", "iface_hardened", map[string]string{
+			"weak_host_send":     strconv.Itoa(int(a.WeakHostSend)),
+			"weak_host_receive":  strconv.Itoa(int(a.WeakHostReceive)),
+			"site_prefix_length": strconv.FormatUint(uint64(a.SitePrefixLength), 10),
+			"metric":             strconv.FormatUint(uint64(a.Metric), 10),
+			"nl_mtu":             strconv.FormatUint(uint64(a.NlMtu), 10),
+			"ifIndex":            strconv.Itoa(int(a.InterfaceIndex)),
+			"skipped_set":        strconv.FormatBool(harden.SkippedSet),
+			"skip_reason":        harden.SkipReason,
+		})
+	}
 	w.journal.Pending = nil
 	w.journal.Applied = append(w.journal.Applied, mutAddr)
+	p.Gate.AddressApplied = true
 	if err := w.persist(); err != nil {
 		if rbErr := w.rollbackLocked(p); rbErr != nil {
 			return fmt.Errorf("routes: persist tun_addr: %v; rollback: %w", err, rbErr)
@@ -205,17 +258,15 @@ func (w *WindowsApplier) ApplyTunnel(p *Plan) error {
 			_ = w.rollbackLocked(p)
 			return fmt.Errorf("routes: persist tun_dns pending: %w", err)
 		}
-		_ = run("netsh", "interface", "ip", "delete", "dns", "name="+p.TunName, "all")
-		if err := run("netsh", "interface", "ip", "set", "dns", "name="+p.TunName, "static", dnsStr[0]); err != nil {
+		_ = winnet.ClearDNSServersOnAlias(p.TunName)
+		if err := winnet.SetDNSServersOnAlias(p.TunName, dnsStr); err != nil {
 			w.journal.Pending = nil
 			_ = w.rollbackLocked(p)
 			return fmt.Errorf("routes: set dns: %w", err)
 		}
-		for i := 1; i < len(dnsStr); i++ {
-			_ = run("netsh", "interface", "ip", "add", "dns", "name="+p.TunName, dnsStr[i], "index="+strconv.Itoa(i+1))
-		}
 		w.journal.Pending = nil
 		w.journal.Applied = append(w.journal.Applied, mutDNS)
+		p.Gate.DNSApplied = true
 		if err := w.persist(); err != nil {
 			if rbErr := w.rollbackLocked(p); rbErr != nil {
 				return fmt.Errorf("routes: persist tun_dns: %v; rollback: %w", err, rbErr)
@@ -223,6 +274,8 @@ func (w *WindowsApplier) ApplyTunnel(p *Plan) error {
 			return fmt.Errorf("routes: persist tun_dns: %w", err)
 		}
 		crashAfter("tun_dns")
+	} else {
+		return fmt.Errorf("routes: dns_servers required on tunnel")
 	}
 
 	// Physical IPv6: disable on every captured active egress IF; record exact prior state.
@@ -264,44 +317,188 @@ func (w *WindowsApplier) ApplyTunnel(p *Plan) error {
 		crashAfter("ipv6")
 	}
 
-	// Default via VPN (skipped for isolated gate transactions).
+	// Full-tunnel IPv4 via split defaults (0.0.0.0/1 + 128.0.0.0/1) bound to Wintun.
+	// Skipped only for isolated gate transactions that must not replace the host default.
 	if w.SkipDefaultVPN {
 		w.journal.Phase = "tunnel"
+		p.DefaultViaTUN = true
+		p.Gate.RoutesApplied = true
 		return w.persist()
 	}
-	mutDef := recoverylog.Mutation{
-		ID:         "default-vpn",
-		Kind:       "default_vpn",
-		DestPrefix: "0.0.0.0/0",
-		NextHop:    p.TunGateway.String(),
-		Metric:     1,
-	}
-	w.journal.Pending = &mutDef
-	if err := w.persist(); err != nil {
-		w.journal.Pending = nil
+	if p.TunIfIndex == 0 || p.TunLUID == 0 || !p.TunGateway.IsValid() {
 		_ = w.rollbackLocked(p)
-		return fmt.Errorf("routes: persist default_vpn pending: %w", err)
+		return fmt.Errorf("routes: tunnel ifIndex/LUID/gateway required before full-tunnel routes")
 	}
-	pfx := netip.MustParsePrefix("0.0.0.0/0")
-	spec := winnet.RouteSpec{Destination: pfx, NextHop: p.TunGateway, Metric: 1}
-	if err := winnet.AddRoute(spec); err != nil {
-		if err2 := run("route", "add", "0.0.0.0", "mask", "0.0.0.0", p.TunGateway.String(), "metric", "1"); err2 != nil {
+	// On-link next hop (0.0.0.0) bound to Wintun — WireGuard-style split default.
+	// Using TunGateway without ensuring on-link reachability is a common silent failure mode.
+	onLink := netip.IPv4Unspecified()
+	for _, dest := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
+		pfx := netip.MustParsePrefix(dest)
+		mutDef := recoverylog.Mutation{
+			ID:         "default-vpn-" + dest,
+			Kind:       "default_vpn",
+			DestPrefix: dest,
+			NextHop:    onLink.String(),
+			IfIndex:    p.TunIfIndex,
+			IfLUID:     p.TunLUID,
+			Metric:     1,
+		}
+		w.journal.Pending = &mutDef
+		if err := w.persist(); err != nil {
 			w.journal.Pending = nil
 			_ = w.rollbackLocked(p)
-			return fmt.Errorf("routes: default via TUN: %v / %v", err, err2)
+			return fmt.Errorf("routes: persist default_vpn pending %s: %w", dest, err)
 		}
+		spec := winnet.RouteSpec{
+			Destination:    pfx,
+			NextHop:        onLink,
+			InterfaceIndex: p.TunIfIndex,
+			InterfaceLUID:  p.TunLUID,
+			Metric:         1,
+		}
+		if err := winnet.AddRoute(spec); err != nil {
+			mask := cidrMask(pfx.Bits())
+			if err2 := run("route", "add", pfx.Addr().String(), "mask", mask, onLink.String(), "metric", "1", "if", strconv.Itoa(int(p.TunIfIndex))); err2 != nil {
+				w.journal.Pending = nil
+				_ = w.rollbackLocked(p)
+				diag.Error("ROUTE", "add_failed", dest+" "+err.Error())
+				return fmt.Errorf("routes: full-tunnel %s via TUN: %v / %v", dest, err, err2)
+			}
+		}
+		diag.InfoFields("ROUTE", "added", map[string]string{
+			"prefix":  dest,
+			"ifIndex": strconv.Itoa(int(p.TunIfIndex)),
+			"luid":    fmt.Sprintf("%d", p.TunLUID),
+			"nexthop": onLink.String(),
+		})
+		w.journal.Pending = nil
+		w.journal.Applied = append(w.journal.Applied, mutDef)
+		if err := w.persist(); err != nil {
+			if rbErr := w.rollbackLocked(p); rbErr != nil {
+				return fmt.Errorf("routes: persist default_vpn %s: %v; rollback: %w", dest, err, rbErr)
+			}
+			return fmt.Errorf("routes: persist default_vpn %s: %w", dest, err)
+		}
+		crashAfter("default_vpn_" + dest)
 	}
-	w.journal.Pending = nil
-	w.journal.Applied = append(w.journal.Applied, mutDef)
 	p.DefaultViaTUN = true
+	p.Gate.RoutesApplied = true
 	w.journal.Phase = "tunnel"
-	if err := w.persist(); err != nil {
-		if rbErr := w.rollbackLocked(p); rbErr != nil {
-			return fmt.Errorf("routes: persist default_vpn: %v; rollback: %w", err, rbErr)
-		}
-		return fmt.Errorf("routes: persist default_vpn: %w", err)
+	return w.persist()
+}
+
+// VerifyTunnel confirms the Wintun adapter, address, split default routes, and DNS
+// are present on the OS. Connected must not be set if this fails.
+func (w *WindowsApplier) VerifyTunnel(p *Plan) error {
+	if p == nil || p.TunName == "" {
+		return fmt.Errorf("routes: verify: empty tunnel plan")
 	}
-	crashAfter("default_vpn")
+	idx, err := winnet.InterfaceIndexByAlias(p.TunName)
+	if err != nil || idx == 0 {
+		return fmt.Errorf("routes: verify: Wintun adapter %q missing: %w", p.TunName, err)
+	}
+	if p.TunIfIndex != 0 && idx != p.TunIfIndex {
+		return fmt.Errorf("routes: verify: adapter ifIndex changed %d→%d", p.TunIfIndex, idx)
+	}
+	p.Gate.AdapterOpen = true
+
+	if !p.Gate.AddressApplied || !p.TunPrefix.IsValid() {
+		return fmt.Errorf("routes: verify: tunnel address not applied")
+	}
+	wantIP := p.TunPrefix.Addr().Unmap()
+	if p.TunLUID != 0 {
+		info, found, err := winnet.FindUnicastIPv4OnLUID(p.TunLUID, wantIP)
+		if err != nil {
+			return fmt.Errorf("routes: verify: lookup unicast: %w", err)
+		}
+		if !found {
+			return fmt.Errorf("routes: verify: VPN IP %s missing on Wintun luid=%d", wantIP, p.TunLUID)
+		}
+		if info.DadState != 4 /* IpDadStatePreferred */ {
+			return fmt.Errorf("routes: verify: VPN IP %s DadState=%s want Preferred", wantIP, info.DadStateName())
+		}
+		if info.SkipAsSource {
+			return fmt.Errorf("routes: verify: VPN IP %s has SkipAsSource=true", wantIP)
+		}
+		if info.ValidLifetime == 0 || info.PreferredLifetime == 0 {
+			return fmt.Errorf("routes: verify: VPN IP %s lifetime valid=%d preferred=%d",
+				wantIP, info.ValidLifetime, info.PreferredLifetime)
+		}
+		diag.InfoFields("NETWORK", "verify_unicast", map[string]string{
+			"addr":           info.Addr.String(),
+			"dad":            info.DadStateName(),
+			"skip_as_source": "false",
+			"prefix":         strconv.Itoa(int(info.OnLinkPrefixLength)),
+		})
+	}
+	if !w.SkipDefaultVPN {
+		// Fail-closed: Windows must select the current TypeConfig VPN IP as BestSource
+		// for a new public IPv4 flow (TEST-NET-1 / documentation range).
+		probe := netip.AddrFrom4([4]byte{192, 0, 2, 1})
+		br, err := winnet.ResolveIPv4BestRoute(probe)
+		if err != nil {
+			return fmt.Errorf("routes: verify: GetBestRoute2: %w", err)
+		}
+		if br.InterfaceLUID != p.TunLUID || br.InterfaceIndex != idx {
+			return fmt.Errorf("routes: verify: BestRoute if LUID/Index %d/%d want tunnel %d/%d",
+				br.InterfaceLUID, br.InterfaceIndex, p.TunLUID, idx)
+		}
+		if !br.BestSource.IsValid() || br.BestSource.Unmap() != wantIP {
+			return fmt.Errorf("routes: verify: BestSource=%v want VPN IP %s (Windows source selection broken)",
+				br.BestSource, wantIP)
+		}
+		diag.InfoFields("NETWORK", "verify_best_source", map[string]string{
+			"dest":         probe.String(),
+			"best_source":  br.BestSource.String(),
+			"ifIndex":      strconv.Itoa(int(br.InterfaceIndex)),
+			"expected_src": wantIP.String(),
+		})
+	}
+	if !w.SkipDefaultVPN {
+		if !p.Gate.RoutesApplied || !p.DefaultViaTUN {
+			return fmt.Errorf("routes: verify: full-tunnel routes not applied")
+		}
+		onLink := netip.IPv4Unspecified()
+		for _, dest := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
+			pfx := netip.MustParsePrefix(dest)
+			ok, err := winnet.HasIPv4Route(winnet.RouteSpec{
+				Destination:    pfx,
+				NextHop:        onLink,
+				InterfaceIndex: idx,
+				InterfaceLUID:  p.TunLUID,
+				Metric:         1,
+			})
+			if err != nil {
+				return fmt.Errorf("routes: verify: lookup %s: %w", dest, err)
+			}
+			if !ok {
+				return fmt.Errorf("routes: verify: missing full-tunnel route %s on-link if=%d luid=%d", dest, idx, p.TunLUID)
+			}
+			diag.InfoFields("ROUTE", "verify_ok", map[string]string{
+				"prefix": dest, "ifIndex": strconv.Itoa(int(idx)),
+			})
+		}
+	} else {
+		p.Gate.RoutesApplied = true
+	}
+	if len(p.TunDNS) == 0 || !p.Gate.DNSApplied {
+		return fmt.Errorf("routes: verify: DNS not applied to tunnel")
+	}
+	servers, err := winnet.DNSServersOnInterface(idx)
+	if err != nil {
+		return fmt.Errorf("routes: verify: read DNS: %w", err)
+	}
+	want := p.TunDNS[0].String()
+	found := false
+	for _, s := range servers {
+		if s == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("routes: verify: DNS %s not on adapter %q (have %v)", want, p.TunName, servers)
+	}
 	return nil
 }
 
@@ -374,24 +571,53 @@ func undoMutation(m recoverylog.Mutation) error {
 			Metric:         m.Metric,
 		}
 		if err := winnet.DeleteRoute(spec); err != nil {
-			args := []string{"delete", pfx.Addr().String()}
-			if pfx.Bits() == 0 {
-				args = []string{"delete", "0.0.0.0", "mask", "0.0.0.0", nh.String()}
-			} else {
-				args = append(args, "mask", "255.255.255.255", nh.String())
+			mask := cidrMask(pfx.Bits())
+			args := []string{"delete", pfx.Addr().String(), "mask", mask, nh.String()}
+			if m.IfIndex != 0 {
+				args = append(args, "if", strconv.FormatUint(uint64(m.IfIndex), 10))
 			}
-			return run("route", args...)
+			if err2 := run("route", args...); err2 != nil {
+				// Already absent is clean for recovery (adapter/route torn down).
+				msg := strings.ToLower(err2.Error())
+				if strings.Contains(msg, "not found") || strings.Contains(msg, "element not found") ||
+					strings.Contains(msg, "cannot find") || strings.Contains(msg, "the route deletion") {
+					return nil
+				}
+				return err2
+			}
 		}
 		return nil
 	case "tun_dns":
-		return run("netsh", "interface", "ip", "delete", "dns", "name="+m.TunName, "all")
+		return winnet.ClearDNSServersOnAlias(m.TunName)
 	case "tun_addr":
-		return run("netsh", "interface", "ip", "set", "address", "name="+m.TunName, "dhcp")
+		if m.TunName != "" {
+			ok, err := winnet.AdapterExistsByAlias(m.TunName)
+			if err == nil && !ok {
+				return nil // adapter already gone
+			}
+		}
+		if err := run("netsh", "interface", "ip", "set", "address", "name="+m.TunName, "dhcp"); err != nil {
+			msg := strings.ToLower(err.Error())
+			if strings.Contains(msg, "no such") || strings.Contains(msg, "not found") ||
+				strings.Contains(msg, "file not found") || strings.Contains(msg, "element not found") {
+				return nil
+			}
+			return err
+		}
+		return nil
 	case "ipv6_set":
 		if m.IPv6WasEnabled == nil || m.IPv6IfIndex == 0 {
 			return nil
 		}
-		return winnet.SetIPv6Enabled(m.IPv6IfIndex, *m.IPv6WasEnabled)
+		if err := winnet.SetIPv6Enabled(m.IPv6IfIndex, *m.IPv6WasEnabled); err != nil {
+			msg := strings.ToLower(err.Error())
+			if strings.Contains(msg, "no adapter") || strings.Contains(msg, "not found") ||
+				strings.Contains(msg, "objectnotfound") {
+				return nil
+			}
+			return err
+		}
+		return nil
 	default:
 		return nil
 	}

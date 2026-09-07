@@ -21,6 +21,13 @@ const (
 	// isolated network transaction kept until Disconnect/SCM Stop.
 	TypeGateApplyIsolated = "gate_apply_isolated"
 	TypeGateClear         = "gate_clear"
+
+	// Diagnostic log stream (ring buffer in service).
+	TypeGetLogs         = "get_logs"
+	TypeSubscribeLogs   = "subscribe_logs"
+	TypeUnsubscribeLogs = "unsubscribe_logs"
+	TypeLogsSnapshot    = "logs_snapshot"
+	TypeLogEvent        = "log_event"
 )
 
 // Envelope is the versioned pipe frame.
@@ -68,14 +75,44 @@ type AccessTicketResponse struct {
 }
 
 // StatusSnapshot is authoritative Service state for GUI mirroring.
+// Telemetry fields (vpn_ip, bytes, connected_at) are read-only GUI mirrors —
+// they do not alter the data plane.
 type StatusSnapshot struct {
 	Envelope
-	State      string `json:"state"`
-	LocationID string `json:"location_id,omitempty"`
-	NodeID     string `json:"node_id,omitempty"`
-	Transport  string `json:"transport,omitempty"`
-	LastError  string `json:"last_error,omitempty"`
-	ClientVer  string `json:"client_version,omitempty"`
-	CoreVer    string `json:"core_version,omitempty"`
-	Protocol   string `json:"protocol,omitempty"`
+	State            string   `json:"state"`
+	LocationID       string   `json:"location_id,omitempty"`
+	NodeID           string   `json:"node_id,omitempty"`
+	Transport        string   `json:"transport,omitempty"`
+	LastError        string   `json:"last_error,omitempty"`
+	ClientVer        string   `json:"client_version,omitempty"`
+	CoreVer          string   `json:"core_version,omitempty"`
+	Protocol         string   `json:"protocol,omitempty"`
+	VpnIP            string   `json:"vpn_ip,omitempty"`
+	DNSServers       []string `json:"dns_servers,omitempty"`
+	ConnectedAtUnix  int64    `json:"connected_at_unix,omitempty"`
+	TxBytes          uint64   `json:"tx_bytes,omitempty"`
+	RxBytes          uint64   `json:"rx_bytes,omitempty"`
+	EffectiveMTU     int      `json:"effective_mtu,omitempty"`
+}
+
+// LogLine is one diagnostic event for GUI (pre-formatted + structured fields).
+type LogLine struct {
+	Time      string `json:"time"`
+	Level     string `json:"level"`
+	Component string `json:"component"`
+	Event     string `json:"event"`
+	Message   string `json:"message,omitempty"`
+	Line      string `json:"line"`
+}
+
+// LogsSnapshot is the backlog reply to get_logs / subscribe_logs.
+type LogsSnapshot struct {
+	Envelope
+	Entries []LogLine `json:"entries"`
+}
+
+// LogEventMessage is a live diagnostic line pushed to subscribed GUI clients.
+type LogEventMessage struct {
+	Envelope
+	Entry LogLine `json:"entry"`
 }

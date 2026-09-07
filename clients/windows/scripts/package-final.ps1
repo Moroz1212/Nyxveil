@@ -1,9 +1,9 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Build Nyxveil Windows Client 1.0.0 FINAL artifacts:
-    Nyxveil-Setup-v1.0.0.exe
-    Nyxveil-Windows-Client-v1.0.0-FINAL.zip
+  Build Nyxveil Windows Client FINAL artifacts from VERSION:
+    Nyxveil-Setup-v{VERSION}.exe
+    Nyxveil-Windows-Client-v{VERSION}-FINAL.zip
 #>
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -16,12 +16,21 @@ $ZipOut = Join-Path $Dist "Nyxveil-Windows-Client-v$Ver-FINAL.zip"
 $SetupOut = Join-Path $Dist "Nyxveil-Setup-v$Ver.exe"
 $ExpectedFrozen = "7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b"
 
+# Never overwrite previously shipped installers.
+foreach ($keep in @("1.0.1","1.0.2","1.0.3","1.0.4","1.0.5","1.0.6","1.0.7","1.0.8","1.0.9","1.0.10","1.0.11","1.1.0")) {
+  $PrevSetup = Join-Path $Dist "Nyxveil-Setup-v$keep.exe"
+  if ($Ver -ne $keep -and (Test-Path $PrevSetup)) {
+    Write-Host "Keeping prior artifact: $PrevSetup"
+  }
+}
+
 Write-Host "==> Assert Frozen Core + Wintun"
 & (Join-Path $Root "scripts\assert-frozen-core.ps1")
 & (Join-Path $Root "scripts\assert-wintun.ps1")
 
 Write-Host "==> Clean"
 Remove-Item -Recurse -Force $Payload, $Stage -ErrorAction SilentlyContinue
+# Only remove the Setup for *this* VERSION — keep Nyxveil-Setup-v1.0.1.exe etc.
 Remove-Item -Force $ZipOut, $SetupOut -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Payload | Out-Null
 
@@ -80,6 +89,15 @@ if (-not $iscc) { throw "ISCC.exe not found" }
 & $iscc (Join-Path $Root "installer\nyxveil.iss")
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 if (-not (Test-Path $SetupOut)) { throw "Setup EXE missing: $SetupOut" }
+
+Write-Host "==> Installer provenance (byte-for-byte)"
+& (Join-Path $Root "scripts\assert-installer-provenance.ps1") `
+  -SetupExe $SetupOut `
+  -ExpectedServiceExe (Join-Path $Payload "Nyxveil.Service.exe") `
+  -ExpectedGuiExe (Join-Path $Payload "gui\Nyxveil.exe") `
+  -ExpectedWintunDll (Join-Path $Payload "wintun.dll") `
+  -ExpectedVersionFile (Join-Path $Root "VERSION")
+if ($LASTEXITCODE -ne 0) { throw "installer provenance failed" }
 
 Write-Host "==> Stage tree (Frozen third_party/nvp + sources)"
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null

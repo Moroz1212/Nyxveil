@@ -37,11 +37,11 @@ $Required = @(
   "INSTALL", "SCM_LOCALSYSTEM", "SERVICE_PIPE_READY", "QUOTED_SERVICE_PATH",
   "NORMAL_USER_PIPE", "OTHER_USER_REJECT", "ADMIN_PIPE",
   "AUTHORIZED_SID_FILE_ACL", "PROGRAMDATA_DIR_ACL", "ORIGINAL_USER_SID",
-  "WINTUN_REAL", "WINTUN_SIGNATURE",
+  "WINTUN_REAL", "WINTUN_SIGNATURE", "FULL_TUNNEL_ROUTES_REAL", "DATAPLANE_SOAK_10S",
   "ROUTES_REAL_WINDOWS", "DNS_REAL_WINDOWS", "IPV6_REAL_WINDOWS", "SCM_STOP_RESTORE",
   "CRASH_RECOVERY", "GUI_NON_ELEVATED", "POSTINSTALL_RUNASORIGINALUSER", "INSTALLER_ROLLBACK",
   "RECONNECT_DISCONNECT_RACES", "UNINSTALL", "REINSTALL", "FROZEN_SELF_CONTAINED", "SETUP_HASH",
-  "LOCAL_GROUPS_SID_SAFE"
+  "INSTALLER_PROVENANCE", "LOCAL_GROUPS_SID_SAFE"
 )
 
 function Set-Gate([string]$Name, [string]$Status, [string]$Detail = "") {
@@ -195,13 +195,24 @@ function Get-Sid([string]$Name) {
   (New-Object System.Security.Principal.NTAccount($Name)).Translate([System.Security.Principal.SecurityIdentifier]).Value
 }
 
+function Resolve-GoExe {
+  $candidates = @(
+    (Get-Command go -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
+    "C:\Program Files\Go\bin\go.exe",
+    (Join-Path $env:USERPROFILE "go\bin\go.exe")
+  ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+  if (-not $candidates) { throw "go.exe not found on PATH or standard install locations" }
+  return $candidates
+}
+
 function Invoke-GoProcess {
   param(
     [Parameter(Mandatory = $true)][string]$WorkingDirectory,
     [Parameter(Mandatory = $true)][string[]]$ArgumentList
   )
+  $goExe = Resolve-GoExe
   $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = "go"
+  $psi.FileName = $goExe
   $psi.Arguments = ($ArgumentList | ForEach-Object {
     if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
   }) -join " "
@@ -210,6 +221,11 @@ function Invoke-GoProcess {
   $psi.RedirectStandardOutput = $true
   $psi.RedirectStandardError = $true
   $psi.CreateNoWindow = $true
+  # Elevated sessions sometimes inherit a stripped PATH; keep Go discoverable for child tools.
+  $goDir = Split-Path -Parent $goExe
+  if ($psi.EnvironmentVariables.ContainsKey("PATH")) {
+    $psi.EnvironmentVariables["PATH"] = ($goDir + ";" + $psi.EnvironmentVariables["PATH"])
+  }
   $p = New-Object System.Diagnostics.Process
   $p.StartInfo = $psi
   $null = $p.Start()
@@ -426,8 +442,13 @@ if (-not (Test-Path $Setup)) { throw "Setup missing" }
 $engineDir = Join-Path $Root "engine"
 
 # --- Named unit gates (prove tests ran via go test -json) ---
-$goAll = Invoke-GoProcess -WorkingDirectory $engineDir -ArgumentList @("test", "./...", "-count=1")
-if ($goAll.ExitCode -eq 0) { Set-Gate "GO_TEST" "PASS" } else { Set-Gate "GO_TEST" "FAIL" ("exit={0}" -f $goAll.ExitCode) }
+$goAll = Invoke-GoProcess -WorkingDirectory $engineDir -ArgumentList @("test", "./...", "-count=1", "-timeout", "180s")
+if ($goAll.ExitCode -eq 0) {
+  Set-Gate "GO_TEST" "PASS"
+} else {
+  $snip = (($goAll.StdErr + "`n" + $goAll.StdOut) -split "`r?`n" | Where-Object { $_ -match "FAIL|Error|panic|---" } | Select-Object -First 12) -join " | "
+  Set-Gate "GO_TEST" "FAIL" ("exit={0} detail={1}" -f $goAll.ExitCode, $snip)
+}
 
 $goVet = Invoke-GoProcess -WorkingDirectory $engineDir -ArgumentList @("vet", "./...")
 if ($goVet.ExitCode -eq 0) { Set-Gate "GO_VET" "PASS" } else { Set-Gate "GO_VET" "FAIL" ("exit={0}" -f $goVet.ExitCode) }
@@ -545,6 +566,18 @@ $want = ($line -split '\s+')[0].ToLowerInvariant()
 $got = (Get-FileHash $Setup -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($want -eq $got) { Set-Gate "SETUP_HASH" "PASS" } else { Set-Gate "SETUP_HASH" "FAIL" ("want={0} got={1}" -f $want, $got) }
 
+# Sidecar attestation written here; INSTALLER_PROVENANCE is decided after install hash compare.
+try {
+  & (Join-Path $Root "scripts\assert-installer-provenance.ps1") `
+    -SetupExe $Setup `
+    -ExpectedServiceExe (Join-Path $Dist "payload\Nyxveil.Service.exe") `
+    -ExpectedGuiExe (Join-Path $Dist "payload\gui\Nyxveil.exe") `
+    -ExpectedWintunDll (Join-Path $Dist "payload\wintun.dll") `
+    -ExpectedVersionFile (Join-Path $Root "VERSION")
+} catch {
+  Set-Gate "INSTALLER_PROVENANCE" "FAIL" ("pre-install: " + $_.Exception.Message)
+}
+
 # --- Users: A temporarily Administrators so silent Highest install models UAC original-user ---
 $UserA = New-TempUser "NvA"
 $UserB = New-TempUser "NvB"
@@ -599,6 +632,20 @@ if ($instExit -eq 0 -and (Test-Path $Bin) -and (Wait-Svc "Running" 60)) {
   Remove-LocalGroupMember -Group $AdminsGroup -Member $UserA.Name -ErrorAction SilentlyContinue
   Remove-TempUsers
   throw "install failed"
+}
+
+try {
+  & (Join-Path $Root "scripts\assert-installer-provenance.ps1") `
+    -SetupExe $Setup `
+    -ExpectedServiceExe (Join-Path $Dist "payload\Nyxveil.Service.exe") `
+    -ExpectedGuiExe (Join-Path $Dist "payload\gui\Nyxveil.exe") `
+    -ExpectedWintunDll (Join-Path $Dist "payload\wintun.dll") `
+    -ExpectedVersionFile (Join-Path $Root "VERSION") `
+    -InstalledDir $InstallDir
+  Set-Gate "INSTALLER_PROVENANCE" "PASS" ("installed=" + (Get-FileHash $Bin -Algorithm SHA256).Hash)
+} catch {
+  Set-Gate "INSTALLER_PROVENANCE" "FAIL" $_.Exception.Message
+  throw
 }
 
 # Demote A to ordinary user for pipe/GUI tests
@@ -898,6 +945,15 @@ if ($n.ExitCode -eq 0) {
 } else {
   Set-Gate "ROUTES_REAL_WINDOWS" "FAIL" ("exit={0} err={1}" -f $n.ExitCode, $n.StdErr.Trim())
   Set-Gate "DNS_REAL_WINDOWS" "FAIL" ("exit={0} err={1}" -f $n.ExitCode, $n.StdErr.Trim())
+}
+
+$ft = Invoke-Native $Bin @("-gate-full-tunnel")
+if ($ft.ExitCode -eq 0 -and $ft.StdOut -match "GATE_FULL_TUNNEL_OK" -and $ft.StdOut -match "GATE_DATAPLANE_SOAK_OK") {
+  Set-Gate "FULL_TUNNEL_ROUTES_REAL" "PASS" $ft.StdOut.Trim()
+  Set-Gate "DATAPLANE_SOAK_10S" "PASS" $ft.StdOut.Trim()
+} else {
+  Set-Gate "FULL_TUNNEL_ROUTES_REAL" "FAIL" ("exit={0} err={1} out={2}" -f $ft.ExitCode, $ft.StdErr.Trim(), $ft.StdOut.Trim())
+  Set-Gate "DATAPLANE_SOAK_10S" "FAIL" ("exit={0} err={1} out={2}" -f $ft.ExitCode, $ft.StdErr.Trim(), $ft.StdOut.Trim())
 }
 
 $i = Invoke-Native $Bin @("-gate-ipv6")

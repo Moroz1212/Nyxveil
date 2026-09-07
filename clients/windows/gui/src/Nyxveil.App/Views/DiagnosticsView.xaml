@@ -1,0 +1,71 @@
+<UserControl x:Class="Nyxveil.App.Views.DiagnosticsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <ScrollViewer Padding="16" VerticalScrollBarVisibility="Auto">
+    <StackPanel>
+      <DockPanel Margin="0,0,0,16">
+        <Button Content="← Назад" Style="{StaticResource GhostButton}" Click="Back_OnClick"/>
+        <TextBlock Text="Диагностика" FontSize="20" FontWeight="SemiBold" Foreground="{StaticResource FgPrimary}"
+                   Margin="12,0,0,0" VerticalAlignment="Center"/>
+      </DockPanel>
+      <Border Style="{StaticResource GlassCard}" Margin="0,0,0,8">
+        <Grid>
+          <TextBlock Text="Service" Foreground="{StaticResource FgMuted}"/>
+          <TextBlock Text="{Binding Diagnostics.Service}" HorizontalAlignment="Right" Foreground="{StaticResource FgPrimary}"/>
+        </Grid>
+      </Border>
+      <Border Style="{StaticResource GlassCard}" Margin="0,0,0,8">
+        <Grid>
+          <TextBlock Text="Control Plane" Foreground="{StaticResource FgMuted}"/>
+          <TextBlock Text="{Binding Diagnostics.ControlPlane}" HorizontalAlignment="Right" Foreground="{StaticResource FgPrimary}"/>
+        </Grid>
+      </Border>
+      <Border Style="{StaticResource GlassCard}" Margin="0,0,0,8">
+        <Grid>
+          <TextBlock Text="Catalog" Foreground="{StaticResource FgMuted}"/>
+          <TextBlock Text="{Binding Diagnostics.Catalog}" HorizontalAlignment="Right" Foreground="{StaticResource FgPrimary}"/>
+        </Grid>
+      </Border>
+      <Border Style="{StaticResource GlassCard}" Margin="0,0,0,8">
+        <Grid>
+          <TextBlock Text="Authentication" Foreground="{StaticResource FgMuted}"/>
+          <TextBlock Text="{Binding Diagnostics.Auth}" HorizontalAlignment="Right" Foreground="{StaticResource FgPrimary}"/>
+        </Grid>
+      </Border>
+      <Border Style="{StaticResource GlassCard}" Margin="0,0,0,8">
+        <Grid>
+          <TextBlock Text="Transport" Foreground="{StaticResource FgMuted}"/>
+          <TextBlock Text="{Binding Diagnostics.Transport}" HorizontalAlignment="Right" Foreground="{StaticResource FgPrimary}"/>
+        </Grid>
+      </Border>
+      <Border Style="{StaticResource GlassCard}" Margin="0,0,0,8">
+        <Grid>
+          <TextBlock Text="Tunnel adapter" Foreground="{StaticResource FgMuted}"/>
+          <TextBlock Text="{Binding Diagnostics.Tunnel}" HorizontalAlignment="Right" Foreground="{StaticResource FgPrimary}"/>
+        </Grid>
+      </Border>
+      <Border Style="{StaticResource GlassCard}" Margin="0,0,0,8">
+        <Grid>
+          <TextBlock Text="Routes" Foreground="{StaticResource FgMuted}"/>
+          <TextBlock Text="{Binding Diagnostics.Routes}" HorizontalAlignment="Right" Foreground="{StaticResource FgPrimary}"/>
+        </Grid>
+      </Border>
+      <Border Style="{StaticResource GlassCard}" Margin="0,0,0,8">
+        <Grid>
+          <TextBlock Text="DNS" Foreground="{StaticResource FgMuted}"/>
+          <TextBlock Text="{Binding Diagnostics.Dns}" HorizontalAlignment="Right" Foreground="{StaticResource FgPrimary}" TextWrapping="Wrap"/>
+        </Grid>
+      </Border>
+      <Border Style="{StaticResource GlassCard}" Margin="0,0,0,12">
+        <Grid>
+          <TextBlock Text="Data plane" Foreground="{StaticResource FgMuted}"/>
+          <TextBlock Text="{Binding Diagnostics.DataPlane}" HorizontalAlignment="Right" Foreground="{StaticResource FgPrimary}"/>
+        </Grid>
+      </Border>
+      <TextBlock Text="{Binding Diagnostics.Detail}" FontFamily="Consolas" FontSize="11"
+                 Foreground="{StaticResource FgMuted}" TextWrapping="Wrap" Margin="0,0,0,12"/>
+      <Button Content="Копировать диагностику" Style="{StaticResource GhostButton}" Margin="0,0,0,8" Click="Copy_OnClick"/>
+      <Button Content="Открыть папку логов" Style="{StaticResource GhostButton}" Click="OpenLogs_OnClick"/>
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

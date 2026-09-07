@@ -7,7 +7,7 @@
     <UseWPF>true</UseWPF>
     <RootNamespace>Nyxveil.App</RootNamespace>
     <AssemblyName>Nyxveil</AssemblyName>
-    <Version>1.0.0</Version>
+    <Version>1.1.1</Version>
     <ApplicationIcon />
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
@@ -16,5 +16,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Nyxveil.Client.Core\Nyxveil.Client.Core.csproj" />
     <ProjectReference Include="..\Nyxveil.Client.Ipc\Nyxveil.Client.Ipc.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\Backgrounds\hero.png" />
+    <Resource Include="Assets\Backgrounds\reference.png" />
   </ItemGroup>
 </Project>

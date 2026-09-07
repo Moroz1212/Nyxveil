@@ -28,7 +28,7 @@ install_wrappers() {
       cat > "${LINK_DIR}/serv_update_bootstrap" <<EOF
 #!/usr/bin/env bash
 # Legacy в‰¤1.0.4: replace ONLY nyxveilctl from signed release, then full update.
-exec ${CTL} bootstrap-cli --version "\${NYXVEIL_BOOTSTRAP_VERSION:-1.1.6}" --then-update "\$@"
+exec ${CTL} bootstrap-cli --version "\${NYXVEIL_BOOTSTRAP_VERSION:-1.1.7}" --then-update "\$@"
 EOF
       chmod 0755 "${LINK_DIR}/serv_update_bootstrap"
       continue

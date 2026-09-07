@@ -1,0 +1,56 @@
+<UserControl x:Class="Nyxveil.App.Views.LogsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             UseLayoutRounding="True" SnapsToDevicePixels="True"
+             TextOptions.TextFormattingMode="Display">
+  <Grid Margin="16">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <DockPanel Grid.Row="0" Margin="0,0,0,12">
+      <Button Content="← Назад" Style="{StaticResource GhostButton}" Click="Back_OnClick" DockPanel.Dock="Left"/>
+      <TextBlock Text="Логи" FontSize="20" FontWeight="SemiBold" Foreground="{StaticResource FgPrimary}"
+                 Margin="12,0,0,0" VerticalAlignment="Center"/>
+    </DockPanel>
+
+    <Grid Grid.Row="1" Margin="0,0,0,10">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <TextBox Text="{Binding Logs.Filter, UpdateSourceTrigger=PropertyChanged}"
+               Padding="10,8" Margin="0,0,8,0"/>
+      <ComboBox Grid.Column="1" Width="100"
+                SelectedValue="{Binding Logs.Severity}"
+                SelectedValuePath="Content">
+        <ComboBoxItem Content="ALL"/>
+        <ComboBoxItem Content="INFO"/>
+        <ComboBoxItem Content="WARN"/>
+        <ComboBoxItem Content="ERROR"/>
+      </ComboBox>
+    </Grid>
+
+    <Border Grid.Row="2" Style="{StaticResource GlassCard}" Padding="8">
+      <ScrollViewer x:Name="LogsScroll" VerticalScrollBarVisibility="Auto"
+                    HorizontalScrollBarVisibility="Auto">
+        <TextBox Text="{Binding Logs.VisibleText, Mode=OneWay}"
+                 IsReadOnly="True" TextWrapping="NoWrap"
+                 FontFamily="Consolas" FontSize="11"
+                 Background="Transparent" BorderThickness="0"
+                 Foreground="{StaticResource FgSecondary}"
+                 AcceptsReturn="True"/>
+      </ScrollViewer>
+    </Border>
+
+    <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,10,0,0">
+      <Button Content="Копировать" Style="{StaticResource GhostButton}" Margin="0,0,8,0" Click="Copy_OnClick"/>
+      <Button Content="Очистить вид" Style="{StaticResource GhostButton}" Margin="0,0,8,0" Click="Clear_OnClick"/>
+      <Button Content="Папка логов" Style="{StaticResource GhostButton}" Margin="0,0,8,0" Click="Folder_OnClick"/>
+      <CheckBox Content="Автопрокрутка" IsChecked="{Binding Logs.AutoScroll}" VerticalAlignment="Center"/>
+    </StackPanel>
+  </Grid>
+</UserControl>

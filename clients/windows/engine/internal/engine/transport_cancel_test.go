@@ -1,4 +1,4 @@
-package engine_test
+﻿package engine_test
 
 import (
 	"context"
@@ -138,7 +138,7 @@ func TestConnectCancelDuringTypeConfig(t *testing.T) {
 			},
 		},
 		SessionOpener: func(ctx context.Context, _ model.Catalog, _ engine.ConnectRequest) (*session.Session, transport.Conn, model.NodeRegistryEntry, error) {
-			return session.New(session.DefaultConfig(true)), nopConn{}, model.NodeRegistryEntry{NodeID: "a"}, nil
+			return openTestSession(ctx, "a", "")
 		},
 	})
 	go func() { _ = mgr.Connect(context.Background(), connectReq(raw, keys, dpriv)) }()
@@ -162,7 +162,7 @@ func TestConnectCancelDuringTUN(t *testing.T) {
 			}, nil
 		},
 		SessionOpener: func(ctx context.Context, _ model.Catalog, _ engine.ConnectRequest) (*session.Session, transport.Conn, model.NodeRegistryEntry, error) {
-			return session.New(session.DefaultConfig(true)), nopConn{}, model.NodeRegistryEntry{NodeID: "a"}, nil
+			return openTestSession(ctx, "a", "")
 		},
 	})
 	go func() { _ = mgr.Connect(context.Background(), connectReq(raw, keys, dpriv)) }()
@@ -187,7 +187,7 @@ func TestDisconnectRestoresRoutesAfterConnectTeardown(t *testing.T) {
 			}, nil
 		},
 		SessionOpener: func(ctx context.Context, _ model.Catalog, _ engine.ConnectRequest) (*session.Session, transport.Conn, model.NodeRegistryEntry, error) {
-			return session.New(session.DefaultConfig(true)), nopConn{}, model.NodeRegistryEntry{NodeID: "a"}, nil
+			return openTestSession(ctx, "a", "")
 		},
 	})
 	if err := mgr.Connect(context.Background(), connectReq(raw, keys, dpriv)); err != nil {
@@ -240,14 +240,28 @@ func (instantTUN) Open(ctx context.Context, _ tunnel.Config) (tunnel.Device, err
 
 type nopConn struct{}
 
-func (nopConn) Read(context.Context) ([]byte, error)          { return nil, context.Canceled }
-func (nopConn) Write(context.Context, []byte) error           { return nil }
-func (nopConn) Close() error                                  { return nil }
-func (nopConn) LocalAddr() net.Addr                           { return &net.TCPAddr{} }
-func (nopConn) RemoteAddr() net.Addr                          { return &net.TCPAddr{} }
-func (nopConn) Profile() transport.Profile                    { return transport.ProfileTLSTCP }
-func (nopConn) SetReadDeadline(time.Time) error               { return nil }
-func (nopConn) SetWriteDeadline(time.Time) error              { return nil }
+func (nopConn) Read(ctx context.Context) ([]byte, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (nopConn) Write(context.Context, []byte) error { return nil }
+func (nopConn) Close() error                        { return nil }
+func (nopConn) LocalAddr() net.Addr                 { return &net.TCPAddr{} }
+func (nopConn) RemoteAddr() net.Addr                { return &net.TCPAddr{} }
+func (nopConn) Profile() transport.Profile          { return transport.ProfileTLSTCP }
+func (nopConn) SetReadDeadline(time.Time) error     { return nil }
+func (nopConn) SetWriteDeadline(time.Time) error    { return nil }
+
+// openTestSession returns a Session with conn bound (required now that Connect arms
+// ReadLoop before ApplyTunnel). Skips AUTH/handshake for unit tests.
+func openTestSession(ctx context.Context, nodeID, loc string) (*session.Session, transport.Conn, model.NodeRegistryEntry, error) {
+	conn := nopConn{}
+	sess := session.New(session.DefaultConfig(true))
+	if err := sess.Connect(ctx, conn); err != nil {
+		return nil, nil, model.NodeRegistryEntry{}, err
+	}
+	return sess, conn, model.NodeRegistryEntry{NodeID: nodeID, LocationID: loc}, nil
+}
 
 type nopDevice struct{}
 

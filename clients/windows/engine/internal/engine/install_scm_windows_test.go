@@ -57,6 +57,9 @@ func TestFinalizeSCMFailAfterLeavesNoOrphan(t *testing.T) {
 
 func TestUninstallNetworkCleanupIdempotent(t *testing.T) {
 	if err := engine.UninstallNetworkCleanup(); err != nil {
+		if !isElevated() && (os.IsPermission(err) || strings.Contains(strings.ToLower(err.Error()), "access is denied")) {
+			t.Skipf("requires elevation to touch ProgramData journal: %v", err)
+		}
 		t.Fatal(err)
 	}
 }

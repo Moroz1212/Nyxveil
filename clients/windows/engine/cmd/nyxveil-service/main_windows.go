@@ -15,18 +15,21 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/nyxveil/client-windows/internal/diag"
 	"github.com/nyxveil/client-windows/internal/engine"
 	"github.com/nyxveil/client-windows/internal/ipc"
+	"github.com/nyxveil/client-windows/internal/state"
 	"github.com/nyxveil/client-windows/internal/ticketbroker"
 	"golang.org/x/sys/windows/svc"
 )
 
 const (
 	serviceName     = "NyxveilClientService"
-	clientVer       = "1.0.0"
+	clientVer       = "1.1.1"
 	coreVer         = "1.0.0"
 	ticketWaitLimit = 2 * time.Minute
 )
@@ -46,6 +49,7 @@ func main() {
 	uninstallRecover := flag.Bool("uninstall-network-cleanup", false, "elevated uninstall: recover journal before ProgramData delete")
 	gateWintun := flag.Bool("gate-wintun", false, "elevated gate: open/close temporary Wintun adapter")
 	gateNet := flag.Bool("gate-net-tx", false, "elevated gate: isolated route/DNS transaction")
+	gateFullTunnel := flag.Bool("gate-full-tunnel", false, "elevated gate: production 0.0.0.0/1+128.0.0.0/1 on Wintun")
 	gateIPv6 := flag.Bool("gate-ipv6", false, "elevated gate: IPv6 mutate/restore round-trip")
 	gateCrash := flag.String("gate-crash-after", "", "elevated gate: apply step then exit 99 (bypass|tun_addr|tun_dns|ipv6|default_vpn)")
 	gateClean := flag.Bool("gate-verify-clean", false, "elevated gate: RecoverOnStartup + assert no stale gate routes")
@@ -113,6 +117,12 @@ func main() {
 	if *gateNet {
 		if err := engine.RunGateNetTransaction(); err != nil {
 			log.Fatalf("gate-net-tx: %v", err)
+		}
+		return
+	}
+	if *gateFullTunnel {
+		if err := engine.RunGateFullTunnelRoutes(); err != nil {
+			log.Fatalf("gate-full-tunnel: %v", err)
 		}
 		return
 	}
@@ -229,7 +239,15 @@ type serviceRuntime struct {
 	lifecycle *engine.LifecycleMonitor
 }
 
+type pipeClient struct {
+	ch       chan []byte
+	wantLogs atomic.Bool
+}
+
 func newServiceRuntime(pipeName, caFile string) (*serviceRuntime, error) {
+	_ = diag.MustInitFile()
+	diag.Info("SERVICE", "start", "Nyxveil.Service starting ver="+clientVer)
+
 	trust := engine.NewSystemTrust()
 	if caFile != "" {
 		t, err := engine.NewTrustWithCAFile(caFile)
@@ -251,7 +269,8 @@ func newServiceRuntime(pipeName, caFile string) (*serviceRuntime, error) {
 	}
 	lc := engine.NewLifecycleMonitor(mgr)
 	lc.Start()
-	return &serviceRuntime{mgr: mgr, broker: broker, pipe: pipeName, lifecycle: lc}, nil
+	rt := &serviceRuntime{mgr: mgr, broker: broker, pipe: pipeName, lifecycle: lc}
+	return rt, nil
 }
 
 func (rt *serviceRuntime) onPowerResume() {
@@ -278,7 +297,7 @@ func (rt *serviceRuntime) shutdown() error {
 func (rt *serviceRuntime) serve(ctx context.Context) error {
 	var (
 		writersMu sync.Mutex
-		writers   = map[chan []byte]struct{}{}
+		writers   = map[*pipeClient]struct{}{}
 	)
 	broadcast := func(v any) {
 		b, err := json.Marshal(v)
@@ -288,16 +307,62 @@ func (rt *serviceRuntime) serve(ctx context.Context) error {
 		line := append(b, '\n')
 		writersMu.Lock()
 		defer writersMu.Unlock()
-		for ch := range writers {
+		for pc := range writers {
 			select {
-			case ch <- append([]byte(nil), line...):
+			case pc.ch <- append([]byte(nil), line...):
 			default:
 			}
 		}
 	}
+	broadcastLogs := func(v any) {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return
+		}
+		line := append(b, '\n')
+		writersMu.Lock()
+		defer writersMu.Unlock()
+		for pc := range writers {
+			if !pc.wantLogs.Load() {
+				continue
+			}
+			select {
+			case pc.ch <- append([]byte(nil), line...):
+			default:
+			}
+		}
+	}
+	diag.Default().SetHook(func(e diag.Event) {
+		broadcastLogs(ipc.LogEventFromDiag(e))
+	})
+	rt.mgr.OnStatusChange = func() {
+		broadcast(rt.mgr.StatusSnapshot(clientVer, coreVer))
+	}
+
+	// Read-only telemetry push while Connected so GUI can compute TX/RX rates.
+	go func() {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				st, _ := rt.mgr.State.Get()
+				if st == state.Connected {
+					broadcast(rt.mgr.StatusSnapshot(clientVer, coreVer))
+				}
+			}
+		}
+	}()
 
 	rt.mgr.RequestTicket = func(reqCtx context.Context, need ipc.NeedAccessTicket) (string, error) {
 		st, _ := rt.mgr.State.Get()
+		diag.InfoFields("RECONNECT", "need_ticket", map[string]string{
+			"location": need.DesiredLocationID,
+			"reason":   need.Reason,
+			"state":    st.String(),
+		})
 		req, err := rt.broker.Begin(need.DesiredLocationID, need.Reason, st.String())
 		if err != nil {
 			return "", err
@@ -323,6 +388,7 @@ func (rt *serviceRuntime) serve(ctx context.Context) error {
 		_ = ln.Close()
 	}()
 
+	diag.Info("IPC", "listen", "pipe="+rt.pipe)
 	log.Printf("listening on %s service=%s", rt.pipe, serviceName)
 	for {
 		conn, err := ln.Accept()
@@ -332,6 +398,7 @@ func (rt *serviceRuntime) serve(ctx context.Context) error {
 			}
 			return err
 		}
+		diag.Info("IPC", "accept", "client connected")
 		go handleConn(ctx, conn, rt.mgr, rt.broker, &writersMu, writers)
 	}
 }
@@ -357,7 +424,7 @@ func handleConn(
 	mgr *engine.Manager,
 	broker *ticketbroker.Broker,
 	writersMu *sync.Mutex,
-	writers map[chan []byte]struct{},
+	writers map[*pipeClient]struct{},
 ) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Time{})
@@ -378,19 +445,20 @@ func handleConn(
 		return w.Flush()
 	}
 
-	outCh := make(chan []byte, 16)
+	pc := &pipeClient{ch: make(chan []byte, 64)}
 	writersMu.Lock()
-	writers[outCh] = struct{}{}
+	writers[pc] = struct{}{}
 	writersMu.Unlock()
 	defer func() {
 		writersMu.Lock()
-		delete(writers, outCh)
+		delete(writers, pc)
 		writersMu.Unlock()
-		close(outCh)
+		close(pc.ch)
+		diag.Info("IPC", "disconnect", "client gone")
 	}()
 
 	go func() {
-		for line := range outCh {
+		for line := range pc.ch {
 			writeMu.Lock()
 			_, _ = w.Write(line)
 			_ = w.Flush()
@@ -419,15 +487,32 @@ func handleConn(
 			_ = writeJSON(map[string]any{"v": ipc.ProtocolVersion, "type": ipc.TypeError, "error": "bad envelope"})
 			continue
 		}
+		diag.InfoFields("IPC", "request", map[string]string{"type": env.Type, "id": env.ID})
 		switch env.Type {
 		case ipc.TypeHello, ipc.TypeStatus:
 			_ = writeJSON(mgr.StatusSnapshot(clientVer, coreVer))
+		case ipc.TypeGetLogs:
+			snap := ipc.LogsSnapshotFromRing(env.ID, diag.Default().Ring().Snapshot())
+			_ = writeJSON(snap)
+		case ipc.TypeSubscribeLogs:
+			pc.wantLogs.Store(true)
+			snap := ipc.LogsSnapshotFromRing(env.ID, diag.Default().Ring().Snapshot())
+			_ = writeJSON(snap)
+			diag.Info("IPC", "subscribe_logs", "live=on")
+		case ipc.TypeUnsubscribeLogs:
+			pc.wantLogs.Store(false)
+			diag.Info("IPC", "unsubscribe_logs", "live=off")
+			_ = writeJSON(map[string]any{"v": ipc.ProtocolVersion, "type": "ok", "id": env.ID})
 		case ipc.TypeConnect:
 			var req ipc.ConnectRequest
 			if err := json.Unmarshal(line, &req); err != nil {
 				_ = writeJSON(map[string]any{"v": ipc.ProtocolVersion, "type": ipc.TypeError, "error": err.Error()})
 				continue
 			}
+			diag.InfoFields("SESSION", "Connect requested", map[string]string{
+				"location": req.DesiredLocationID,
+				"cp_host":  req.ControlPlaneHost,
+			})
 			creq := engine.ConnectRequest{
 				DesiredLocationID: req.DesiredLocationID,
 				AccessTicket:      req.AccessTicket,
@@ -437,10 +522,12 @@ func handleConn(
 				ControlPlaneHost:  req.ControlPlaneHost,
 			}
 			if err := mgr.Connect(ctx, creq); err != nil {
+				diag.Error("SESSION", "Connect failed", err.Error())
 				_ = writeJSON(map[string]any{"v": ipc.ProtocolVersion, "type": ipc.TypeError, "id": env.ID, "error": err.Error()})
 			}
 			_ = writeJSON(mgr.StatusSnapshot(clientVer, coreVer))
 		case ipc.TypeDisconnect:
+			diag.Info("SESSION", "Disconnect requested", "")
 			broker.CancelAll()
 			_ = mgr.Disconnect(ctx)
 			_ = writeJSON(mgr.StatusSnapshot(clientVer, coreVer))
@@ -453,6 +540,7 @@ func handleConn(
 			if resp.RequestID == "" {
 				resp.RequestID = env.ID
 			}
+			diag.InfoFields("IPC", "provide_ticket", map[string]string{"request_id": resp.RequestID})
 			if err := broker.Provide(resp.RequestID, resp.AccessTicket); err != nil {
 				_ = writeJSON(map[string]any{
 					"v": ipc.ProtocolVersion, "type": ipc.TypeError,
@@ -460,6 +548,7 @@ func handleConn(
 				})
 			}
 		case ipc.TypeCancel:
+			diag.Info("SESSION", "Cancel", "")
 			broker.CancelAll()
 			_ = mgr.Disconnect(ctx)
 			_ = writeJSON(mgr.StatusSnapshot(clientVer, coreVer))

@@ -67,8 +67,11 @@ type Plan struct {
 	TunGateway netip.Addr
 	TunDNS     []netip.Addr
 	TunMTU     int
+	TunIfIndex uint32
+	TunLUID    uint64
 
 	DefaultViaTUN bool
+	Gate          DataplaneGate
 }
 
 // NewPlan returns an empty plan.
@@ -85,9 +88,15 @@ func (p *Plan) ApplyTypeConfig(tunName, vpnIP string, prefixLen int, gateway str
 	if err != nil || !ip.Is4() {
 		return fmt.Errorf("routeplan: vpn_ip: %w", err)
 	}
-	pfx, err := ip.Prefix(prefixLen)
-	if err != nil {
-		return fmt.Errorf("routeplan: vpn_prefix: %w", err)
+	if prefixLen < 0 || prefixLen > 32 {
+		return fmt.Errorf("routeplan: vpn_prefix %d", prefixLen)
+	}
+	// MUST use PrefixFrom — Addr.Prefix() masks host bits (10.66.0.21/24 → 10.66.0.0),
+	// which made netsh assign the network address while the TX filter expected the host IP
+	// (live 1.0.8: every packet dropped as spoofed_source).
+	pfx := netip.PrefixFrom(ip, prefixLen)
+	if !pfx.IsValid() {
+		return fmt.Errorf("routeplan: vpn_prefix invalid")
 	}
 	gw, err := netip.ParseAddr(gateway)
 	if err != nil || !gw.Is4() {
@@ -117,12 +126,19 @@ type RouteApplier interface {
 	Capture(p *Plan) error
 	ApplyBypass(p *Plan) error
 	ApplyTunnel(p *Plan) error
+	// VerifyTunnel fail-closed checks that ApplyTunnel actually left a usable dataplane.
+	// Connected must not be set if this returns an error.
+	VerifyTunnel(p *Plan) error
 	Restore(p *Plan) error
 }
 
-// NoopApplier records order without touching the OS (tests / pre-Wintun).
+// NoopApplier records order without touching the OS (unit tests).
+// ApplyTunnel marks the plan applied; VerifyTunnel refuses Connected unless that happened.
 type NoopApplier struct {
 	Steps []string
+	// SkipMarkApplied reproduces the pre-1.0.2 hole: ApplyTunnel returns nil
+	// without marking dataplane ready (Connected must still be refused).
+	SkipMarkApplied bool
 }
 
 func (n *NoopApplier) Capture(p *Plan) error {
@@ -135,11 +151,25 @@ func (n *NoopApplier) ApplyBypass(p *Plan) error {
 }
 func (n *NoopApplier) ApplyTunnel(p *Plan) error {
 	n.Steps = append(n.Steps, "tunnel")
+	if n.SkipMarkApplied {
+		return nil
+	}
 	p.DefaultViaTUN = true
+	p.Gate.AddressApplied = true
+	p.Gate.RoutesApplied = true
+	p.Gate.DNSApplied = true
+	return nil
+}
+func (n *NoopApplier) VerifyTunnel(p *Plan) error {
+	n.Steps = append(n.Steps, "verify")
+	if !p.DefaultViaTUN || !p.Gate.AddressApplied || !p.Gate.RoutesApplied || !p.Gate.DNSApplied {
+		return fmt.Errorf("routes: verify: network apply absent (adapter/routes/dns not confirmed)")
+	}
 	return nil
 }
 func (n *NoopApplier) Restore(p *Plan) error {
 	n.Steps = append(n.Steps, "restore")
 	p.DefaultViaTUN = false
+	p.Gate = DataplaneGate{}
 	return nil
 }

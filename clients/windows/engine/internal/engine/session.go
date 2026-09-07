@@ -6,10 +6,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/nyxveil/client-windows/internal/diag"
 	"github.com/nyxveil/client-windows/internal/ipc"
 	"github.com/nyxveil/client-windows/internal/netcfg"
 	"github.com/nyxveil/client-windows/internal/state"
@@ -87,8 +91,23 @@ type Manager struct {
 	reconnectGen     uint64 // bumped on user Disconnect/Connect; stale onSessionLost must stop
 	reconnectInFlight bool
 
+	// earlyTypeConfig buffers TypeConfig that may arrive during WaitEstablished.
+	// Server sends AUTH_OK then TypeConfig immediately; Frozen Core WaitEstablished
+	// still owns the stream reader and would otherwise drop TypeConfig when
+	// OnControl is nil (handleMessage has no TypeConfig case).
+	earlyTypeConfig chan *netcfg.Message
+	earlyTypeConfigErr chan error
+
 	lastConnect *ConnectRequest
 	lastCatalog model.Catalog
+
+	// connectedAt is set when entering Connected; zero when not connected.
+	// Used only for GUI session timer via StatusSnapshot (read-only).
+	connectedAt time.Time
+
+	// OnStatusChange is optional; Windows service uses it to push StatusSnapshot
+	// after lifecycle disconnects so the GUI cannot stay stale on "Подключено".
+	OnStatusChange func()
 }
 
 // ErrConnectInProgress is returned when a second Connect overlaps an in-flight one.
@@ -182,7 +201,9 @@ func (m *Manager) connect(ctx context.Context, req ConnectRequest, userInitiated
 	m.mu.Lock()
 	if m.sess != nil {
 		m.mu.Unlock()
-		return fmt.Errorf("engine: already connected")
+		// Idempotent Connect: session already committed. GUI double-click must not
+		// surface "already connected" as a hard error while Status stays Connected.
+		return nil
 	}
 	if m.connecting {
 		m.mu.Unlock()
@@ -205,6 +226,10 @@ func (m *Manager) connect(ctx context.Context, req ConnectRequest, userInitiated
 	cctx, cancel := context.WithCancel(ctx)
 	m.connectCancel = cancel
 	m.mu.Unlock()
+	diag.InfoFields("SESSION", "Connect start", map[string]string{
+		"location":       req.DesiredLocationID,
+		"user_initiated": fmt.Sprintf("%v", userInitiated),
+	})
 	defer func() {
 		cancel()
 		m.mu.Lock()
@@ -240,6 +265,9 @@ func (m *Manager) connect(ctx context.Context, req ConnectRequest, userInitiated
 		m.State.Fail(err.Error())
 		return fmt.Errorf("engine: catalog parse: %w", err)
 	}
+	// Tolerate small not-before skew (CP IssuedAt slightly ahead / unsynced client clock)
+	// without changing Frozen Core catalog.Verify or extending expires_at.
+	waitCatalogNotBefore(signed.Catalog.IssuedAt, 5*time.Minute)
 	if err := catalog.Verify(keys, signed); err != nil {
 		m.State.Fail(err.Error())
 		return fmt.Errorf("engine: catalog verify: %w", err)
@@ -285,10 +313,26 @@ func (m *Manager) connect(ctx context.Context, req ConnectRequest, userInitiated
 		if !errors.Is(err, ErrStaleConnect) && !errors.Is(err, context.Canceled) {
 			m.State.Fail(err.Error())
 		}
+		diag.Error("TRANSPORT", "open_failed", err.Error())
 		return err
+	}
+	diag.InfoFields("TRANSPORT", "session_open", map[string]string{
+		"node":     node.NodeID,
+		"location": node.LocationID,
+	})
+	if conn != nil {
+		ep := ""
+		if ra := conn.RemoteAddr(); ra != nil {
+			ep = ra.String()
+		}
+		diag.InfoFields("TRANSPORT", "selected", map[string]string{
+			"type":     string(conn.Profile()),
+			"endpoint": ep,
+		})
 	}
 
 	m.State.Set(state.WaitingForConfig)
+	diag.Info("STATE", "WaitingForConfig", "")
 	cfgMsg, err := m.waitTypeConfig(cctx, sess, conn)
 	if err != nil {
 		_ = sess.Close(context.Background())
@@ -299,67 +343,255 @@ func (m *Manager) connect(ctx context.Context, req ConnectRequest, userInitiated
 		}
 		return err
 	}
+	diag.InfoFields("TYPECONFIG", "received", map[string]string{
+		"vpn_ip":  cfgMsg.VPNIP,
+		"prefix":  fmt.Sprintf("%d", cfgMsg.VPNPrefix),
+		"gateway": cfgMsg.Gateway,
+		"mtu":     fmt.Sprintf("%d", cfgMsg.MTU),
+		"dns":     fmt.Sprintf("%v", cfgMsg.DNSServers),
+	})
+
+	// Local effective tunnel MTU: never apply TypeConfig MTU blindly if QUIC DATAGRAM
+	// cannot carry NVP-framed DATA of that size. TypeConfig wire value is unchanged.
+	typeConfigMTU := cfgMsg.MTU
+	effectiveMTU := typeConfigMTU
+	if maxPayload, probed, probeErr := ProbeDatagramPayloadCeiling(cctx, sess, conn); probeErr != nil {
+		diag.Warn("TRANSPORT", "datagram_probe_failed", probeErr.Error())
+	} else if probed {
+		eff, budget, calcErr := EffectiveTunnelMTU(typeConfigMTU, int(maxPayload))
+		if calcErr != nil {
+			diag.Warn("TRANSPORT", "datagram_budget_failed", calcErr.Error())
+		} else {
+			effectiveMTU = eff
+			diag.InfoFields("TRANSPORT", "transport_datagram_limit", map[string]string{
+				"max_datagram_payload": fmt.Sprintf("%d", maxPayload),
+				"typeconfig_mtu":       fmt.Sprintf("%d", typeConfigMTU),
+				"nvp_overhead":         fmt.Sprintf("%d", NVPOverheadWorstCase()),
+				"nvp_fixed_overhead":   fmt.Sprintf("%d", NVPFixedWireOverhead),
+				"nvp_max_padding":      fmt.Sprintf("%d", NVPDefaultMaxPadding),
+				"http3_prefix_max":     fmt.Sprintf("%d", HTTP3DatagramPrefixMax),
+				"max_ip_packet":        fmt.Sprintf("%d", budget.MaxIPPacket),
+				"effective_tunnel_mtu": fmt.Sprintf("%d", effectiveMTU),
+			})
+		}
+	} else {
+		diag.InfoFields("TRANSPORT", "transport_datagram_limit", map[string]string{
+			"max_datagram_payload": "n/a",
+			"typeconfig_mtu":       fmt.Sprintf("%d", typeConfigMTU),
+			"nvp_overhead":         fmt.Sprintf("%d", NVPOverheadWorstCase()),
+			"effective_tunnel_mtu": fmt.Sprintf("%d", effectiveMTU),
+			"note":                 "datagrams_disabled_or_unprobed",
+		})
+	}
 
 	m.State.Set(state.ConfiguringTunnel)
-	if err := plan.ApplyTypeConfig(tunAdapterName, cfgMsg.VPNIP, cfgMsg.VPNPrefix, cfgMsg.Gateway, cfgMsg.DNSServers, cfgMsg.MTU); err != nil {
+	diag.Info("STATE", "ConfiguringTunnel", "")
+	if err := plan.ApplyTypeConfig(tunAdapterName, cfgMsg.VPNIP, cfgMsg.VPNPrefix, cfgMsg.Gateway, cfgMsg.DNSServers, effectiveMTU); err != nil {
 		_ = sess.Close(context.Background())
 		_ = conn.Close()
 		_ = m.Routes.Restore(plan)
 		m.State.Fail(err.Error())
 		return err
 	}
+	plan.Gate.TypeConfigOK = true
 	if err := alive(); err != nil {
 		_ = sess.Close(context.Background())
 		_ = conn.Close()
 		_ = m.Routes.Restore(plan)
 		return err
+	}
+
+	// Session lifetime context — independent of connect/handshake deadlines.
+	// Must be armed BEFORE ApplyTunnel: production ApplyTunnel (netsh + PowerShell
+	// IPv6) can take seconds with no transport reader; the server may CLOSE/idle
+	// the stream, and starting ReadLoop only after Connected makes the GUI flash
+	// Connected then immediately tear down via onSessionLost.
+	runCtx, runCancel := context.WithCancel(context.Background())
+	var dataHandler atomic.Value // stores func([]byte) error
+	dataHandler.Store(func([]byte) error { return nil })
+	sess.OnData(func(pkt []byte) error {
+		h, _ := dataHandler.Load().(func([]byte) error)
+		if h == nil {
+			return nil
+		}
+		return h(pkt)
+	})
+	readErrCh := make(chan error, 1)
+	authOKAt := time.Now()
+	go func() {
+		diag.Info("TRANSPORT", "ReadLoop start", "")
+		err := sess.ReadLoop(runCtx)
+		lifetime := time.Since(authOKAt).Milliseconds()
+		diag.Error("TRANSPORT", "ReadLoop exit", fmt.Sprintf("%v", err))
+		diag.InfoFields("TRANSPORT", "close", map[string]string{
+			"local":        "false",
+			"close_source": "readloop",
+			"error":        fmt.Sprintf("%v", err),
+			"lifetime_ms":  fmt.Sprintf("%d", lifetime),
+		})
+		readErrCh <- err
+	}()
+	go func() {
+		diag.Info("TRANSPORT", "keepalive start", "")
+		err := runKeepaliveLogged(runCtx, sess)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			diag.Warn("TRANSPORT", "keepalive exit", err.Error())
+		}
+	}()
+	abortSetup := func(err error) error {
+		runCancel()
+		select {
+		case <-readErrCh:
+		case <-time.After(2 * time.Second):
+		}
+		_ = sess.Close(context.Background())
+		_ = conn.Close()
+		_ = m.Routes.Restore(plan)
+		return err
+	}
+	checkTransportAlive := func(stage string) error {
+		select {
+		case err := <-readErrCh:
+			msg := fmt.Sprintf("engine: session transport closed during %s", stage)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				msg = msg + ": " + err.Error()
+			}
+			log.Printf("%s", msg)
+			_ = abortSetup(errors.New(msg))
+			m.State.Fail(msg)
+			return errors.New(msg)
+		default:
+			return nil
+		}
 	}
 
 	if err := m.enterPhase(PhaseTUN, cctx); err != nil {
-		_ = sess.Close(context.Background())
-		_ = conn.Close()
-		_ = m.Routes.Restore(plan)
+		_ = abortSetup(err)
 		return err
 	}
-	tunDev, err := m.TUN.Open(cctx, tunnel.Config{Name: tunAdapterName, MTU: cfgMsg.MTU})
+	tunDev, err := m.TUN.Open(cctx, tunnel.Config{Name: tunAdapterName, MTU: plan.TunMTU})
 	if err != nil {
-		_ = sess.Close(context.Background())
-		_ = conn.Close()
-		_ = m.Routes.Restore(plan)
+		_ = abortSetup(err)
 		m.State.Fail(err.Error())
+		diag.Error("WINTUN", "open_failed", err.Error())
+		return err
+	}
+	if err := bindTunnelIdentity(plan, tunDev); err != nil {
+		_ = tunDev.Close()
+		_ = abortSetup(err)
+		m.State.Fail(err.Error())
+		return err
+	}
+	diag.InfoFields("WINTUN", "opened", map[string]string{
+		"name":    tunAdapterName,
+		"ifIndex": fmt.Sprintf("%d", plan.TunIfIndex),
+		"luid":    fmt.Sprintf("%d", plan.TunLUID),
+	})
+	if err := checkTransportAlive("tun_open"); err != nil {
+		_ = tunDev.Close()
 		return err
 	}
 
-	if err := m.Routes.ApplyTunnel(plan); err != nil {
+	diag.Info("NETWORK", "ApplyTunnel begin", "")
+	applyErrCh := make(chan error, 1)
+	go func() {
+		applyErrCh <- m.Routes.ApplyTunnel(plan)
+	}()
+	var applyErr error
+	select {
+	case err := <-readErrCh:
 		_ = tunDev.Close()
+		msg := "engine: session transport closed during ApplyTunnel"
+		if err != nil && !errors.Is(err, context.Canceled) {
+			msg = msg + ": " + err.Error()
+		}
+		log.Printf("%s", msg)
+		runCancel()
+		<-applyErrCh // wait applier finish/rollback path; may still error
 		_ = sess.Close(context.Background())
 		_ = conn.Close()
 		_ = m.Routes.Restore(plan)
+		m.State.Fail(msg)
+		return errors.New(msg)
+	case applyErr = <-applyErrCh:
+	}
+	if applyErr != nil {
+		_ = tunDev.Close()
+		_ = abortSetup(applyErr)
+		m.State.Fail(applyErr.Error())
+		diag.Error("NETWORK", "ApplyTunnel failed", applyErr.Error())
+		return applyErr
+	}
+	diag.Info("NETWORK", "VerifyTunnel begin", "")
+	if err := m.Routes.VerifyTunnel(plan); err != nil {
+		_ = tunDev.Close()
+		_ = abortSetup(err)
 		m.State.Fail(err.Error())
+		diag.Error("NETWORK", "VerifyTunnel FAIL", err.Error())
+		return err
+	}
+	diag.Info("NETWORK", "VerifyTunnel PASS", "")
+	// Stickiness re-check: reject ephemeral / zero-lifetime routes before Connected.
+	time.Sleep(500 * time.Millisecond)
+	if err := checkTransportAlive("stickiness"); err != nil {
+		_ = tunDev.Close()
+		return err
+	}
+	if err := m.Routes.VerifyTunnel(plan); err != nil {
+		_ = tunDev.Close()
+		_ = abortSetup(err)
+		m.State.Fail("engine: dataplane vanished after apply: " + err.Error())
+		diag.Error("NETWORK", "VerifyTunnel stickiness FAIL", err.Error())
 		return err
 	}
 	if err := alive(); err != nil {
 		_ = tunDev.Close()
-		_ = sess.Close(context.Background())
-		_ = conn.Close()
-		_ = m.Routes.Restore(plan)
+		_ = abortSetup(err)
 		return err
 	}
 
-	sess.OnData(func(pkt []byte) error {
-		_, err := tunDev.Write(pkt)
-		return err
+	var rxReceived, rxInjected, rxError atomic.Uint64
+	dataHandler.Store(func(pkt []byte) error {
+		rxReceived.Add(1)
+		n := rxReceived.Load()
+		if n <= 20 || n%100 == 0 {
+			meta := parseTunnelPacketMeta(pkt)
+			diag.InfoFields("PUMP", "rx_received", map[string]string{
+				"src":         meta.Src.String(),
+				"dst":         meta.Dst.String(),
+				"protocol":    fmt.Sprintf("%d", meta.Protocol),
+				"len":         fmt.Sprintf("%d", meta.Length),
+				"count":       fmt.Sprintf("%d", n),
+				"rx_injected": fmt.Sprintf("%d", rxInjected.Load()),
+				"rx_error":    fmt.Sprintf("%d", rxError.Load()),
+			})
+		}
+		if _, err := tunDev.Write(pkt); err != nil {
+			rxError.Add(1)
+			return err
+		}
+		rxInjected.Add(1)
+		return nil
 	})
 
-	runCtx, runCancel := context.WithCancel(context.Background())
+	// Arm packet pumps before committing Connected.
+	plan.Gate.PumpsStarted = true
+	if err := plan.Gate.ErrIncomplete(); err != nil {
+		_ = tunDev.Close()
+		_ = abortSetup(err)
+		m.State.Fail(err.Error())
+		return err
+	}
+	if err := checkTransportAlive("pre_commit"); err != nil {
+		_ = tunDev.Close()
+		return err
+	}
+
 	m.mu.Lock()
 	if m.opGen != gen || !m.desiredConnected {
 		m.mu.Unlock()
-		runCancel()
 		_ = tunDev.Close()
-		_ = sess.Close(context.Background())
-		_ = conn.Close()
-		_ = m.Routes.Restore(plan)
+		_ = abortSetup(ErrStaleConnect)
 		return ErrStaleConnect
 	}
 	m.sess = sess
@@ -373,34 +605,132 @@ func (m *Manager) connect(ctx context.Context, req ConnectRequest, userInitiated
 	m.lastCatalog = signed.Catalog
 	m.connecting = false
 	m.connectCancel = nil
+	m.connectedAt = time.Now()
 	m.mu.Unlock()
 	m.State.Set(state.Connected)
+	m.notifyStatus()
+	diag.InfoFields("STATE", "Connected", map[string]string{"node": node.NodeID})
+	log.Printf("engine: Connected node=%s — transport supervised since TypeConfig", node.NodeID)
+
+	mtuCtrl := newTunnelMTU(typeConfigMTU, plan.TunMTU, tunAdapterName, setTunnelInterfaceMTU)
+	mtuCtrl.injectICMP = func(pkt []byte) {
+		if _, err := tunDev.Write(pkt); err != nil {
+			diag.Warn("PUMP", "icmp_pmtu_inject_failed", err.Error())
+		}
+	}
 
 	go func() {
+		diag.Info("PUMP", "tx start", "Wintun→NVP")
+		// Authoritative expected source = current TypeConfig via plan (not a stale cache).
+		expectedSrc := canonicalVPNIP(plan.TunPrefix.Addr())
+		diag.InfoFields("PUMP", "tx_filter_expected", map[string]string{
+			"expected_src": expectedSrc.String(),
+			"source":       "plan.TunPrefix/TypeConfig",
+		})
+		var (
+			txTotal, txIPv4, txNonIPv4, txSpoof, txAccepted, txWriteOK, txWriteErr, txDatagramTooLarge uint64
+			detailLogged                                                                              uint64
+		)
+		logDropDetail := func(reason string, meta tunnelPacketMeta) {
+			detailLogged++
+			if detailLogged > 20 && detailLogged%100 != 0 {
+				return
+			}
+			diag.InfoFields("PUMP", "tx_drop", map[string]string{
+				"reason":       reason,
+				"src":          meta.Src.String(),
+				"dst":          meta.Dst.String(),
+				"expected_src": expectedSrc.String(),
+				"protocol":     fmt.Sprintf("%d", meta.Protocol),
+				"len":          fmt.Sprintf("%d", meta.Length),
+				"count":        fmt.Sprintf("%d", detailLogged),
+			})
+		}
+		logAcceptDetail := func(meta tunnelPacketMeta) {
+			if txAccepted <= 20 || txAccepted%100 == 0 {
+				diag.InfoFields("PUMP", "tx_accept", map[string]string{
+					"src":      meta.Src.String(),
+					"dst":      meta.Dst.String(),
+					"protocol": fmt.Sprintf("%d", meta.Protocol),
+					"len":      fmt.Sprintf("%d", meta.Length),
+					"count":    fmt.Sprintf("%d", txAccepted),
+				})
+			}
+		}
+		logCounters := func(ev string) {
+			diag.InfoFields("PUMP", ev, map[string]string{
+				"tx_total":                fmt.Sprintf("%d", txTotal),
+				"tx_ipv4":                 fmt.Sprintf("%d", txIPv4),
+				"tx_non_ipv4_drop":        fmt.Sprintf("%d", txNonIPv4),
+				"tx_spoof_drop":           fmt.Sprintf("%d", txSpoof),
+				"tx_accepted":             fmt.Sprintf("%d", txAccepted),
+				"tx_write_ok":             fmt.Sprintf("%d", txWriteOK),
+				"tx_write_error":          fmt.Sprintf("%d", txWriteErr),
+				"tx_datagram_too_large":   fmt.Sprintf("%d", txDatagramTooLarge),
+				"effective_tunnel_mtu":    fmt.Sprintf("%d", mtuCtrl.Effective()),
+			})
+		}
 		buf := make([]byte, 65535)
 		for {
 			select {
 			case <-runCtx.Done():
+				logCounters("tx_exit_counters")
+				diag.Info("PUMP", "tx exit", "context done")
 				return
 			default:
 			}
 			n, err := tunDev.Read(buf)
 			if err != nil {
+				logCounters("tx_exit_counters")
+				diag.Warn("PUMP", "tx exit", err.Error())
 				return
 			}
 			if n <= 0 {
 				continue
 			}
+			txTotal++
 			cp := make([]byte, n)
 			copy(cp, buf[:n])
+			meta := parseTunnelPacketMeta(cp)
+			if meta.Version == 4 {
+				txIPv4++
+			}
+			if ok, reason := shouldForwardTunnelPacket(cp, expectedSrc); !ok {
+				switch reason {
+				case "non_ipv4":
+					txNonIPv4++
+				case "spoofed_source":
+					txSpoof++
+				}
+				logDropDetail(reason, meta)
+				continue
+			}
+			txAccepted++
+			logAcceptDetail(meta)
 			if err := sess.WritePacket(runCtx, cp); err != nil {
+				if dtl, ok := AsDatagramTooLarge(err); ok {
+					// Recoverable MTU event — drop this packet, shrink MTU, keep pump alive.
+					txDatagramTooLarge++
+					mtuCtrl.HandleDatagramTooLarge(cp, dtl)
+					continue
+				}
+				txWriteErr++
+				logCounters("tx_exit_counters")
+				diag.Warn("PUMP", "tx exit", err.Error())
 				return
+			}
+			txWriteOK++
+			if txWriteOK == 1 || txWriteOK%100 == 0 {
+				logCounters("tx_progress")
 			}
 		}
 	}()
 	go func() {
-		_ = sess.ReadLoop(runCtx)
-		m.onSessionLost()
+		diag.Info("PUMP", "rx start", "NVP→Wintun (OnData)")
+		err := <-readErrCh
+		log.Printf("engine: ReadLoop exited: %v", err)
+		diag.Error("TRANSPORT", "ReadLoop EOF/exit", fmt.Sprintf("%v", err))
+		m.onSessionLost(err)
 	}()
 	return nil
 }
@@ -408,6 +738,12 @@ func (m *Manager) connect(ctx context.Context, req ConnectRequest, userInitiated
 // Disconnect cancels Connect, pending reconnect tickets, and forbids auto-reconnect.
 // Returns a non-nil error if network restore failed (journal preserved for retry).
 func (m *Manager) Disconnect(ctx context.Context) error {
+	return m.DisconnectWithReason(ctx, "")
+}
+
+// DisconnectWithReason is Disconnect with a GUI-visible LastError retained until the
+// next clean Connected/Disconnected transition clears it via Set().
+func (m *Manager) DisconnectWithReason(ctx context.Context, reason string) error {
 	m.mu.Lock()
 	m.desiredConnected = false
 	m.reconnectGen++ // invalidate any in-flight onSessionLost
@@ -424,24 +760,51 @@ func (m *Manager) Disconnect(ctx context.Context) error {
 	m.reconnectInFlight = false
 	m.lastConnect = nil
 	m.lastCatalog = model.Catalog{}
-	m.State.Set(state.Disconnecting)
+	if reason != "" {
+		m.State.SetDetail(state.Disconnecting, reason)
+	} else {
+		m.State.Set(state.Disconnecting)
+	}
 	restoreErr := m.teardownLocked()
 	m.mu.Unlock()
-	m.State.Set(state.Disconnected)
+	if reason != "" {
+		m.State.SetDetail(state.Disconnected, reason)
+	} else {
+		m.State.Set(state.Disconnected)
+	}
+	m.notifyStatus()
 	return restoreErr
 }
 
-func (m *Manager) onSessionLost() {
+func (m *Manager) notifyStatus() {
+	if m != nil && m.OnStatusChange != nil {
+		m.OnStatusChange()
+	}
+}
+
+func (m *Manager) onSessionLost(readErr error) {
+	reason := "session transport closed"
+	if readErr != nil && !errors.Is(readErr, context.Canceled) {
+		reason = "session transport closed: " + readErr.Error()
+	}
+	log.Printf("engine: onSessionLost: %s", reason)
+	diag.Warn("SESSION", "onSessionLost", reason)
+
 	m.mu.Lock()
 	if !m.desiredConnected {
+		diag.Info("TEARDOWN", "trigger", "desiredConnected=false")
 		_ = m.teardownLocked()
 		m.mu.Unlock()
-		m.State.Set(state.Disconnected)
+		m.State.SetDetail(state.Disconnected, reason)
+		m.notifyStatus()
 		return
 	}
 	if m.reconnectInFlight {
+		diag.Info("TEARDOWN", "trigger", "reconnect already in flight")
 		_ = m.teardownLocked()
 		m.mu.Unlock()
+		m.State.SetDetail(state.Reconnecting, reason)
+		m.notifyStatus()
 		return
 	}
 	gen := m.reconnectGen
@@ -454,19 +817,24 @@ func (m *Manager) onSessionLost() {
 	}
 	reqTicket := m.RequestTicket
 	if last == nil || reqTicket == nil || loc == "" {
+		diag.Info("TEARDOWN", "trigger", "no ticket requester / lastConnect")
 		_ = m.teardownLocked()
 		m.desiredConnected = false
 		m.mu.Unlock()
-		m.State.Set(state.Disconnected)
+		m.State.SetDetail(state.Disconnected, reason)
+		m.notifyStatus()
 		return
 	}
 	m.reconnectInFlight = true
 	ticketCtx, cancel := context.WithCancel(context.Background())
 	m.ticketCancel = cancel
+	diag.Info("TEARDOWN", "old session", "before reconnect")
 	_ = m.teardownLocked()
 	m.mu.Unlock()
 
-	m.State.Set(state.Reconnecting)
+	m.State.SetDetail(state.Reconnecting, reason)
+	diag.Info("STATE", "Reconnecting", reason)
+	m.notifyStatus()
 	ticket, err := reqTicket(ticketCtx, EmitNeedAccessTicket(loc, "session_lost_failover", "Reconnecting"))
 
 	m.mu.Lock()
@@ -478,7 +846,8 @@ func (m *Manager) onSessionLost() {
 		return
 	}
 	if err != nil {
-		m.State.Fail(err.Error())
+		m.State.Fail(reason + "; reconnect ticket: " + err.Error())
+		m.notifyStatus()
 		return
 	}
 
@@ -495,16 +864,22 @@ func (m *Manager) onSessionLost() {
 
 	creq := *last
 	creq.AccessTicket = ticket
-	_ = m.connect(context.Background(), creq, false)
+	if err := m.connect(context.Background(), creq, false); err != nil {
+		if !errors.Is(err, ErrStaleConnect) && !errors.Is(err, context.Canceled) {
+			m.State.Fail(reason + "; reconnect connect: " + err.Error())
+			m.notifyStatus()
+		}
+	}
 }
 
 // TriggerSessionLostForTest invokes onSessionLost (reconnect-race unit tests only).
-func TriggerSessionLostForTest(m *Manager) { m.onSessionLost() }
+func TriggerSessionLostForTest(m *Manager) { m.onSessionLost(io.EOF) }
 
 // AfterReconnectTicketForTest runs after RequestTicket returns and before reconnect Connect (tests only).
 var AfterReconnectTicketForTest func()
 
 func (m *Manager) teardownLocked() error {
+	diag.Info("TEARDOWN", "begin", "pumps/session/routes/adapter")
 	if m.runCancel != nil {
 		m.runCancel()
 		m.runCancel = nil
@@ -512,25 +887,36 @@ func (m *Manager) teardownLocked() error {
 	if m.sess != nil {
 		_ = m.sess.Close(context.Background())
 		m.sess = nil
+		diag.Info("TEARDOWN", "session_close", "")
 	}
 	if m.conn != nil {
 		_ = m.conn.Close()
 		m.conn = nil
+		diag.Info("TEARDOWN", "transport_close", "")
 	}
 	if m.tun != nil {
 		_ = m.tun.Close()
 		m.tun = nil
+		diag.Info("TEARDOWN", "adapter_close", "")
 	}
 	var restoreErr error
 	if m.plan != nil {
+		diag.Info("TEARDOWN", "route_restore", "")
 		restoreErr = m.Routes.Restore(m.plan)
 		m.plan = nil
 	}
 	m.node = model.NodeRegistryEntry{}
+	m.connectedAt = time.Time{}
+	if restoreErr != nil {
+		diag.Error("TEARDOWN", "restore_failed", restoreErr.Error())
+	} else {
+		diag.Info("TEARDOWN", "done", "")
+	}
 	return restoreErr
 }
 
 // StatusSnapshot builds an IPC status frame from the state machine.
+// Includes read-only tunnel telemetry for the GUI (VPN IP, byte counters, session start).
 func (m *Manager) StatusSnapshot(clientVer, coreVer string) ipc.StatusSnapshot {
 	st, errMsg := m.State.Get()
 	snap := ipc.StatusSnapshot{
@@ -546,6 +932,27 @@ func (m *Manager) StatusSnapshot(clientVer, coreVer string) ipc.StatusSnapshot {
 	if m.node.NodeID != "" {
 		snap.NodeID = m.node.NodeID
 		snap.LocationID = m.node.LocationID
+	}
+	if m.conn != nil {
+		snap.Transport = string(m.conn.Profile())
+	}
+	if m.plan != nil && m.plan.TunPrefix.IsValid() {
+		snap.VpnIP = m.plan.TunPrefix.Addr().String()
+		snap.EffectiveMTU = m.plan.TunMTU
+		if len(m.plan.TunDNS) > 0 {
+			snap.DNSServers = make([]string, len(m.plan.TunDNS))
+			for i, d := range m.plan.TunDNS {
+				snap.DNSServers[i] = d.String()
+			}
+		}
+	}
+	if !m.connectedAt.IsZero() && (st == state.Connected || st == state.Reconnecting) {
+		snap.ConnectedAtUnix = m.connectedAt.Unix()
+	}
+	if m.sess != nil && (st == state.Connected || st == state.Reconnecting || st == state.Disconnecting) {
+		stats := m.sess.Stats()
+		snap.TxBytes = stats.SendBytes
+		snap.RxBytes = stats.RecvBytes
 	}
 	return snap
 }
@@ -622,6 +1029,11 @@ func (m *Manager) openSessionWithTicket(ctx context.Context, cat model.Catalog, 
 		_ = conn.Close()
 		return nil, nil, model.NodeRegistryEntry{}, fmt.Errorf("%w: %v", nvperr.ErrDeviceKeyRequired, err)
 	}
+	// Arm TypeConfig catcher BEFORE WaitEstablished. Production servers send
+	// TypeConfig immediately after AUTH_OK while the temporary auth reader is
+	// still draining the stream; without a catcher those frames are dropped.
+	m.armTypeConfigCatcher(sess)
+	diag.Info("AUTH", "AUTH sent", "")
 	if err := sess.SendAuth(authCtx, authBody); err != nil {
 		_ = conn.Close()
 		return nil, nil, model.NodeRegistryEntry{}, fmt.Errorf("%w: %v", nvperr.ErrAuthFailed, err)
@@ -634,7 +1046,49 @@ func (m *Manager) openSessionWithTicket(ctx context.Context, cat model.Catalog, 
 		_ = conn.Close()
 		return nil, nil, model.NodeRegistryEntry{}, nvperr.ErrAuthFailed
 	}
+	diag.Info("AUTH", "AUTH_OK", "ESTABLISHED")
 	return sess, conn, node, nil
+}
+
+// armTypeConfigCatcher installs OnControl that buffers TypeConfig frames that
+// arrive before waitTypeConfig starts its dedicated ReadLoop.
+func (m *Manager) armTypeConfigCatcher(sess *session.Session) {
+	cfgCh := make(chan *netcfg.Message, 1)
+	errCh := make(chan error, 1)
+	m.mu.Lock()
+	m.earlyTypeConfig = cfgCh
+	m.earlyTypeConfigErr = errCh
+	m.mu.Unlock()
+
+	sess.OnControl(func(msgType byte, payload []byte) error {
+		if msgType != control.TypeConfig {
+			// AUTH_OK / AUTH_FAIL / PING still handled by Session.handleMessage switch.
+			return nil
+		}
+		msg, err := netcfg.Decode(payload)
+		if err != nil {
+			select {
+			case errCh <- err:
+			default:
+			}
+			return err
+		}
+		select {
+		case cfgCh <- msg:
+		default:
+		}
+		return nil
+	})
+}
+
+func (m *Manager) takeEarlyTypeConfigChannels() (cfgCh <-chan *netcfg.Message, errCh <-chan error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cfgCh = m.earlyTypeConfig
+	errCh = m.earlyTypeConfigErr
+	m.earlyTypeConfig = nil
+	m.earlyTypeConfigErr = nil
+	return cfgCh, errCh
 }
 
 func (m *Manager) waitTypeConfig(ctx context.Context, sess *session.Session, conn transport.Conn) (*netcfg.Message, error) {
@@ -651,9 +1105,28 @@ func (m *Manager) waitTypeConfig(ctx context.Context, sess *session.Session, con
 	cfgCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 
+	earlyCfg, earlyErr := m.takeEarlyTypeConfigChannels()
+	// Non-blocking: TypeConfig may already have been buffered during WaitEstablished.
+	if earlyCfg != nil {
+		select {
+		case msg := <-earlyCfg:
+			if msg != nil {
+				return msg, nil
+			}
+		case err := <-earlyErr:
+			if err != nil {
+				return nil, err
+			}
+		default:
+		}
+	}
+
 	cfgCh := make(chan *netcfg.Message, 1)
 	errCh := make(chan error, 1)
 
+	// Keep forwarding into both the dedicated wait channels and any residual early
+	// buffer path. Re-arm OnControl so frames arriving after WaitEstablished still
+	// reach this waiter (SessionOpener tests may not have armed a catcher).
 	sess.OnControl(func(msgType byte, payload []byte) error {
 		if msgType != control.TypeConfig {
 			return nil
@@ -694,6 +1167,12 @@ func (m *Manager) waitTypeConfig(ctx context.Context, sess *session.Session, con
 	case msg := <-cfgCh:
 		stopTempTransportReader(loopCancel, loopDone, conn)
 		return msg, nil
+	case msg := <-earlyCfgOrNil(earlyCfg):
+		stopTempTransportReader(loopCancel, loopDone, conn)
+		return msg, nil
+	case err := <-earlyErrOrNil(earlyErr):
+		stopTempTransportReader(loopCancel, loopDone, conn)
+		return nil, err
 	case msg := <-typeConfigTestSignal:
 		if msg != nil {
 			stopTempTransportReader(loopCancel, loopDone, conn)
@@ -702,6 +1181,20 @@ func (m *Manager) waitTypeConfig(ctx context.Context, sess *session.Session, con
 		stopTempTransportReader(loopCancel, loopDone, conn)
 		return nil, fmt.Errorf("engine: TypeConfig test signal nil")
 	}
+}
+
+func earlyCfgOrNil(ch <-chan *netcfg.Message) <-chan *netcfg.Message {
+	if ch != nil {
+		return ch
+	}
+	return nil
+}
+
+func earlyErrOrNil(ch <-chan error) <-chan error {
+	if ch != nil {
+		return ch
+	}
+	return nil
 }
 
 // stopTempTransportReader mirrors Frozen Core Session.WaitEstablished stopTempRead:
@@ -739,6 +1232,20 @@ func EmitNeedAccessTicket(locationID, reason, stateName string) ipc.NeedAccessTi
 		Reason:            reason,
 		State:             stateName,
 	}
+}
+
+// waitCatalogNotBefore sleeps until IssuedAt if the catalog is slightly not-yet-valid
+// due to clock skew (within maxSkew). Does not alter expires_at or Frozen Core.
+func waitCatalogNotBefore(issued time.Time, maxSkew time.Duration) {
+	now := time.Now().UTC()
+	if !now.Before(issued) {
+		return
+	}
+	d := issued.Sub(now)
+	if d <= 0 || d > maxSkew {
+		return
+	}
+	time.Sleep(d + time.Millisecond)
 }
 
 // DecodeCatalogKeys parses kid → std Base64 Ed25519 public keys.

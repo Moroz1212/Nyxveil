@@ -111,10 +111,14 @@ func (b *Bridge) StopWithTimeout(d time.Duration) {
 }
 
 // AttachSession wires OnData: validate source IP, then enqueue to TUN.
+// Invalid packets (non-IPv4, spoofed source) are dropped. Returning an error
+// from OnData fails Session.ReadLoop and closes the transport — that was the
+// server-v1.1.6 live bug when Windows Wintun emitted IPv6 ND right after Connected.
 func (b *Bridge) AttachSession(sess *session.Session) {
 	sess.OnData(func(pkt []byte) error {
 		if err := b.sessions.ValidateSource(sess, pkt); err != nil {
-			return err
+			// Drop only — never fail the session for dataplane policy rejects.
+			return nil
 		}
 		b.mu.Lock()
 		ch := b.toTun

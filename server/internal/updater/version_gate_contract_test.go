@@ -47,8 +47,8 @@ func TestProductVersionConstantMatchesVERSIONFile(t *testing.T) {
 	if got != version.ServerVersion {
 		t.Fatalf("VERSION=%q const=%q", got, version.ServerVersion)
 	}
-	if got != "1.1.6" {
-		t.Fatalf("expected release candidate 1.1.6, got %s", got)
+	if got != "1.1.7" {
+		t.Fatalf("expected release candidate 1.1.7, got %s", got)
 	}
 }
 
@@ -62,12 +62,12 @@ func TestVersionReportJSONShape(t *testing.T) {
 		CoreVersion            string `json:"core_version"`
 		Protocol               string `json:"protocol"`
 	}
-	sample := []byte(`{"cli_version":"1.1.6","installed_server_version":"1.1.6","running_server_version":"1.1.6","release_version":"1.1.6","core_version":"1.0.0","protocol":"NVP/1"}`)
+	sample := []byte(`{"cli_version":"1.1.7","installed_server_version":"1.1.7","running_server_version":"1.1.7","release_version":"1.1.7","core_version":"1.0.0","protocol":"NVP/1"}`)
 	var r report
 	if err := json.Unmarshal(sample, &r); err != nil {
 		t.Fatal(err)
 	}
-	if r.CLIVersion != "1.1.6" || r.Protocol != "NVP/1" {
+	if r.CLIVersion != "1.1.7" || r.Protocol != "NVP/1" {
 		t.Fatalf("%+v", r)
 	}
 }

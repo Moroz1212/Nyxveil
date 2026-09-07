@@ -1,242 +1,169 @@
+using System.ComponentModel;
+using System.IO;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using Nyxveil.App.Services;
+using Nyxveil.App.ViewModels;
+using Nyxveil.App.Views;
 using Nyxveil.Client.Core;
-using Nyxveil.Client.Ipc;
 
 namespace Nyxveil.App;
 
 public partial class MainWindow : Window
 {
     private readonly ClientSettings _settings;
-    private readonly SessionBootstrap _bootstrap;
-    private ServicePipeClient? _pipe;
-    private bool _busy;
-    private string _connectedState = "disconnected";
+    private readonly AppShellViewModel _shell;
+    private readonly ClientSessionController _controller;
+    private readonly string? _visualQaMode;
+    private readonly string? _screenshotPath;
 
-    public MainWindow(ClientSettings settings)
+    private readonly HomeView _homeView = new();
+    private readonly ServersView _serversView = new();
+    private readonly SettingsView _settingsView = new();
+    private readonly DiagnosticsView _diagnosticsView = new();
+    private readonly LogsView _logsView = new();
+    private readonly MoreView _moreView = new();
+
+    public MainWindow(ClientSettings settings, string? visualQaMode = null, string? screenshotPath = null)
     {
         _settings = settings;
-        _bootstrap = SessionBootstrap.FromSettings(settings);
+        _visualQaMode = visualQaMode;
+        _screenshotPath = screenshotPath;
+        _shell = new AppShellViewModel();
+        _controller = new ClientSessionController(settings, _shell);
+
         InitializeComponent();
-        AutostartBox.IsChecked = _settings.Autostart;
-        RefreshDiagnostics("Disconnected", "", "", "", "");
-        Loaded += async (_, _) => await LoadLocationsAsync();
-        Closed += async (_, _) =>
+        DataContext = _shell;
+
+        WireViews();
+        _shell.PropertyChanged += Shell_OnPropertyChanged;
+        ShowPage(AppPage.Home);
+
+        Loaded += async (_, _) =>
         {
-            if (_pipe is not null)
-                await _pipe.DisposeAsync();
-            _bootstrap.Dispose();
+            if (!string.IsNullOrWhiteSpace(_visualQaMode))
+            {
+                // Layout-only path: skip service IPC so Status cannot overwrite QA paint.
+                _controller.ApplyVisualQaSnapshot(_visualQaMode);
+                await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
+                await Task.Delay(350);
+                if (!string.IsNullOrWhiteSpace(_screenshotPath))
+                {
+                    SaveWindowPng(_screenshotPath);
+                    Application.Current.Shutdown(0);
+                }
+                return;
+            }
+
+            await _controller.InitializeAsync();
+            if (_settings.StartMinimized)
+                WindowState = WindowState.Minimized;
+            else if (_settings.AutoConnect && _shell.Server.Selected is not null)
+                await _controller.ConnectSelectedAsync();
+        };
+
+        Closed += async (_, _) => await _controller.DisposeAsync();
+    }
+
+    private void SaveWindowPng(string path)
+    {
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
+
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var w = (int)Math.Ceiling(ActualWidth * dpi.DpiScaleX);
+        var h = (int)Math.Ceiling(ActualHeight * dpi.DpiScaleY);
+        if (w < 1 || h < 1) return;
+
+        var rtb = new RenderTargetBitmap(w, h, dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
+        rtb.Render(this);
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(rtb));
+        using var fs = File.Create(path);
+        encoder.Save(fs);
+    }
+
+    private void WireViews()
+    {
+        foreach (var v in new FrameworkElement[]
+                 { _homeView, _serversView, _settingsView, _diagnosticsView, _logsView, _moreView })
+            v.DataContext = _shell;
+
+        _homeView.ConnectToggle += async () => await _controller.ToggleConnectAsync();
+        _homeView.ChangeServer += () => Navigate(AppPage.Servers);
+        _homeView.OpenSettings += () => Navigate(AppPage.Settings);
+        _homeView.OpenDiagnostics += () => Navigate(AppPage.Diagnostics);
+        _homeView.OpenLogs += async () =>
+        {
+            Navigate(AppPage.Logs);
+            await _controller.EnsureLogsSubscriptionAsync(true);
+        };
+        _homeView.OpenMore += () => Navigate(AppPage.More);
+
+        _serversView.Back += () => Navigate(AppPage.Home);
+        _serversView.Selected += async item => await _controller.SelectServerAndMaybeReconnectAsync(item);
+
+        _settingsView.Back += () => Navigate(AppPage.Home);
+        _settingsView.Save += () =>
+        {
+            _controller.SaveSettingsFromVm();
+            MessageBox.Show("Настройки сохранены.", "Nyxveil", MessageBoxButton.OK, MessageBoxImage.Information);
+        };
+
+        _diagnosticsView.Back += () => Navigate(AppPage.Home);
+        _diagnosticsView.Copy += () =>
+        {
+            Clipboard.SetText(_controller.BuildDiagnosticsClipboard());
+        };
+        _diagnosticsView.OpenLogsFolder += ClientSessionController.OpenLogsFolder;
+
+        _logsView.Back += async () =>
+        {
+            await _controller.EnsureLogsSubscriptionAsync(false);
+            Navigate(AppPage.Home);
+        };
+        _logsView.OpenFolder += ClientSessionController.OpenLogsFolder;
+
+        _moreView.Back += () => Navigate(AppPage.Home);
+    }
+
+    private void Shell_OnPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(AppShellViewModel.Page))
+            ShowPage(_shell.Page);
+    }
+
+    private void Navigate(AppPage page) => _shell.Page = page;
+
+    private void ShowPage(AppPage page)
+    {
+        ContentHost.Content = page switch
+        {
+            AppPage.Servers => _serversView,
+            AppPage.Settings => _settingsView,
+            AppPage.Diagnostics => _diagnosticsView,
+            AppPage.Logs => _logsView,
+            AppPage.More => _moreView,
+            _ => _homeView
         };
     }
 
-    private void AutostartBox_OnChanged(object sender, RoutedEventArgs e)
+    private void TitleBar_OnMinimize() => WindowState = WindowState.Minimized;
+
+    private void TitleBar_OnMaximize() =>
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    private void TitleBar_OnClose() => Close();
+
+    private void TitleBar_OnDrag(object sender, MouseButtonEventArgs e)
     {
-        _settings.Autostart = AutostartBox.IsChecked == true;
-        _settings.Save();
-    }
-
-    private void RefreshDiagnostics(string state, string node, string loc, string transport, string lastErr)
-    {
-        DiagText.Text =
-            $"Client: 1.0.0\nCore: 1.0.0\nProtocol: NVP/1\n" +
-            $"CP: {_settings.GetControlPlaneHost()}\n" +
-            $"License: {(LicenseCredentialStore.Exists() ? "сохранена (CurrentUser)" : "нет")}\n" +
-            $"State: {state}\nLocation: {loc}\nNode: {node}\nTransport: {transport}\n" +
-            $"LastError: {lastErr}";
-    }
-
-    private async Task LoadLocationsAsync()
-    {
-        try
+        if (e.ChangedButton == MouseButton.Left)
         {
-            LocationBox.Items.Clear();
-            LocationBox.Items.Add("Выберите локацию");
-            var locs = await _bootstrap.LoadEnabledLocationsAsync();
-            foreach (var loc in locs)
-                LocationBox.Items.Add(new LocationItem(loc.LocationId, loc.DisplayName ?? loc.LocationId));
-            LocationBox.SelectedIndex = 0;
-            if (!string.IsNullOrEmpty(_settings.PreferredLocationId))
-            {
-                for (var i = 1; i < LocationBox.Items.Count; i++)
-                {
-                    if (LocationBox.Items[i] is LocationItem li && li.Id == _settings.PreferredLocationId)
-                    {
-                        LocationBox.SelectedIndex = i;
-                        break;
-                    }
-                }
-            }
-            StatusText.Text = "Статус: Отключено";
-            DetailText.Text = "Каталог загружен.";
+            try { DragMove(); }
+            catch { /* ignore */ }
         }
-        catch (Exception ex)
-        {
-            ErrorText.Text = ex.Message;
-            DetailText.Text = "Не удалось загрузить каталог. Проверьте лицензию и Control Plane.";
-        }
-    }
-
-    private async void ConnectButton_OnClick(object sender, RoutedEventArgs e)
-    {
-        if (_busy)
-            return;
-        ErrorText.Text = "";
-
-        if (_connectedState is "connected" or "connecting")
-        {
-            await DisconnectAsync();
-            return;
-        }
-
-        if (LocationBox.SelectedItem is not LocationItem loc)
-        {
-            ErrorText.Text = "Выберите локацию.";
-            return;
-        }
-
-        _busy = true;
-        ConnectButton.IsEnabled = false;
-        StatusText.Text = "Статус: Подключение…";
-        StatusDot.Fill = (Brush)FindResource("Accent");
-        DetailText.Text = "Получение ticket и каталога…";
-        try
-        {
-            var prep = await _bootstrap.PrepareConnectAsync(loc.Id);
-            _settings.PreferredLocationId = loc.Id;
-            _settings.Save();
-
-            _pipe ??= new ServicePipeClient();
-            _pipe.StatusReceived -= OnStatus;
-            _pipe.ErrorReceived -= OnPipeError;
-            _pipe.NeedAccessTicket -= OnNeedTicket;
-            _pipe.StatusReceived += OnStatus;
-            _pipe.ErrorReceived += OnPipeError;
-            _pipe.NeedAccessTicket += OnNeedTicket;
-
-            if (!_pipe.IsConnected)
-            {
-                DetailText.Text = "Соединение со службой Nyxveil…";
-                await _pipe.ConnectAsync();
-            }
-
-            DetailText.Text = "Открытие сессии (Frozen Connector)…";
-            await _pipe.SendConnectAsync(
-                prep.DesiredLocationId,
-                prep.AccessTicket,
-                prep.SignedCatalogJson,
-                prep.CatalogKeys,
-                prep.DevicePrivateKey,
-                prep.ControlPlaneHost);
-
-            _connectedState = "connecting";
-            ConnectButton.Content = "ОТКЛЮЧИТЬ";
-        }
-        catch (Exception ex)
-        {
-            ErrorText.Text = ex.Message;
-            StatusText.Text = "Статус: Ошибка";
-            StatusDot.Fill = new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80));
-            _connectedState = "disconnected";
-            ConnectButton.Content = "ПОДКЛЮЧИТЬ";
-        }
-        finally
-        {
-            _busy = false;
-            ConnectButton.IsEnabled = true;
-        }
-    }
-
-    private async Task DisconnectAsync()
-    {
-        _busy = true;
-        try
-        {
-            if (_pipe is { IsConnected: true })
-                await _pipe.SendDisconnectAsync();
-        }
-        catch (Exception ex)
-        {
-            ErrorText.Text = ex.Message;
-        }
-        finally
-        {
-            _connectedState = "disconnected";
-            ConnectButton.Content = "ПОДКЛЮЧИТЬ";
-            StatusText.Text = "Статус: Отключено";
-            StatusDot.Fill = new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80));
-            DetailText.Text = "";
-            _busy = false;
-        }
-    }
-
-    private void OnStatus(StatusSnapshotMessage s)
-    {
-        Dispatcher.Invoke(() =>
-        {
-            var state = (s.State ?? "").ToLowerInvariant();
-            if (state.Contains("connected") && !state.Contains("disconnect"))
-            {
-                _connectedState = "connected";
-                StatusText.Text = "Статус: Подключено";
-                StatusDot.Fill = (Brush)FindResource("Accent");
-                DetailText.Text = string.IsNullOrEmpty(s.NodeId) ? "" : $"Узел: {s.NodeId}";
-                ConnectButton.Content = "ОТКЛЮЧИТЬ";
-                RefreshDiagnostics(s.State ?? "Connected", s.NodeId ?? "", s.LocationId ?? "", s.Transport ?? "", s.LastError ?? "");
-            }
-            else if (state.Contains("error") || !string.IsNullOrEmpty(s.LastError))
-            {
-                ErrorText.Text = UserFacingError.Map(s.LastError) ?? "Ошибка подключения";
-                StatusText.Text = "Статус: Ошибка";
-                RefreshDiagnostics(s.State ?? "Error", s.NodeId ?? "", s.LocationId ?? "", s.Transport ?? "", s.LastError ?? "");
-            }
-            else if (state.Contains("disconnect"))
-            {
-                _connectedState = "disconnected";
-                StatusText.Text = "Статус: Отключено";
-                ConnectButton.Content = "ПОДКЛЮЧИТЬ";
-                RefreshDiagnostics("Disconnected", "", "", "", "");
-            }
-            else
-            {
-                StatusText.Text = "Статус: " + (s.State ?? "…");
-                DetailText.Text = s.LastError ?? DetailText.Text;
-                RefreshDiagnostics(s.State ?? "", s.NodeId ?? "", s.LocationId ?? "", s.Transport ?? "", s.LastError ?? "");
-            }
-        });
-    }
-
-    private void OnPipeError(string err)
-    {
-        Dispatcher.Invoke(() =>
-        {
-            ErrorText.Text = err;
-            StatusText.Text = "Статус: Ошибка";
-            _connectedState = "disconnected";
-            ConnectButton.Content = "ПОДКЛЮЧИТЬ";
-        });
-    }
-
-    private async void OnNeedTicket(NeedAccessTicketMessage need)
-    {
-        try
-        {
-            var loc = need.DesiredLocationId;
-            if (string.IsNullOrWhiteSpace(loc))
-                throw new InvalidOperationException("need_access_ticket без location_id.");
-            if (string.IsNullOrWhiteSpace(need.RequestId))
-                throw new InvalidOperationException("need_access_ticket без request_id.");
-            var ticket = await _bootstrap.RefreshAccessTicketAsync(loc);
-            if (_pipe is not null)
-                await _pipe.SendAccessTicketAsync(need.RequestId, ticket);
-        }
-        catch (Exception ex)
-        {
-            Dispatcher.Invoke(() => ErrorText.Text = ex.Message);
-        }
-    }
-
-    private sealed record LocationItem(string Id, string Name)
-    {
-        public override string ToString() => Name;
     }
 }

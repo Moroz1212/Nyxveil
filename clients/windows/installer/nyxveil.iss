@@ -1,9 +1,10 @@
-; Nyxveil Windows Client 1.0.0 — Inno Setup (fail-closed)
-; Output: Nyxveil-Setup-v1.0.0.exe
+; Nyxveil Windows Client 1.1.1 — Inno Setup (fail-closed)
+; Output: Nyxveil-Setup-v1.1.1.exe
+; Do not overwrite older Setup artifacts.
 ; Authenticode: NOT SIGNED (expected SmartScreen warning)
 
 #define MyAppName "Nyxveil"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.1"
 #define MyAppPublisher "Nyxveil"
 #define MyAppExeName "Nyxveil.exe"
 #define ServiceExeName "Nyxveil.Service.exe"
@@ -136,17 +137,29 @@ var
   ResultCode: Integer;
   Ok: Boolean;
   TokenPath: String;
+  ErrFile: String;
+  Lines: TArrayOfString;
+  Detail: String;
+  I: Integer;
 begin
   Result := '';
   TokenPath := ExpandConstant('{tmp}\nyxveil-orig-user.sid');
+  ErrFile := ExpandConstant('{tmp}\nyxveil-finalize-scm.err');
   { 1) ORIGINAL interactive user emits SID token (no write to protected ProgramData). }
   Ok := ExecAsOriginalUser(BinPath, '-write-sid-token=' + TokenPath, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if (not Ok) or (ResultCode <> 0) then
   begin
-    Result := 'Failed to capture original-user SID token (ExecAsOriginalUser -write-sid-token).';
-    Exit;
+    Sleep(400);
+    Ok := ExecAsOriginalUser(BinPath, '-write-sid-token=' + TokenPath, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
-  { 2) Elevated: protect ProgramData\Nyxveil\Client then install SID from token. }
+  if (not Ok) or (ResultCode <> 0) then
+  begin
+    if not ExecChecked(BinPath, '-write-sid-token=' + TokenPath, True) then
+    begin
+      Result := 'Failed to capture original-user SID token (ExecAsOriginalUser -write-sid-token; elevated fallback also failed).';
+      Exit;
+    end;
+  end;
   if not ExecChecked(BinPath, '-protect-client-data-dir', True) then
   begin
     Result := 'Failed to protect Client data directory ACL.';
@@ -162,10 +175,23 @@ begin
     Result := 'Failed to lock authorized-user.sid ACL (-lock-sid-acl).';
     Exit;
   end;
-  { 3) Elevated SCM transaction with automatic orphan rollback + pipe readiness. }
-  if not ExecChecked(BinPath, '-finalize-scm', True) then
+  { 3) Elevated SCM transaction — capture stderr for concrete Win32/SCM reason. }
+  DeleteFile(ErrFile);
+  Ok := Exec('cmd.exe', '/C ""' + BinPath + '" -finalize-scm > "' + ErrFile + '" 2>&1"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if (not Ok) or (ResultCode <> 0) then
   begin
-    Result := 'Service finalize failed (-finalize-scm). Orphan service rolled back if created.';
+    Detail := '';
+    if LoadStringsFromFile(ErrFile, Lines) then
+    begin
+      for I := 0 to GetArrayLength(Lines) - 1 do
+      begin
+        if Length(Lines[I]) > 0 then
+          Detail := Lines[I];
+      end;
+    end;
+    if Detail = '' then
+      Detail := 'see C:\ProgramData\Nyxveil\Client\logs\nyxveil-installer.log';
+    Result := 'Service finalize failed (-finalize-scm exit=' + IntToStr(ResultCode) + '): ' + Detail;
     Exit;
   end;
 end;
