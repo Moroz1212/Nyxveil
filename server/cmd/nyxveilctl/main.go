@@ -34,7 +34,7 @@ func main() {
 	var err error
 	switch cmd {
 	case "version":
-		printVersion(os.Stdout)
+		err = runVersion(args)
 	case "status":
 		err = printJSON("/status")
 	case "health":
@@ -70,92 +70,6 @@ func main() {
 	}
 }
 
-func printVersion(w io.Writer) {
-	fmt.Fprintf(w, "cli_version=%s\n", version.CLIVersion)
-	fmt.Fprintf(w, "installed_server_version=%s\n", installedServerVersion())
-	fmt.Fprintf(w, "running_server_version=%s\n", runningServerVersion())
-	fmt.Fprintf(w, "core_version=%s\n", version.CoreVersion)
-	fmt.Fprintf(w, "protocol=%s\n", version.ProtocolVersion)
-}
-
-func installedServerVersion() string {
-	candidates := []string{
-		strings.TrimSpace(os.Getenv("NYXVEIL_SERVER_BINARY")),
-		paths.BinaryPath(),
-		"/usr/local/bin/nyxveil-server",
-	}
-	if exe, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "nyxveil-server"))
-	}
-	seen := make(map[string]bool)
-	for _, candidate := range candidates {
-		if candidate == "" || seen[candidate] {
-			continue
-		}
-		seen[candidate] = true
-		if _, err := os.Stat(candidate); err != nil {
-			continue
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		out, err := exec.CommandContext(ctx, candidate, "version").CombinedOutput()
-		cancel()
-		if err == nil {
-			if got := parseServerVersion(out); got != "" {
-				return got
-			}
-		}
-	}
-	return "unknown"
-}
-
-func runningServerVersion() string {
-	if b, err := fetchControl("/status"); err == nil {
-		var st struct {
-			Running       bool   `json:"running"`
-			ServerVersion string `json:"server_version"`
-		}
-		if json.Unmarshal(b, &st) == nil {
-			if st.Running && strings.TrimSpace(st.ServerVersion) != "" {
-				return strings.TrimSpace(st.ServerVersion)
-			}
-			return "unknown"
-		}
-	}
-	if b, err := fetchControl("/version"); err == nil {
-		if got := parseServerVersion(b); got != "" {
-			return got
-		}
-	}
-	return "unknown"
-}
-
-func parseServerVersion(raw []byte) string {
-	text := strings.TrimSpace(string(raw))
-	if strings.HasPrefix(text, "{") {
-		var v struct {
-			ServerVersion string `json:"server_version"`
-			Version       string `json:"version"`
-		}
-		if json.Unmarshal(raw, &v) == nil {
-			if v.ServerVersion != "" {
-				return strings.TrimSpace(v.ServerVersion)
-			}
-			return strings.TrimSpace(v.Version)
-		}
-	}
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "server_version=") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "server_version="))
-		}
-		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[0] == "nyxveil-server" {
-			return fields[1]
-		}
-	}
-	return ""
-}
-
 func usage() {
 	fmt.Fprintf(os.Stderr, `nyxveilctl — Nyxveil VPN node control
 
@@ -169,7 +83,7 @@ Usage:
   nyxveilctl config [path]              # dump server.json
   nyxveilctl configure [flags]          # existing-node reconfigure (transactional)
   nyxveilctl configure --status         # TLS/public_host/dns/SPKI summary
-  nyxveilctl version
+  nyxveilctl version [--json|--machine]
   nyxveilctl uninstall
 
 bootstrap-cli (legacy ≤1.0.4 updaters):
@@ -423,16 +337,30 @@ func runUpdate(args []string) error {
 		if runtime.GOOS == "windows" {
 			return true
 		}
-		_ = restartUnit("nyxveil-server")
-		res, ok := verifyPostUpdateHealth(preBaseline, 45)
-		if ok {
-			fmt.Printf("update_success=%v dataplane_healthy=%v management_plane_connected=%v preexisting_management_degradation=%v\n",
-				res.UpdateSuccess, res.DataplaneHealthy, res.ManagementPlaneConnected, res.PreexistingManagementDegradation)
-			if res.Reason != "" {
-				fmt.Printf("update note: %s\n", res.Reason)
-			}
+		prePID := unitMainPID("nyxveil-server")
+		if err := restartUnit("nyxveil-server"); err != nil {
+			fmt.Printf("update restart failed: %v\n", err)
+			return false
 		}
-		return ok
+		res, ok := verifyPostUpdateHealth(preBaseline, 45)
+		if !ok {
+			return false
+		}
+		postPID := unitMainPID("nyxveil-server")
+		if prePID > 0 && postPID > 0 && prePID == postPID {
+			fmt.Printf("update_success=false reason=same_pid_after_restart pre_pid=%d post_pid=%d\n", prePID, postPID)
+			return false
+		}
+		if err := assertVersionsMatchTarget(m.Version); err != nil {
+			fmt.Printf("update_success=false reason=version_mismatch detail=%v\n", err)
+			return false
+		}
+		fmt.Printf("update_success=%v dataplane_healthy=%v management_plane_connected=%v preexisting_management_degradation=%v pre_pid=%d post_pid=%d\n",
+			res.UpdateSuccess, res.DataplaneHealthy, res.ManagementPlaneConnected, res.PreexistingManagementDegradation, prePID, postPID)
+		if res.Reason != "" {
+			fmt.Printf("update note: %s\n", res.Reason)
+		}
+		return true
 	}
 
 	if err := u.Apply(m, health); err != nil {
@@ -470,6 +398,17 @@ func runUpdate(args []string) error {
 // restartUnit runs systemctl restart (overridable in tests).
 var restartUnit = func(unit string) error {
 	return exec.Command("systemctl", "restart", unit).Run()
+}
+
+// unitMainPID returns systemd MainPID for unit, or 0 if unavailable.
+var unitMainPID = func(unit string) int {
+	out, err := exec.Command("systemctl", "show", unit, "-p", "MainPID", "--value").CombinedOutput()
+	if err != nil {
+		return 0
+	}
+	var pid int
+	_, _ = fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &pid)
+	return pid
 }
 
 // serviceActive reports whether the unit is active (overridable in tests).

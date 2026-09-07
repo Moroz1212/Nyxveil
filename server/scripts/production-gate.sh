@@ -44,14 +44,49 @@ fail() {
   finalize
 }
 
+capture_version_diagnostics() {
+  {
+    echo "expected_version=${EXPECTED_VERSION:-}"
+    echo "share_VERSION=${VERSION:-}"
+    if [[ -n "${CTL:-}" && -x "${CTL}" ]]; then
+      "${CTL}" version --json 2>/dev/null || "${CTL}" version 2>/dev/null || true
+    fi
+    if [[ -n "${SERVER:-}" && -x "${SERVER}" ]]; then
+      echo -n "server_binary_probe="
+      "${SERVER}" --version 2>/dev/null || "${SERVER}" version 2>/dev/null || echo "probe_failed"
+      if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "${SERVER}" 2>/dev/null || true
+      fi
+    fi
+    if [[ -n "${CTL:-}" && -x "${CTL}" ]] && command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "${CTL}" 2>/dev/null || true
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl show nyxveil-server -p MainPID -p ExecStart -p ActiveEnterTimestamp 2>/dev/null || true
+    fi
+    if [[ -f /usr/local/share/nyxveil/VERSION ]]; then
+      echo -n "installed_share_VERSION="
+      tr -d '\r[:space:]' </usr/local/share/nyxveil/VERSION
+      echo
+    fi
+  } 2>/dev/null | sanitize >"${WORK}/version-diagnostics.txt" || true
+}
+
 finalize() {
+  if [[ -n "${FAILED_GATE}" ]]; then
+    case "${FAILED_GATE}" in
+      server_version|cli_version|ctl_version|version_file|installed_server_version|running_server_version|release_version|core_version|protocol)
+        capture_version_diagnostics
+        ;;
+    esac
+  fi
   if command -v journalctl >/dev/null 2>&1 && [[ "${MODE}" != "source" ]]; then
     journalctl -u nyxveil-server --since '-30 minutes' --no-pager 2>&1 |
       sanitize >"${WORK}/journal-sanitized.log" || true
   fi
   if command -v systemctl >/dev/null 2>&1 && [[ "${MODE}" != "source" ]]; then
     systemctl show nyxveil-server \
-      -p ActiveState -p SubState -p MainPID -p TimeoutStopUSec 2>&1 |
+      -p ActiveState -p SubState -p MainPID -p TimeoutStopUSec -p ExecStart -p ActiveEnterTimestamp 2>&1 |
       sanitize >"${WORK}/systemd-status.txt" || true
   fi
   tar -czf "${BUNDLE}" -C "${WORK}" . 2>/dev/null || true
@@ -79,11 +114,11 @@ case "${MODE}" in
   *) fail "mode" "GATE_MODE must be source|local|live" ;;
 esac
 
-EXPECTED_VERSION="1.1.3"
-VERSION="$(tr -d '[:space:]' < "${ROOT}/VERSION" 2>/dev/null || true)"
+EXPECTED_VERSION="${NYXVEIL_EXPECTED_VERSION:-1.1.4}"
+VERSION="$(tr -d '\r[:space:]' < "${ROOT}/VERSION" 2>/dev/null || true)"
 if [[ -z "${VERSION}" ]]; then
   # Installed layout: prefer share VERSION; fall back to binary --version output later.
-  VERSION="$(tr -d '[:space:]' < "/usr/local/share/nyxveil/VERSION" 2>/dev/null || true)"
+  VERSION="$(tr -d '\r[:space:]' < "/usr/local/share/nyxveil/VERSION" 2>/dev/null || true)"
 fi
 [[ "${VERSION}" == "${EXPECTED_VERSION}" ]] || fail "version_file" "expected VERSION=${EXPECTED_VERSION} got '${VERSION}'"
 
@@ -133,14 +168,62 @@ fi
 [[ -n "${CTL}" && -x "${CTL}" ]] || fail "ctl_binary" "nyxveilctl not executable"
 [[ -n "${SERVER}" && -x "${SERVER}" ]] || fail "server_binary" "nyxveil-server not executable"
 
-"${CTL}" version 2>&1 | sanitize >"${WORK}/versions.txt" ||
-  fail "ctl_version" "nyxveilctl version failed"
-"${SERVER}" version 2>&1 | sanitize >>"${WORK}/versions.txt" ||
-  fail "server_version" "nyxveil-server version failed"
-grep -Eq "cli_version=${EXPECTED_VERSION}|nyxveilctl ${EXPECTED_VERSION}" "${WORK}/versions.txt" ||
-  fail "cli_version" "expected ${EXPECTED_VERSION}"
-grep -Eq "nyxveil-server ${EXPECTED_VERSION}|installed_server_version=${EXPECTED_VERSION}|running_server_version=${EXPECTED_VERSION}" "${WORK}/versions.txt" ||
-  fail "server_version" "expected ${EXPECTED_VERSION}"
+# Machine-readable version API only — never fragile human grep / never start a second daemon.
+if ! "${CTL}" version --json 2>"${WORK}/ctl-version.err" | sanitize >"${WORK}/versions.json"; then
+  fail "ctl_version" "nyxveilctl version --json failed"
+fi
+VERSION_GATE="$(
+python3 - "${WORK}/versions.json" "${EXPECTED_VERSION}" "${WORK}/version-assert.txt" <<'PY'
+import json, sys
+path, expected, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+required = [
+    ("cli_version", expected),
+    ("installed_server_version", expected),
+    ("running_server_version", expected),
+    ("release_version", expected),
+    ("core_version", "1.0.0"),
+    ("protocol", "NVP/1"),
+]
+gate_map = {
+    "cli_version": "cli_version",
+    "installed_server_version": "installed_server_version",
+    "running_server_version": "running_server_version",
+    "release_version": "release_version",
+    "core_version": "core_version",
+    "protocol": "protocol",
+}
+lines = []
+failed = None
+for key, want in required:
+    got = data.get(key)
+    if got is None or got == "" or got == "unknown":
+        lines.append(f"FAIL {key}: unavailable (got={got!r})")
+        failed = failed or key
+    elif str(got).strip() != want:
+        lines.append(f"FAIL {key}: got={got!r} want={want!r}")
+        failed = failed or key
+    else:
+        lines.append(f"PASS {key}={got}")
+open(out_path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+if failed:
+    print(gate_map.get(failed, "server_version"))
+    raise SystemExit(1)
+print("ok")
+PY
+)" || true
+if [[ -f "${WORK}/version-assert.txt" ]]; then
+  sanitize <"${WORK}/version-assert.txt" >"${WORK}/versions.txt" || true
+fi
+if [[ "${VERSION_GATE}" != "ok" ]]; then
+  fail "${VERSION_GATE:-server_version}" "version assertion failed (see version-assert.txt)"
+fi
+# Also probe disk binary with --version (must not start daemon).
+SERVER_VER_OUT="$("${SERVER}" --version 2>&1 || true)"
+printf '%s\n' "${SERVER_VER_OUT}" | sanitize >>"${WORK}/versions.txt"
+echo "${SERVER_VER_OUT}" | grep -Eq "nyxveil-server ${EXPECTED_VERSION}([[:space:]]|$)" ||
+  fail "server_version" "nyxveil-server --version mismatch: ${SERVER_VER_OUT}"
 
 [[ -s "${CONFIG}" ]] || fail "config" "${CONFIG} missing or empty"
 [[ -s "${STATE_DIR}/node.key" ]] || fail "identity" "node.key missing or empty"

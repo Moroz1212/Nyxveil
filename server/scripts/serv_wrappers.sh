@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install / remove convenience symlinks: serv_status, serv_health, …
+# Install / remove convenience symlinks: serv_status, serv_health, вЂ¦
 set -euo pipefail
 
 BIN_DIR="${NYXVEIL_BIN_DIR:-/usr/local/sbin}"
@@ -27,8 +27,8 @@ install_wrappers() {
     if [[ "${c}" == "update_bootstrap" ]]; then
       cat > "${LINK_DIR}/serv_update_bootstrap" <<EOF
 #!/usr/bin/env bash
-# Legacy ≤1.0.4: replace ONLY nyxveilctl from signed release, then full update.
-exec ${CTL} bootstrap-cli --version "\${NYXVEIL_BOOTSTRAP_VERSION:-1.1.3}" --then-update "\$@"
+# Legacy в‰¤1.0.4: replace ONLY nyxveilctl from signed release, then full update.
+exec ${CTL} bootstrap-cli --version "\${NYXVEIL_BOOTSTRAP_VERSION:-1.1.4}" --then-update "\$@"
 EOF
       chmod 0755 "${LINK_DIR}/serv_update_bootstrap"
       continue

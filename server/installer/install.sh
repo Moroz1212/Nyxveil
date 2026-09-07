@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nyxveil VPN node installer — Ubuntu 24.04 / systemd / nftables.
+# Nyxveil VPN node installer вЂ” Ubuntu 24.04 / systemd / nftables.
 # Self-contained: curl|bash works with ONLY this file (systemd units embedded).
 # Transactional: EXIT trap rolls back until COMMIT.
 #
@@ -10,14 +10,14 @@
 #   3. Verify Ed25519 signature (PureEd25519) with openssl pkeyutl -rawin -verify
 #      against embedded UpdatePublicKey (PUB_HEX below)
 #   4. Download each asset URL; sha256sum -c; install
-#   Missing/invalid manifest, signature, or sha → die (no WARN skip).
+#   Missing/invalid manifest, signature, or sha в†’ die (no WARN skip).
 # Local --binary-dir / --skip-download skips remote verify.
 set -euo pipefail
 
-readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.3}"
+readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.4}"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 # Same Ed25519 public key as internal/updater.UpdatePublicKey
-readonly PUB_HEX="f63d2c8001df3d7b2efdd171a16463260cb7190d61ef564419cc0836777d176f"
+readonly PUB_HEX="caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af"
 readonly DEFAULT_VPN_SUBNET="10.66.0.0/24"
 readonly MIN_RAM_MB_WARN=700
 readonly MIN_DISK_MB=200
@@ -215,7 +215,7 @@ detect_arch() {
 check_tun() {
   [[ "${MOCK}" -eq 1 ]] && return 0
   if [[ ! -e /dev/net/tun ]]; then
-    die "/dev/net/tun missing — enable TUN/TAP (modprobe tun) before installing"
+    die "/dev/net/tun missing вЂ” enable TUN/TAP (modprobe tun) before installing"
   fi
   if [[ ! -c /dev/net/tun ]]; then
     die "/dev/net/tun is not a character device"
@@ -228,7 +228,7 @@ check_resources() {
   mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
   mem_mb=$((mem_kb / 1024))
   if [[ "${mem_mb}" -lt "${MIN_RAM_MB_WARN}" ]]; then
-    warn "RAM ${mem_mb}MB < ${MIN_RAM_MB_WARN}MB — node may be constrained"
+    warn "RAM ${mem_mb}MB < ${MIN_RAM_MB_WARN}MB вЂ” node may be constrained"
   fi
   disk_mb="$(df -Pm /var 2>/dev/null | awk 'NR==2 {print $4}')"
   if [[ -z "${disk_mb}" ]]; then
@@ -307,7 +307,7 @@ detect_repair() {
   fi
   if [[ -f "${NODE_KEY}" && -n "${PRESERVE_NODE_ID}" ]]; then
     REPAIR_MODE=1
-    log "repair mode: node.key + node_id present — bootstrap token not required (PoP re-register)"
+    log "repair mode: node.key + node_id present вЂ” bootstrap token not required (PoP re-register)"
   fi
 }
 
@@ -372,7 +372,7 @@ precheck_control_plane_tls() {
   url="${CONTROL_PLANE%/}"
   [[ "${url}" == https://* ]] || die "control plane URL must be https://"
 
-  log "prechecking TLS to Control Plane…"
+  log "prechecking TLS to Control PlaneвЂ¦"
   if [[ -n "${CONTROL_PLANE_CA_FILE}" ]]; then
     curl -fsS --connect-timeout 10 --max-time 30 \
       --cacert "${CONTROL_PLANE_CA_FILE}" \
@@ -485,7 +485,7 @@ nft_cmd() {
 
 rollback() {
   [[ "${COMMITTED}" -eq 0 ]] || return 0
-  warn "rolling back incomplete install…"
+  warn "rolling back incomplete installвЂ¦"
   if [[ "${STARTED_SERVICE}" -eq 1 ]]; then
     systemctl_cmd stop nyxveil-server 2>/dev/null || true
     systemctl_cmd disable nyxveil-server 2>/dev/null || true
@@ -703,7 +703,7 @@ verify_manifest_signature() {
   local sig_b64
   sig_b64="$(sed -n 's/.*"signature"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${manifest}" | head -n1 || true)"
   if [[ -z "${sig_b64}" || "${sig_b64}" == "null" ]]; then
-    # Also try jq if present (signature may be multiline — still fail closed).
+    # Also try jq if present (signature may be multiline вЂ” still fail closed).
     if command -v jq >/dev/null 2>&1; then
       sig_b64="$(jq -r '.signature // empty' "${manifest}")"
     fi
@@ -755,7 +755,7 @@ http_get() {
   local dest="$2"
   if [[ "${MOCK}" -eq 1 ]]; then
     if [[ "${url}" == *release-manifest* ]]; then
-      # Unsigned by default — exercises fail-closed unless test supplies a file.
+      # Unsigned by default вЂ” exercises fail-closed unless test supplies a file.
       if [[ -n "${NYXVEIL_INSTALL_MOCK_MANIFEST:-}" && -f "${NYXVEIL_INSTALL_MOCK_MANIFEST}" ]]; then
         cp -a "${NYXVEIL_INSTALL_MOCK_MANIFEST}" "${dest}"
       else
@@ -913,7 +913,7 @@ download_or_copy_binaries() {
 install_sysctl() {
   mkdir -p "$(dirname "${SYSCTL_FILE}")"
   cat > "${SYSCTL_FILE}" <<'EOF'
-# Nyxveil VPN node — enable IPv4 forwarding for client NAT
+# Nyxveil VPN node вЂ” enable IPv4 forwarding for client NAT
 net.ipv4.ip_forward = 1
 EOF
   chmod 0644 "${SYSCTL_FILE}"
@@ -928,7 +928,7 @@ install_nftables() {
     acme_line=$'    tcp dport 80 ct state new accept comment "nyxveil-acme-http01"\n'
   fi
   cat > "${NFT_FILE}" <<EOF
-# Managed by Nyxveil installer — table inet nyxveil only
+# Managed by Nyxveil installer вЂ” table inet nyxveil only
 table inet nyxveil {
   chain input {
     type filter hook input priority filter - 10; policy accept;
@@ -955,7 +955,7 @@ EOF
   log "applied nftables table inet nyxveil (no ruleset flush)"
 }
 
-# Embedded units — no resolve_unit_source / sibling systemd/ required.
+# Embedded units вЂ” no resolve_unit_source / sibling systemd/ required.
 write_firewall_unit() {
   cat > "${FIREWALL_UNIT}" <<'EOF'
 [Unit]
@@ -1170,7 +1170,7 @@ generate_identity_and_register() {
     chmod 0644 "${PINNED_CA_DEST}"
   fi
 
-  log "registering with Control Plane as user nyxveil…"
+  log "registering with Control Plane as user nyxveilвЂ¦"
   local reg_flags=(--config "${CONFIG_FILE}" --register-stdin)
   if [[ "${TEST_SELF_SIGNED}" -eq 1 ]]; then
     reg_flags+=(--test-mode)
@@ -1180,20 +1180,20 @@ generate_identity_and_register() {
     if ! printf '\n' | run_as_nyxveil "${BIN_DIR}/nyxveil-server" "${reg_flags[@]}"; then
       if [[ -f "${NODE_KEY}" ]]; then
         PRESERVE_HAD_KEY=1
-        warn "repair registration failed but node.key exists — preserving identity (Control Plane may already know this node)"
+        warn "repair registration failed but node.key exists вЂ” preserving identity (Control Plane may already know this node)"
       fi
-      die "Control Plane repair re-registration (PoP) failed — keep node.key; retry with same identity/PoP"
+      die "Control Plane repair re-registration (PoP) failed вЂ” keep node.key; retry with same identity/PoP"
     fi
   else
     if ! printf '%s\n' "${BOOTSTRAP_TOKEN}" | run_as_nyxveil "${BIN_DIR}/nyxveil-server" "${reg_flags[@]}"; then
       # HTTP 200 + local decode/persist failure still leaves a CP-side node + consumed bootstrap.
-      # Never delete the freshly written node.key on rollback — retry must use PoP.
+      # Never delete the freshly written node.key on rollback вЂ” retry must use PoP.
       if [[ -f "${NODE_KEY}" ]]; then
         PRESERVE_HAD_KEY=1
-        warn "registration failed locally but node.key exists — Control Plane may already have registered this node"
+        warn "registration failed locally but node.key exists вЂ” Control Plane may already have registered this node"
         warn "preserving ${NODE_KEY}; retry with the SAME node_id/public key (PoP), do not mint a new identity"
       fi
-      die "Control Plane registration failed — if CP accepted the node, keep node.key and retry with PoP (empty bootstrap)"
+      die "Control Plane registration failed вЂ” if CP accepted the node, keep node.key and retry with PoP (empty bootstrap)"
     fi
   fi
   fix_state_ownership
@@ -1334,7 +1334,7 @@ print_success() {
     serv_health
     serv_restart
     serv_update
-    serv_update_bootstrap   # legacy ≤1.0.4: CLI-only then full update
+    serv_update_bootstrap   # legacy в‰¤1.0.4: CLI-only then full update
     serv_configure --status
     serv_logs
     serv_version

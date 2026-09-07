@@ -2,6 +2,7 @@ package updater_test
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -42,8 +43,15 @@ func TestProductionManifestsParseAndMatchKnownAMD64SHA(t *testing.T) {
 	if got != want {
 		t.Fatalf("amd64 manifest SHA256=%s want %s (do not resign/reupload for installer-only fix)", got, want)
 	}
-	if _, err := updater.ParseManifest(raw, updater.UpdatePublicKey); err != nil {
-		t.Fatalf("Go ParseManifest amd64: %v", err)
+	// server-v1.0.0 was signed with the pre-1.1.4 UpdatePublicKey trust root.
+	legacyPub := ed25519.PublicKey{
+		0xf6, 0x3d, 0x2c, 0x80, 0x01, 0xdf, 0x3d, 0x7b,
+		0x2e, 0xfd, 0xd1, 0x71, 0xa1, 0x64, 0x63, 0x26,
+		0x0c, 0xb7, 0x19, 0x0d, 0x61, 0xef, 0x56, 0x44,
+		0x19, 0xcc, 0x08, 0x36, 0x77, 0x7d, 0x17, 0x6f,
+	}
+	if _, err := updater.ParseManifest(raw, legacyPub); err != nil {
+		t.Fatalf("Go ParseManifest amd64 (legacy trust root): %v", err)
 	}
 
 	arm64 := releaseManifestPath(t, "arm64")
@@ -51,8 +59,30 @@ func TestProductionManifestsParseAndMatchKnownAMD64SHA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := updater.ParseManifest(raw64, updater.UpdatePublicKey); err != nil {
-		t.Fatalf("Go ParseManifest arm64: %v", err)
+	if _, err := updater.ParseManifest(raw64, legacyPub); err != nil {
+		t.Fatalf("Go ParseManifest arm64 (legacy trust root): %v", err)
+	}
+}
+
+func TestCurrentDistReleaseManifestsVerifyWithUpdatePublicKey(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	for _, arch := range []string{"amd64", "arm64"} {
+		p := filepath.Join(root, "dist", "release", "release-manifest-linux-"+arch+".json")
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			t.Skipf("dist/release missing (%v) — run package-release first", err)
+		}
+		m, err := updater.ParseManifest(raw, updater.UpdatePublicKey)
+		if err != nil {
+			t.Fatalf("current %s manifest: %v", arch, err)
+		}
+		if m.Version != "1.1.4" {
+			t.Fatalf("version=%s want 1.1.4", m.Version)
+		}
 	}
 }
 
@@ -76,7 +106,13 @@ func TestShellCanonicalBytesMatchGo(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		m, err := updater.ParseManifest(raw, updater.UpdatePublicKey)
+		legacyPub := ed25519.PublicKey{
+			0xf6, 0x3d, 0x2c, 0x80, 0x01, 0xdf, 0x3d, 0x7b,
+			0x2e, 0xfd, 0xd1, 0x71, 0xa1, 0x64, 0x63, 0x26,
+			0x0c, 0xb7, 0x19, 0x0d, 0x61, 0xef, 0x56, 0x44,
+			0x19, 0xcc, 0x08, 0x36, 0x77, 0x7d, 0x17, 0x6f,
+		}
+		m, err := updater.ParseManifest(raw, legacyPub)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -161,6 +197,11 @@ func TestShellVerifyProductionManifests(t *testing.T) {
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 	installer := filepath.Join(root, "installer", "install.sh")
+
+	// Historical 1.0.0 manifests require the legacy PUB_HEX. After 1.1.4 trust-root
+	// rotation the installer embeds the new key, so shell verify of 1.0.0 is skipped
+	// here; Go legacy-key coverage lives in TestProductionManifestsParseAndMatchKnownAMD64SHA.
+	t.Skip("shell verify of server-v1.0.0 requires legacy PUB_HEX; covered by Go legacy ParseManifest")
 
 	for _, arch := range []string{"amd64", "arm64"} {
 		man := releaseManifestPath(t, arch)

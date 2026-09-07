@@ -1,8 +1,11 @@
 package updater_test
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net"
 	"net/http"
 	"os"
@@ -71,7 +74,7 @@ func TestMissingVersionFailsBeforeModification(t *testing.T) {
 }
 
 func TestMissingBootstrapFailsBeforeModification(t *testing.T) {
-	fx := buildSignedReleaseFixture(t, "1.1.3", false)
+	fx := buildSignedReleaseFixture(t, "1.1.4", false)
 	os.Remove(filepath.Join(fx.dir, "bootstrap-cli-update.sh"))
 	prefix := t.TempDir()
 	bin := filepath.Join(prefix, "usr", "local", "sbin")
@@ -87,7 +90,7 @@ func TestMissingBootstrapFailsBeforeModification(t *testing.T) {
 	}
 	cmd := exec.Command(bash, dst, "--base-url", fx.base)
 	cmd.Dir = work
-	cmd.Env = liveFinalEnv(t, "NYXVEIL_BIN_DIR="+bin)
+	cmd.Env = liveFinalEnv(t, "NYXVEIL_BIN_DIR="+bin, "NYXVEIL_UPDATE_PUB_HEX="+fx.pubHex)
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("expected missing bootstrap failure:\n%s", out)
 	}
@@ -97,7 +100,7 @@ func TestMissingBootstrapFailsBeforeModification(t *testing.T) {
 }
 
 func TestTamperedBootstrapFails(t *testing.T) {
-	fx := buildSignedReleaseFixture(t, "1.1.3", false)
+	fx := buildSignedReleaseFixture(t, "1.1.4", false)
 	evil := []byte("#!/bin/bash\necho evil-no-pubkey\n")
 	if err := os.WriteFile(filepath.Join(fx.dir, "bootstrap-cli-update.sh"), evil, 0o755); err != nil {
 		t.Fatal(err)
@@ -117,7 +120,7 @@ func TestTamperedBootstrapFails(t *testing.T) {
 	}
 	cmd := exec.Command(bash, dst, "--base-url", fx.base, "--verify-chain")
 	cmd.Dir = work
-	cmd.Env = liveFinalEnv(t, "NYXVEIL_BIN_DIR="+bin)
+	cmd.Env = liveFinalEnv(t, "NYXVEIL_BIN_DIR="+bin, "NYXVEIL_UPDATE_PUB_HEX="+fx.pubHex)
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("expected tampered bootstrap failure:\n%s", out)
 	}
@@ -127,7 +130,7 @@ func TestTamperedBootstrapFails(t *testing.T) {
 }
 
 func TestTamperedCtlFails(t *testing.T) {
-	fx := buildSignedReleaseFixture(t, "1.1.3", false)
+	fx := buildSignedReleaseFixture(t, "1.1.4", false)
 	arch := "amd64"
 	if runtime.GOARCH == "arm64" {
 		arch = "arm64"
@@ -153,6 +156,7 @@ func TestTamperedCtlFails(t *testing.T) {
 		"NYXVEIL_BIN_DIR="+bin,
 		"NYXVEIL_SHARE_DIR="+filepath.Join(prefix, "usr", "local", "share", "nyxveil"),
 		"NYXVEIL_STATE_DIR="+filepath.Join(prefix, "var", "lib", "nyxveil"),
+		"NYXVEIL_UPDATE_PUB_HEX="+fx.pubHex,
 	)
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("expected tampered ctl failure:\n%s", out)
@@ -170,14 +174,16 @@ type fixtureOpts struct {
 }
 
 type signedFixture struct {
-	dir  string
-	base string
+	dir    string
+	base   string
+	pubHex string
 }
 
 func manifestToolEnv(t *testing.T) string {
 	t.Helper()
-	helper := filepath.ToSlash(filepath.Join(repoRootFromUpdaterTest(t), "scripts", "manifest-tool.go"))
-	return "go run " + helper
+	root := filepath.ToSlash(repoRootFromUpdaterTest(t))
+	// -C keeps module context when live-final runs from an empty workdir.
+	return "go run -C " + root + " ./scripts/manifest-tool.go"
 }
 
 func liveFinalEnv(t *testing.T, extra ...string) []string {
@@ -197,7 +203,7 @@ func runLiveFinalProcessFixture(t *testing.T, opts fixtureOpts) {
 	if _, err := exec.LookPath("openssl"); err != nil {
 		t.Skip("openssl required")
 	}
-	fx := buildSignedReleaseFixture(t, "1.1.3", opts.crlfSums)
+	fx := buildSignedReleaseFixture(t, "1.1.4", opts.crlfSums)
 	work := t.TempDir()
 	dst := filepath.Join(work, "live-final-update.sh")
 	copyFile(t, filepath.Join(repoRootFromUpdaterTest(t), "scripts", "live-final-update.sh"), dst)
@@ -207,7 +213,7 @@ func runLiveFinalProcessFixture(t *testing.T, opts fixtureOpts) {
 	}
 
 	args := []string{dst, "--base-url", fx.base}
-	env := liveFinalEnv(t)
+	env := liveFinalEnv(t, "NYXVEIL_UPDATE_PUB_HEX="+fx.pubHex)
 	prefix := t.TempDir()
 	bin := filepath.Join(prefix, "usr", "local", "sbin")
 	share := filepath.Join(prefix, "usr", "local", "share", "nyxveil")
@@ -258,7 +264,7 @@ func runLiveFinalProcessFixture(t *testing.T, opts fixtureOpts) {
 		if _, err := os.Stat(filepath.Join(share, "scripts", "production-gate.sh")); err != nil {
 			t.Fatalf("missing gate: %v\nout=%s", err, out)
 		}
-		if got := strings.TrimSpace(string(mustRead(t, filepath.Join(share, "VERSION")))); got != "1.1.3" {
+		if got := strings.TrimSpace(string(mustRead(t, filepath.Join(share, "VERSION")))); got != "1.1.4" {
 			t.Fatalf("share VERSION=%q", got)
 		}
 	}
@@ -268,6 +274,12 @@ func buildSignedReleaseFixture(t *testing.T, version string, crlf bool) signedFi
 	t.Helper()
 	dir := t.TempDir()
 	root := repoRootFromUpdaterTest(t)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubHex := hex.EncodeToString(pub)
+
 	payloads := map[string][]byte{
 		"nyxveil-server":         []byte("#!/usr/bin/env bash\necho server-" + version + "\n"),
 		"nyxveilctl":             buildStubCtl(t),
@@ -290,6 +302,8 @@ func buildSignedReleaseFixture(t *testing.T, version string, crlf bool) signedFi
 	}
 	copyFile(t, filepath.Join(root, "scripts", "bootstrap-cli-update.sh"), filepath.Join(dir, "bootstrap-cli-update.sh"))
 	copyFile(t, filepath.Join(root, "scripts", "live-final-update.sh"), filepath.Join(dir, "live-final-update.sh"))
+	rewritePubHex(t, filepath.Join(dir, "bootstrap-cli-update.sh"), pubHex)
+	rewritePubHex(t, filepath.Join(dir, "live-final-update.sh"), pubHex)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -300,28 +314,67 @@ func buildSignedReleaseFixture(t *testing.T, version string, crlf bool) signedFi
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
 
-	// Sign with the production release key so live-final's embedded PUB_HEX verifies.
-	cmd := exec.Command("go", "run", "./scripts/sign-release.go",
-		"-version", version,
-		"-out", dir,
-		"-base-url", base,
-		"-amd64-server", filepath.Join(dir, "nyxveil-server-linux-amd64"),
-		"-amd64-ctl", filepath.Join(dir, "nyxveilctl-linux-amd64"),
-		"-amd64-catalog", filepath.Join(dir, "nyxveil-catalog-verify-linux-amd64"),
-		"-arm64-server", filepath.Join(dir, "nyxveil-server-linux-arm64"),
-		"-arm64-ctl", filepath.Join(dir, "nyxveilctl-linux-arm64"),
-		"-arm64-catalog", filepath.Join(dir, "nyxveil-catalog-verify-linux-arm64"),
-		"-production-gate", filepath.Join(dir, "production-gate.sh"),
-		"-share-version", filepath.Join(dir, "VERSION"),
-		"-share-third-party", filepath.Join(dir, "THIRD_PARTY_CORE.md"),
-	)
-	cmd.Dir = root
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("sign-release: %v\n%s", err, out)
+	// Ephemeral key: tests must not require production .secrets on developer hosts.
+	for _, arch := range []string{"amd64", "arm64"} {
+		writeTestManifest(t, dir, version, arch, base, priv)
 	}
 	writeReleaseSums(t, dir, crlf)
-	_ = updater.UpdatePublicKey
-	return signedFixture{dir: dir, base: base}
+	return signedFixture{dir: dir, base: base, pubHex: pubHex}
+}
+
+const productionPubHex = "caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af"
+
+func rewritePubHex(t *testing.T, path, pubHex string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.ReplaceAll(string(b), productionPubHex, pubHex)
+	if updated == string(b) {
+		t.Fatalf("%s missing production PUB_HEX to rewrite", path)
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeTestManifest(t *testing.T, dir, version, arch, base string, priv ed25519.PrivateKey) {
+	t.Helper()
+	type item struct {
+		name, file, dest, mode string
+	}
+	items := []item{
+		{"nyxveil-server", "nyxveil-server-linux-" + arch, "/usr/local/sbin/nyxveil-server", "0755"},
+		{"nyxveilctl", "nyxveilctl-linux-" + arch, "/usr/local/sbin/nyxveilctl", "0755"},
+		{"nyxveil-catalog-verify", "nyxveil-catalog-verify-linux-" + arch, "/usr/local/sbin/nyxveil-catalog-verify", "0755"},
+		{"production-gate", "production-gate.sh", "/usr/local/share/nyxveil/scripts/production-gate.sh", "0755"},
+		{"share-version", "VERSION", "/usr/local/share/nyxveil/VERSION", "0644"},
+		{"share-third-party-core", "THIRD_PARTY_CORE.md", "/usr/local/share/nyxveil/THIRD_PARTY_CORE.md", "0644"},
+	}
+	m := &updater.Manifest{
+		Version: version, Arch: "linux/" + arch, MinCore: "1.0.0", MinProtocol: 1,
+	}
+	for _, it := range items {
+		sum := shaHex(mustRead(t, filepath.Join(dir, it.file)))
+		m.Assets = append(m.Assets, updater.Asset{
+			Name: it.name, SHA256: sum, URL: base + "/" + it.file,
+			Destination: it.dest, Mode: it.mode, Required: true,
+		})
+	}
+	updater.SignManifest(m, priv)
+	raw, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = append(raw, '\n')
+	out := filepath.Join(dir, "release-manifest-linux-"+arch+".json")
+	if err := os.WriteFile(out, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := updater.ParseManifest(raw, priv.Public().(ed25519.PublicKey)); err != nil {
+		t.Fatalf("fixture self-verify: %v", err)
+	}
 }
 
 func stubCtlScript() []byte {
@@ -344,16 +397,29 @@ import (
   "os"
   "path/filepath"
   "strconv"
+  "strings"
 )
 type asset struct{ Name, SHA256, URL, Mode string }
 type manifest struct{ Version string; Assets []asset }
+func loadManifest(src string) []byte {
+  if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+    resp, err := http.Get(src)
+    if err != nil { panic(err) }
+    defer resp.Body.Close()
+    b, err := io.ReadAll(resp.Body)
+    if err != nil { panic(err) }
+    return b
+  }
+  b, err := os.ReadFile(src)
+  if err != nil { panic(err) }
+  return b
+}
 func main() {
   if len(os.Args) < 2 || os.Args[1] != "update" {
     fmt.Println("stub-ctl", os.Args)
     return
   }
-  raw, err := os.ReadFile(os.Args[2])
-  if err != nil { panic(err) }
+  raw := loadManifest(os.Args[2])
   var m manifest
   if err := json.Unmarshal(raw, &m); err != nil { panic(err) }
   bin := os.Getenv("NYXVEIL_BIN_DIR")
@@ -371,6 +437,15 @@ func main() {
   for _, a := range m.Assets {
     p, ok := dest[a.Name]
     if !ok { continue }
+    if a.Name == "nyxveilctl" {
+      // Windows cannot overwrite the running stub executable; live-final already
+      // installed this ctl binary before invoking update.
+      if exe, err := os.Executable(); err == nil {
+        if filepath.Clean(exe) == filepath.Clean(p) {
+          continue
+        }
+      }
+    }
     resp, err := http.Get(a.URL)
     if err != nil { panic(err) }
     data, err := io.ReadAll(resp.Body)
@@ -383,7 +458,12 @@ func main() {
     if a.Mode != "" {
       if n, err := strconv.ParseUint(a.Mode, 8, 32); err == nil { mode = os.FileMode(n) }
     }
-    if err := os.WriteFile(p, data, mode); err != nil { panic(err) }
+    tmp := p + ".new"
+    if err := os.WriteFile(tmp, data, mode); err != nil { panic(err) }
+    if err := os.Rename(tmp, p); err != nil {
+      _ = os.Remove(p)
+      if err2 := os.Rename(tmp, p); err2 != nil { panic(err2) }
+    }
   }
   fmt.Println("stub-ctl: updated to", m.Version)
 }

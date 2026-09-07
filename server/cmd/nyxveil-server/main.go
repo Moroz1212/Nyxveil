@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -20,6 +21,14 @@ import (
 )
 
 func main() {
+	// Subcommand form used by ctl/gate probes: `nyxveil-server version [--json]`.
+	// Must be handled before flag.Parse so "version" is never treated as a
+	// daemon start (which caused live failed_gate=server_version).
+	if len(os.Args) >= 2 && os.Args[1] == "version" {
+		printServerVersion(os.Stdout, os.Args[2:])
+		return
+	}
+
 	configPath := flag.String("config", paths.ServerConfig(), "path to server.json")
 	register := flag.String("register", "", "bootstrap token (prefer --register-stdin); registers then exits")
 	registerStdin := flag.Bool("register-stdin", false, "read bootstrap token from stdin once, scrub, register, exit")
@@ -27,10 +36,15 @@ func main() {
 	testMode := flag.Bool("test-mode", false, "allow register without public_host")
 	controlHTTP := flag.String("control-http", "", "loopback HTTP control addr (Windows/tests); empty uses unix socket on Linux")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	versionJSON := flag.Bool("version-json", false, "print machine-readable version JSON and exit")
 	flag.Parse()
 
+	if *versionJSON {
+		printServerVersionJSON(os.Stdout)
+		return
+	}
 	if *showVersion {
-		fmt.Printf("nyxveil-server %s (core %s, %s)\n", version.ServerVersion, version.CoreVersion, version.ProtocolVersion)
+		printServerVersionHuman(os.Stdout)
 		return
 	}
 
@@ -74,6 +88,30 @@ func main() {
 	defer cancel()
 	_ = node.Shutdown(shutdownCtx)
 	log.Println("shutdown complete")
+}
+
+func printServerVersion(w io.Writer, args []string) {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	asJSON := fs.Bool("json", false, "machine-readable JSON")
+	_ = fs.Parse(args)
+	if *asJSON {
+		printServerVersionJSON(w)
+		return
+	}
+	printServerVersionHuman(w)
+}
+
+func printServerVersionHuman(w io.Writer) {
+	fmt.Fprintf(w, "nyxveil-server %s (core %s, %s)\n", version.ServerVersion, version.CoreVersion, version.ProtocolVersion)
+}
+
+func printServerVersionJSON(w io.Writer) {
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"server_version": version.ServerVersion,
+		"core_version":   version.CoreVersion,
+		"protocol":       version.ProtocolVersion,
+	})
 }
 
 func readTokenStdin() (string, error) {

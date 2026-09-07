@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# bootstrap-cli-update.sh — safe CLI-first path for legacy nyxveilctl updaters
+# bootstrap-cli-update.sh вЂ” safe CLI-first path for legacy nyxveilctl updaters
 #
 # Replaces ONLY /usr/local/sbin/nyxveilctl with a signed release asset, then
 # optionally runs `nyxveilctl update` with the FIXED updater.
 #
 # NEVER touches: nyxveil-server, TLS, server.json, nftables, node identity.
-# Fail-closed: bad signature / hash / arch / version → old CLI remains intact.
+# Fail-closed: bad signature / hash / arch / version в†’ old CLI remains intact.
 #
 # Trust model (same as installer / Go updater):
 #   1) Download release-manifest-linux-${arch}.json
@@ -14,17 +14,17 @@
 #   4) Atomic install (temp + fsync + rename), mode 0755, root:root
 #
 # Usage (production, from server-v1.1.1):
-#   sudo bash bootstrap-cli-update.sh --version 1.1.3 --then-update
+#   sudo bash bootstrap-cli-update.sh --version 1.1.4 --then-update
 #
 # Offline:
 #   sudo bash bootstrap-cli-update.sh --manifest /path/manifest.json \
 #     --ctl-file /path/nyxveilctl-linux-amd64 --then-update
 set -euo pipefail
 
-readonly PUB_HEX="f63d2c8001df3d7b2efdd171a16463260cb7190d61ef564419cc0836777d176f"
+readonly PUB_HEX="caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 
-VERSION="${NYXVEIL_BOOTSTRAP_VERSION:-1.1.3}"
+VERSION="${NYXVEIL_BOOTSTRAP_VERSION:-1.1.4}"
 BIN_DIR="${NYXVEIL_BIN_DIR:-/usr/local/sbin}"
 CTL_DEST="${BIN_DIR}/nyxveilctl"
 THEN_UPDATE=0
@@ -41,7 +41,7 @@ usage() {
   cat <<'EOF'
 Usage: bootstrap-cli-update.sh [options]
 
-  --version X.Y.Z     Target release version (default 1.1.3)
+  --version X.Y.Z     Target release version (default 1.1.4)
   --then-update       After CLI replace, exec: nyxveilctl update
   --manifest PATH     Use local signed manifest (skip download)
   --ctl-file PATH     Use local nyxveilctl binary (skip download)
@@ -188,7 +188,7 @@ verify_manifest_signature() {
   sigbin="${WORK}/sig.bin"
   b64url_decode "${sig_b64}" > "${sigbin}" || die "bad signature encoding"
   openssl pkeyutl -verify -pubin -inkey "${pem}" -rawin -in "${msg}" -sigfile "${sigbin}" >/dev/null 2>&1 \
-    || die "manifest signature INVALID — refusing (old CLI left intact)"
+    || die "manifest signature INVALID вЂ” refusing (old CLI left intact)"
 }
 
 # --- fetch / verify manifest -------------------------------------------------

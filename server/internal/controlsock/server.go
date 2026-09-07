@@ -11,7 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
+
+	"github.com/nyxveil/server/internal/version"
 )
 
 // StatusFunc returns the current node status payload.
@@ -57,6 +60,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", s.handleHTTPStatus)
 	mux.HandleFunc("/health", s.handleHTTPHealth)
+	mux.HandleFunc("/version", s.handleHTTPVersion)
 	mux.HandleFunc("/", s.handleRPC)
 
 	useUnix := runtime.GOOS != "windows" && s.SocketPath != ""
@@ -140,6 +144,10 @@ func (s *Server) handleHTTPHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.healthResult())
 }
 
+func (s *Server) handleHTTPVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.versionResult())
+}
+
 func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -156,6 +164,8 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 		resp.Result = s.statusResult()
 	case "health":
 		resp.Result = s.healthResult()
+	case "version":
+		resp.Result = s.versionResult()
 	default:
 		resp.Error = fmt.Sprintf("unknown method %q", req.Method)
 	}
@@ -174,6 +184,32 @@ func (s *Server) healthResult() any {
 		return s.Health()
 	}
 	return map[string]any{"healthy": false}
+}
+
+func (s *Server) versionResult() any {
+	out := map[string]any{
+		"server_version": version.ServerVersion,
+		"core_version":   version.CoreVersion,
+		"protocol":       version.ProtocolVersion,
+	}
+	if raw := s.statusResult(); raw != nil {
+		b, err := json.Marshal(raw)
+		if err == nil {
+			var m map[string]any
+			if json.Unmarshal(b, &m) == nil {
+				if v, ok := m["server_version"].(string); ok && strings.TrimSpace(v) != "" {
+					out["server_version"] = v
+				}
+				if v, ok := m["core_version"].(string); ok && strings.TrimSpace(v) != "" {
+					out["core_version"] = v
+				}
+				if v, ok := m["protocol_version"].(string); ok && strings.TrimSpace(v) != "" {
+					out["protocol"] = v
+				}
+			}
+		}
+	}
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

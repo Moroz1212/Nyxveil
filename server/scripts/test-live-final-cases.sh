@@ -24,7 +24,7 @@ need_go() {
 need_sign_key() { [[ -f "${ROOT}/.secrets/release-signing.ed25519" ]] || die "signing key required"; }
 
 
-PUB_HEX="f63d2c8001df3d7b2efdd171a16463260cb7190d61ef564419cc0836777d176f"
+PUB_HEX="caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af"
 
 host_arch() {
   case "$(uname -m)" in

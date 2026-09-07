@@ -60,6 +60,10 @@ func TestAssertNoCRLFGateRejectsInjectedCRLF(t *testing.T) {
 		return
 	}
 
+	if !wslAvailable() {
+		t.Skip("WSL not installed; CRLF gate covered by pure Go byte checks above + Linux CI")
+	}
+
 	// On Windows+WSL: write fixtures inside the Linux filesystem to avoid DrvFs EOL translation.
 	wslAssert := toWSLPath(assertScript)
 	script := fmt.Sprintf(`
@@ -84,6 +88,19 @@ func TestPackagingNormalizeStripsCRLF(t *testing.T) {
 	root := findServerRoot(t)
 	norm := filepath.Join(root, "scripts", "normalize-shell-lf.sh")
 	if runtime.GOOS == "windows" {
+		if !wslAvailable() {
+			// Fall back to Git Bash on DrvFs — normalize still must strip CR.
+			dir := tempDir(t)
+			f := filepath.Join(dir, "crlf.sh")
+			_ = os.WriteFile(f, []byte("#!/bin/sh\r\nset -e\r\n"), 0o755)
+			if out, err := exec.Command("bash", norm, f).CombinedOutput(); err != nil {
+				t.Fatalf("normalize failed: %v %s", err, out)
+			}
+			if bytes.Contains(mustRead(t, f), []byte{0x0d}) {
+				t.Fatal("CR remains")
+			}
+			return
+		}
 		wslNorm := toWSLPath(norm)
 		script := fmt.Sprintf(`
 set -euo pipefail
@@ -116,6 +133,15 @@ func TestBootstrapScriptBashHelpUnderUbuntu(t *testing.T) {
 	root := findServerRoot(t)
 	src := filepath.Join(root, "scripts", "bootstrap-cli-update.sh")
 	if runtime.GOOS == "windows" {
+		if !wslAvailable() {
+			if out, err := exec.Command("bash", "-n", src).CombinedOutput(); err != nil {
+				t.Fatalf("bash -n: %s", out)
+			}
+			if out, err := exec.Command("bash", src, "--help").CombinedOutput(); err != nil {
+				t.Fatalf("--help: %s", out)
+			}
+			return
+		}
 		wslSrc := toWSLPath(src)
 		cmd := exec.Command("wsl", "-e", "bash", "-lc",
 			fmt.Sprintf(`set -euo pipefail; file %q | grep -vi crlf >/dev/null; bash -n %q; bash %q --help >/dev/null`, wslSrc, wslSrc, wslSrc))
@@ -130,6 +156,15 @@ func TestBootstrapScriptBashHelpUnderUbuntu(t *testing.T) {
 	if out, err := exec.Command("bash", src, "--help").CombinedOutput(); err != nil {
 		t.Fatalf("--help: %s", out)
 	}
+}
+
+func wslAvailable() bool {
+	out, err := exec.Command("wsl", "-e", "true").CombinedOutput()
+	if err != nil {
+		_ = out
+		return false
+	}
+	return true
 }
 
 func findServerRoot(t *testing.T) string {

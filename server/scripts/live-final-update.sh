@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# live-final-update.sh — self-contained CLI-first final update for legacy nodes.
+# live-final-update.sh вЂ” self-contained CLI-first final update for legacy nodes.
 #
 # Trust root (cryptographic authenticity):
 #   Embedded Ed25519 UpdatePublicKey (PUB_HEX), identical to installer /
@@ -21,8 +21,8 @@
 set -euo pipefail
 umask 077
 
-readonly PUB_HEX="${NYXVEIL_UPDATE_PUB_HEX:-f63d2c8001df3d7b2efdd171a16463260cb7190d61ef564419cc0836777d176f}"
-readonly DEFAULT_VERSION="1.1.3"
+readonly PUB_HEX="${NYXVEIL_UPDATE_PUB_HEX:-caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af}"
+readonly DEFAULT_VERSION="1.1.4"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 
 VERSION=""
@@ -42,13 +42,13 @@ usage() {
   cat <<'EOF'
 Usage: live-final-update.sh [options]
 
-  --version X.Y.Z   Target version (default: fetch VERSION from --base-url, else 1.1.3)
+  --version X.Y.Z   Target version (default: fetch VERSION from --base-url, else 1.1.4)
   --base-url URL    Release asset base URL (online mode)
   --local-dir DIR   Flat release directory (no network; still signature-verifies)
   --verify-chain    Download/verify trust chain only; do not modify the system
   -h, --help        Show this help
 
-Trust: embedded Ed25519 release public key → signed manifest → asset SHA-256.
+Trust: embedded Ed25519 release public key в†’ signed manifest в†’ asset SHA-256.
 EOF
 }
 
@@ -254,11 +254,11 @@ verify_manifest_signature() {
   sigbin="${WORK}/sig.bin"
   b64url_decode "${sig_b64}" > "${sigbin}" || die "bad signature encoding"
   openssl pkeyutl -verify -pubin -inkey "${pem}" -rawin -in "${msg}" -sigfile "${sigbin}" >/dev/null 2>&1 \
-    || die "manifest signature INVALID — refusing (system unmodified)"
+    || die "manifest signature INVALID вЂ” refusing (system unmodified)"
 }
 
 # Textual checksum lists may be published with CRLF from Windows builders.
-# Normalize only the checksum *listing* for parsing — never mutate binaries.
+# Normalize only the checksum *listing* for parsing вЂ” never mutate binaries.
 checksum_lines() {
   local sums="$1"
   [[ -f "${sums}" ]] || die "missing checksum file: ${sums}"
@@ -424,7 +424,7 @@ test -f "${SHARE_DIR}/VERSION" || die "share VERSION missing after update"
 
 log "release assets complete; executing ${GATE_MODE:-live} production gate"
 if [[ "${NYXVEIL_SKIP_GATE:-0}" == "1" ]]; then
-  log "NYXVEIL_SKIP_GATE=1 — skipping production gate"
+  log "NYXVEIL_SKIP_GATE=1 вЂ” skipping production gate"
   echo "RESULT=PASS"
   exit 0
 fi

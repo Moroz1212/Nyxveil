@@ -78,7 +78,7 @@ name="$(basename "$file")"
 
 func TestBootstrapTrustUsesReleaseSigningRoot(t *testing.T) {
 	root := repoRootFromUpdaterTest(t)
-	const pubHex = "f63d2c8001df3d7b2efdd171a16463260cb7190d61ef564419cc0836777d176f"
+	const pubHex = "caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af"
 	for _, rel := range []string{
 		filepath.Join("scripts", "live-final-update.sh"),
 		filepath.Join("scripts", "bootstrap-cli-update.sh"),

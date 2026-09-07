@@ -107,7 +107,7 @@ func main() {
 	if err != nil {
 		fatal("bootstrap: %v", err)
 	}
-	if !strings.Contains(string(boot), "f63d2c8001df3d7b2efdd171a16463260cb7190d61ef564419cc0836777d176f") {
+	if !strings.Contains(string(boot), "caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af") {
 		fatal("bootstrap missing UpdatePublicKey")
 	}
 

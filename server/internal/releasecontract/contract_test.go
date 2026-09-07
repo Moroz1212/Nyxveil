@@ -81,10 +81,10 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 	}
 }
 
-func TestProductVersionIs113(t *testing.T) {
+func TestProductVersionIs114(t *testing.T) {
 	root := repoRoot(t)
-	if got := strings.TrimSpace(readFile(t, filepath.Join(root, "VERSION"))); got != "1.1.3" {
-		t.Fatalf("VERSION=%q want 1.1.3", got)
+	if got := strings.TrimSpace(readFile(t, filepath.Join(root, "VERSION"))); got != "1.1.4" {
+		t.Fatalf("VERSION=%q want 1.1.4", got)
 	}
 	for _, file := range []string{
 		filepath.Join(root, "internal", "version", "version.go"),
@@ -94,8 +94,8 @@ func TestProductVersionIs113(t *testing.T) {
 		filepath.Join(root, "scripts", "production-gate.sh"),
 		filepath.Join(root, "scripts", "live-final-update.sh"),
 	} {
-		if !strings.Contains(readFile(t, file), "1.1.3") {
-			t.Errorf("%s does not contain product version 1.1.3", file)
+		if !strings.Contains(readFile(t, file), "1.1.4") {
+			t.Errorf("%s does not contain product version 1.1.4", file)
 		}
 	}
 }
