@@ -22,7 +22,7 @@ func TestWrongManagementDestinationFailsClosed(t *testing.T) {
 	hs := httptest.NewServer(mux)
 	t.Cleanup(hs.Close)
 
-	m := &updater.Manifest{Version: "1.1.9", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1}
+	m := &updater.Manifest{Version: "1.1.10", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1}
 	dest, _ := paths.DefaultExtraInstallMaps()
 	dest["nyxveil-server"] = paths.BinaryPath()
 	for _, name := range updater.RequiredAssetNames {
@@ -55,7 +55,7 @@ func TestWrongManagementModeFailsClosed(t *testing.T) {
 	hs := httptest.NewServer(mux)
 	t.Cleanup(hs.Close)
 
-	m := &updater.Manifest{Version: "1.1.9", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1}
+	m := &updater.Manifest{Version: "1.1.10", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1}
 	dest, _ := paths.DefaultExtraInstallMaps()
 	dest["nyxveil-server"] = paths.BinaryPath()
 	for _, name := range updater.RequiredAssetNames {
@@ -88,7 +88,7 @@ func TestUnknownRequiredPrivilegedAssetFailsClosed(t *testing.T) {
 	hs := httptest.NewServer(mux)
 	t.Cleanup(hs.Close)
 
-	m := &updater.Manifest{Version: "1.1.9", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1}
+	m := &updater.Manifest{Version: "1.1.10", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1}
 	dest, _ := paths.DefaultExtraInstallMaps()
 	dest["nyxveil-server"] = paths.BinaryPath()
 	for _, name := range updater.RequiredAssetNames {
@@ -125,7 +125,7 @@ func TestManagementAssetRollbackRemovesNewFiles(t *testing.T) {
 	serverBin := filepath.Join(root, "server")
 	_ = os.WriteFile(serverBin, []byte("old"), 0o755)
 
-	m := &updater.Manifest{Version: "1.1.9", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1}
+	m := &updater.Manifest{Version: "1.1.10", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1}
 	for _, name := range updater.RequiredAssetNames {
 		m.Assets = append(m.Assets, updater.Asset{
 			Name: name, SHA256: shaHex(payloads[name]), URL: hs.URL + "/" + name,
@@ -169,7 +169,7 @@ func TestDaemonReloadInvokedAfterUpdateUnitInstall(t *testing.T) {
 	serverBin := filepath.Join(root, "server")
 	_ = os.WriteFile(serverBin, []byte("old"), 0o755)
 
-	m := &updater.Manifest{Version: "1.1.9", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1}
+	m := &updater.Manifest{Version: "1.1.10", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1}
 	for _, name := range updater.RequiredAssetNames {
 		m.Assets = append(m.Assets, updater.Asset{
 			Name: name, SHA256: shaHex(payloads[name]), URL: hs.URL + "/" + name,

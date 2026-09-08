@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -193,8 +194,20 @@ func http01Challenge(a *acme.Authorization) *acme.Challenge {
 }
 
 func isAlreadyRegistered(err error) bool {
-	ae, ok := err.(*acme.Error)
-	return ok && (ae.StatusCode == http.StatusConflict || ae.StatusCode == 409)
+	if err == nil {
+		return false
+	}
+	// golang.org/x/crypto/acme returns this sentinel from Client.Register when the
+	// account key is already known to the CA (rfc8555). Do not string-match.
+	if errors.Is(err, acme.ErrAccountAlreadyExists) {
+		return true
+	}
+	// Compatibility with ACME servers that still surface HTTP 409 Conflict.
+	var ae *acme.Error
+	if errors.As(err, &ae) && ae != nil {
+		return ae.StatusCode == http.StatusConflict || ae.StatusCode == 409
+	}
+	return false
 }
 
 func loadOrCreateAccountKey(path string) (crypto.Signer, error) {

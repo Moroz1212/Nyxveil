@@ -8,12 +8,12 @@
 // Usage:
 //
 //	go run ./scripts/make-release-manifest.go \
-//	  -version 1.1.9 -out dist/release \
+//	  -version 1.1.10 -out dist/release \
 //	  -amd64-server path -amd64-ctl path -amd64-catalog path \
 //	  -arm64-server path -arm64-ctl path -arm64-catalog path \
 //	  -production-gate path -share-version path -share-third-party path \
 //	  -update-service path -management-polkit path \
-//	  [-base-url https://github.com/org/repo/releases/download/server-v1.1.9]
+//	  [-base-url https://github.com/org/repo/releases/download/server-v1.1.10]
 package main
 
 import (

@@ -12,7 +12,7 @@
 # Local --binary-dir / --skip-download skips remote verify.
 set -euo pipefail
 
-readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.9}"
+readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.10}"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 readonly DEFAULT_VPN_SUBNET="10.66.0.0/24"
 readonly MIN_RAM_MB_WARN=700
@@ -56,6 +56,7 @@ BACKUP_DIR=""
 PRESERVE_NODE_ID=""
 PRESERVE_HAD_KEY=0
 REPAIR_MODE=0
+REGISTRATION_COMMITTED=0
 
 # Canonical release-manifest destinations (always Unix production paths).
 readonly WANT_SERVER_DEST="/usr/local/sbin/nyxveil-server"
@@ -305,6 +306,7 @@ detect_repair() {
   PRESERVE_NODE_ID=""
   PRESERVE_HAD_KEY=0
   REPAIR_MODE=0
+  REGISTRATION_COMMITTED=0
   if [[ -f "${CONFIG_FILE}" ]]; then
     PRESERVE_NODE_ID="$(sed -n 's/.*"node_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${CONFIG_FILE}" | head -n1 || true)"
   fi
@@ -317,7 +319,7 @@ detect_repair() {
   fi
   if [[ -f "${NODE_KEY}" && -n "${PRESERVE_NODE_ID}" ]]; then
     REPAIR_MODE=1
-    log "repair mode: node.key + node_id present вЂ” bootstrap token not required (PoP re-register)"
+    log "repair mode: node.key + node_id present — bootstrap token not required (PoP re-register)"
   fi
 }
 
@@ -504,7 +506,11 @@ nft_cmd() {
 
 rollback() {
   [[ "${COMMITTED}" -eq 0 ]] || return 0
-  warn "rolling back incomplete installвЂ¦"
+  if [[ "${REGISTRATION_COMMITTED}" -eq 1 ]]; then
+    warn "registration already committed; preserving node identity for PoP repair"
+  else
+    warn "rolling back incomplete install…"
+  fi
   if [[ "${STARTED_SERVICE}" -eq 1 ]]; then
     systemctl_cmd stop nyxveil-server 2>/dev/null || true
     systemctl_cmd disable nyxveil-server 2>/dev/null || true
@@ -579,23 +585,38 @@ rollback() {
       rm -f "${BIN_DIR}/nyxveilctl"
     fi
   fi
-  if [[ "${WROTE_CONFIG}" -eq 1 ]]; then
+  if [[ "${REGISTRATION_COMMITTED}" -eq 1 ]]; then
+    # Control Plane already accepted this node. Never delete local identity
+    # artifacts required for PoP repair (same node_id / node.key).
+    :
+  elif [[ "${WROTE_CONFIG}" -eq 1 ]]; then
     if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/server.json" ]]; then
       cp -a "${BACKUP_DIR}/server.json" "${CONFIG_FILE}"
     else
       rm -f "${CONFIG_FILE}"
     fi
   fi
-  if [[ "${PRESERVE_HAD_KEY}" -eq 0 && -f "${NODE_KEY}" && ! -f "${BACKUP_DIR}/node.key" ]]; then
+  if [[ "${REGISTRATION_COMMITTED}" -eq 1 || "${PRESERVE_HAD_KEY}" -eq 1 ]]; then
+    # Keep node.key (and do not restore an older backup over a committed identity).
+    :
+  elif [[ -f "${NODE_KEY}" && ! -f "${BACKUP_DIR}/node.key" ]]; then
     rm -f "${NODE_KEY}"
   elif [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/node.key" ]]; then
     cp -a "${BACKUP_DIR}/node.key" "${NODE_KEY}"
   fi
-  if [[ "${CREATED_USER}" -eq 1 ]]; then
+  # applied-config.json is never deleted on rollback (CP-derived state for repair).
+  if [[ "${REGISTRATION_COMMITTED}" -eq 1 ]]; then
+    # Keep nyxveil system user so /var/lib/nyxveil ownership stays repairable.
+    :
+  elif [[ "${CREATED_USER}" -eq 1 ]]; then
     [[ "${MOCK}" -eq 1 ]] || userdel nyxveil 2>/dev/null || true
   fi
   [[ -n "${BACKUP_DIR}" && -d "${BACKUP_DIR}" ]] && rm -rf "${BACKUP_DIR}"
-  warn "rollback complete"
+  if [[ "${REGISTRATION_COMMITTED}" -eq 1 ]]; then
+    warn "install failed but node identity preserved for PoP repair"
+  else
+    warn "rollback complete"
+  fi
 }
 
 on_exit() {
@@ -1257,10 +1278,16 @@ generate_identity_and_register() {
     printf 'mock-tls-key\n' > "${STATE_DIR}/tls.key"
     chmod 0644 "${STATE_DIR}/tls.crt"
     chmod 0600 "${STATE_DIR}/tls.key"
+    if [[ ! -f "${STATE_DIR}/applied-config.json" ]]; then
+      printf '{"config_version":1,"mock":true}\n' > "${STATE_DIR}/applied-config.json"
+      chmod 0600 "${STATE_DIR}/applied-config.json"
+    fi
     fix_state_ownership
     log "MOCK: skip Control Plane registration"
     BOOTSTRAP_TOKEN=""
     unset BOOTSTRAP_TOKEN
+    REGISTRATION_COMMITTED=1
+    log "registration committed; identity preserved for PoP repair on later install failure"
     return 0
   fi
 
@@ -1305,7 +1332,10 @@ generate_identity_and_register() {
   fix_state_ownership
   BOOTSTRAP_TOKEN=""
   unset BOOTSTRAP_TOKEN
+  REGISTRATION_COMMITTED=1
+  PRESERVE_HAD_KEY=1
   log "registration complete; identity at ${NODE_KEY}"
+  log "registration committed; identity preserved for PoP repair on later install failure"
 }
 
 # run_as_nyxveil executes a command as the runtime service user (no root TLS keys).
@@ -1489,7 +1519,14 @@ main() {
   install_nftables
   install_systemd_units
   write_server_json
+  if [[ "${NYXVEIL_INSTALL_FAIL_BEFORE_REGISTER:-0}" -eq 1 ]]; then
+    die "forced failure before registration (test)"
+  fi
   generate_identity_and_register
+  # Test-only: simulate post-registration health/start failure without CP.
+  if [[ "${NYXVEIL_INSTALL_FAIL_AFTER_REGISTER:-0}" -eq 1 ]]; then
+    die "forced failure after registration (test)"
+  fi
   start_and_test
   install_serv_wrappers
 

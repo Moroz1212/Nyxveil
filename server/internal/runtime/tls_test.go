@@ -17,9 +17,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/nyxveil/server/internal/configure"
 	"github.com/nyxveil/server/internal/controlplane"
 	"github.com/nyxveil/server/internal/localconfig"
 	"github.com/nyxveil/server/internal/nodetls"
@@ -389,5 +391,101 @@ func TestRuntimeACMEStagingFailurePreservesLiveTLS(t *testing.T) {
 	afterKey, _ := os.ReadFile(keyFile)
 	if string(afterCert) != string(beforeCert) || string(afterKey) != string(beforeKey) {
 		t.Fatal("live TLS changed after staged ACME failure")
+	}
+}
+
+// Fresh ACME issuance then immediate restart must reuse the live leaf and must
+// not open a second ACME order (register + first daemon start path).
+func TestRuntimeFreshACMEReuseOnImmediateRestart(t *testing.T) {
+	dir := tempDir(t)
+	certFile := filepath.Join(dir, "tls.crt")
+	keyFile := filepath.Join(dir, "tls.key")
+	domain := "fi-hel-02.nyxveil.ru"
+	cfg := localconfig.File{
+		ACMEDomain:  domain,
+		TLSCertFile: certFile,
+		TLSKeyFile:  keyFile,
+	}
+
+	var orders atomic.Int32
+	n := &Node{
+		validateStagedTLS: func(cert, key, d string, now time.Time) error {
+			return configure.ValidateLeafForDomainOpts(cert, key, d, now, false)
+		},
+		advertiseSPKI:     func(context.Context, []byte) error { return nil },
+		verifyCatalogSPKI: func(context.Context, []byte) error { return nil },
+		verifyServedSPKI:  func(context.Context, []byte) error { return nil },
+		reloadTLS:         func(tls.Certificate) error { return nil },
+		acmeIssuer: func(_ context.Context, acfg nodetls.ACMEConfig) (tls.Certificate, []byte, []byte, bool, error) {
+			orders.Add(1)
+			if acfg.Dest.CertFile == certFile || acfg.Dest.KeyFile == keyFile {
+				t.Fatal("issuer must stage away from live paths")
+			}
+			priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				return tls.Certificate{}, nil, nil, false, err
+			}
+			tmpl := &x509.Certificate{
+				SerialNumber: big.NewInt(7),
+				Subject:      pkix.Name{CommonName: domain},
+				NotBefore:    time.Now().Add(-time.Hour),
+				NotAfter:     time.Now().Add(60 * 24 * time.Hour),
+				KeyUsage:     x509.KeyUsageDigitalSignature,
+				ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+				DNSNames:     []string{domain},
+			}
+			der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+			if err != nil {
+				return tls.Certificate{}, nil, nil, false, err
+			}
+			if err := nodetls.WriteLeafChain(acfg.Dest, [][]byte{der}, priv); err != nil {
+				return tls.Certificate{}, nil, nil, false, err
+			}
+			cert, err := nodetls.Load(acfg.Dest)
+			if err != nil {
+				return tls.Certificate{}, nil, nil, false, err
+			}
+			pin, err := nodetls.SPKIPinSHA256(cert)
+			if err != nil {
+				return tls.Certificate{}, nil, nil, false, err
+			}
+			return cert, nil, pin, true, nil
+		},
+	}
+
+	cert1, _, _, _, err := n.issueACME(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("first issuance: %v", err)
+	}
+	if orders.Load() != 1 {
+		t.Fatalf("orders=%d want 1 after first issuance", orders.Load())
+	}
+	if !nodetls.Exists(nodetls.Paths{CertFile: certFile, KeyFile: keyFile}) {
+		t.Fatal("live TLS missing after first issuance")
+	}
+	if len(cert1.Certificate) == 0 {
+		t.Fatal("empty certificate after first issuance")
+	}
+
+	beforeCert, _ := os.ReadFile(certFile)
+	beforeKey, _ := os.ReadFile(keyFile)
+
+	cert2, _, _, changed, err := n.issueACME(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("immediate restart reuse: %v", err)
+	}
+	if changed {
+		t.Fatal("reuse must not change SPKI")
+	}
+	if orders.Load() != 1 {
+		t.Fatalf("duplicate ACME order on restart: orders=%d want 1", orders.Load())
+	}
+	afterCert, _ := os.ReadFile(certFile)
+	afterKey, _ := os.ReadFile(keyFile)
+	if string(afterCert) != string(beforeCert) || string(afterKey) != string(beforeKey) {
+		t.Fatal("reuse must not rewrite live TLS")
+	}
+	if len(cert2.Certificate) == 0 {
+		t.Fatal("empty certificate on reuse")
 	}
 }

@@ -37,6 +37,7 @@ required=(
   scripts/test-install.sh
   scripts/test-curl-installer.sh
   scripts/test-installer-management-assets.sh
+  scripts/test-post-registration-identity.sh
   scripts/serv_wrappers.sh
   README.md
   THIRD_PARTY_CORE.md
@@ -80,6 +81,10 @@ check "server After firewall" \
   grep -q 'nyxveil-firewall.service' systemd/nyxveil-server.service
 check "firewall oneshot RemainAfterExit" \
   grep -q 'RemainAfterExit=yes' systemd/nyxveil-firewall.service
+check "install preserves committed registration identity" \
+  grep -q 'REGISTRATION_COMMITTED' installer/install.sh
+check "install post-registration preserve log" \
+  grep -q 'registration already committed; preserving node identity for PoP repair' installer/install.sh
 check "Frozen Core SHA documented" \
   grep -q '7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b' THIRD_PARTY_CORE.md
 check "register as nyxveil user" \
@@ -89,7 +94,7 @@ check "fix_state_ownership" \
 check "unit no /etc write path" \
   bash -c '! grep -E "ReadWritePaths=.* /etc/nyxveil" systemd/nyxveil-server.service'
 check "embedded wrappers include update" \
-  grep -q 'version config update uninstall' installer/install.sh
+  grep -q 'version config configure update uninstall' installer/install.sh
 
 echo "== LF line endings (shell scripts) =="
 if command -v file >/dev/null 2>&1; then

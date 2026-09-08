@@ -110,7 +110,7 @@ write_asset() {
 # Build a canonical 8-asset unsigned manifest (production destinations).
 write_full_manifest() {
   local out="$1"
-  local version="${2:-1.1.9}"
+  local version="${2:-1.1.10}"
   local arch="${3:-linux/amd64}"
   cat > "${out}" <<EOF
 {

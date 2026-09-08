@@ -14,7 +14,7 @@ import (
 )
 
 // TestUpgradeFrom116StyleNodeTo119 proves the production upgrade path from the
-// last published stable (1.1.6-style layout without management assets) to 1.1.9:
+// last published stable (1.1.6-style layout without management assets) to 1.1.10:
 // bootstrap new ctl first, then full signed update installs management layer.
 func TestUpgradeFrom116StyleNodeTo119(t *testing.T) {
 	root := tempRoot(t)
@@ -64,11 +64,11 @@ func TestUpgradeFrom116StyleNodeTo119(t *testing.T) {
 		t.Fatal(err)
 	}
 	payloads := withRequiredPayloads(map[string][]byte{
-		"nyxveil-server":            []byte("nyxveil-server-1.1.9"),
-		"nyxveilctl":                []byte("nyxveilctl-1.1.9-full-updater"),
-		"nyxveil-catalog-verify":    []byte("nyxveil-catalog-verify-1.1.9"),
+		"nyxveil-server":            []byte("nyxveil-server-1.1.10"),
+		"nyxveilctl":                []byte("nyxveilctl-1.1.10-full-updater"),
+		"nyxveil-catalog-verify":    []byte("nyxveil-catalog-verify-1.1.10"),
 		"production-gate":           []byte("#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n"),
-		"share-version":             []byte("1.1.9\n"),
+		"share-version":             []byte("1.1.10\n"),
 		"share-third-party-core":    []byte("7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b\n"),
 		"nyxveil-update-service":    unitBody,
 		"nyxveil-management-polkit": polkitBody,
@@ -87,7 +87,7 @@ func TestUpgradeFrom116StyleNodeTo119(t *testing.T) {
 	signedDestinations, _ := paths.DefaultExtraInstallMaps()
 	signedDestinations["nyxveil-server"] = paths.BinaryPath()
 	manifest := &updater.Manifest{
-		Version: "1.1.9", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1,
+		Version: "1.1.10", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1,
 	}
 	for _, name := range updater.RequiredAssetNames {
 		manifest.Assets = append(manifest.Assets, updater.Asset{
@@ -105,7 +105,7 @@ func TestUpgradeFrom116StyleNodeTo119(t *testing.T) {
 
 	if _, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
 		ManifestURL: httpServer.URL + "/release-manifest.json",
-		WantVersion: "1.1.9",
+		WantVersion: "1.1.10",
 		CtlPath:     ctlPath,
 		HTTP:        httpServer.Client(),
 	}); err != nil {
@@ -138,7 +138,7 @@ func TestUpgradeFrom116StyleNodeTo119(t *testing.T) {
 	if got := string(mustRead(t, serverPath)); got != string(payloads["nyxveil-server"]) {
 		t.Fatalf("server=%q", got)
 	}
-	if got := strings.TrimSpace(string(mustRead(t, extraDest["share-version"]))); got != "1.1.9" {
+	if got := strings.TrimSpace(string(mustRead(t, extraDest["share-version"]))); got != "1.1.10" {
 		t.Fatalf("share version=%q", got)
 	}
 	unit := string(mustRead(t, extraDest["nyxveil-update-service"]))
