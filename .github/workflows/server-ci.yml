@@ -51,21 +51,8 @@ jobs:
           cache-dependency-path: server/go.sum
       - name: Cross-compile amd64/arm64
         run: bash scripts/build-release.sh
-      - name: Package and sign release manifests
-        env:
-          NYXVEIL_RELEASE_SIGNING_KEY: ${{ secrets.NYXVEIL_RELEASE_SIGNING_KEY }}
-        run: |
-          if [ -z "${NYXVEIL_RELEASE_SIGNING_KEY}" ]; then
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
-              echo "::warning::NYXVEIL_RELEASE_SIGNING_KEY unset on PR — packaging unsigned (SKIP_SIGN=1)"
-              SKIP_SIGN=1 bash scripts/package-release.sh
-            else
-              echo "::error::NYXVEIL_RELEASE_SIGNING_KEY secret is required to sign release manifests"
-              exit 1
-            fi
-          else
-            bash scripts/package-release.sh
-          fi
+      - name: Package release (unsigned manifests)
+        run: bash scripts/package-release.sh
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

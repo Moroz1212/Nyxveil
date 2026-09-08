@@ -8,7 +8,6 @@ DIST="${ROOT}/dist/release"
 VERSION="$(tr -d '\r[:space:]' < "${ROOT}/VERSION")"
 TAG="server-v${VERSION}"
 ATTEST="${DIST}/FINAL-RELEASE-ATTESTATION-${TAG}.txt"
-PUB_HEX="caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af"
 CORE_HASH="7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b"
 
 die() { echo "finalize-release: $*" >&2; exit 1; }
@@ -48,7 +47,7 @@ fi
   echo "version=${VERSION}"
   echo "tag=${TAG}"
   echo "frozen_core_sha256=${CORE_HASH}"
-  echo "update_public_key=${PUB_HEX}"
+  echo "release_trust_model=GITHUB_RELEASE"
   echo "timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "RELEASE_CONTENT_FROZEN=true"
   echo

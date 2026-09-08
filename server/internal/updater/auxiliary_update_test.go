@@ -1,8 +1,6 @@
 package updater_test
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -103,10 +101,6 @@ func tempRoot(t *testing.T) string {
 }
 
 func TestUpdateInstallsProductionGate(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	payloads := withRequiredPayloads(map[string][]byte{
 		"nyxveil-server":         []byte("server-1.1.2"),
 		"nyxveilctl":             []byte("ctl-1.1.2"),
@@ -143,10 +137,8 @@ func TestUpdateInstallsProductionGate(t *testing.T) {
 			Mode: requiredAssetMode(name), Required: true,
 		})
 	}
-	updater.SignManifest(m, priv)
 
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), filepath.Join(root, "marker"))
-	u.PublicKey = pub
 	u.DaemonReload = func() error { return nil }
 	u.ExtraBinaries = map[string]string{
 		"nyxveilctl":             ctlBin,
@@ -176,10 +168,6 @@ func TestUpdateInstallsProductionGate(t *testing.T) {
 }
 
 func TestProductionGatePathExistsAfterUpgrade(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	payloads := withRequiredPayloads(map[string][]byte{
 		"nyxveil-server":         []byte("S"),
 		"nyxveilctl":             []byte("C"),
@@ -208,10 +196,8 @@ func TestProductionGatePathExistsAfterUpgrade(t *testing.T) {
 			Mode: requiredAssetMode(name), Required: true,
 		})
 	}
-	updater.SignManifest(m, priv)
 
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), filepath.Join(root, "marker"))
-	u.PublicKey = pub
 	u.DaemonReload = func() error { return nil }
 	u.ExtraBinaries = map[string]string{
 		"nyxveilctl": filepath.Join(root, "ctl"), "nyxveil-catalog-verify": filepath.Join(root, "cat"),
@@ -233,10 +219,6 @@ func TestProductionGatePathExistsAfterUpgrade(t *testing.T) {
 }
 
 func TestProductionGateExecutableAfterUpgrade(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	payloads := withRequiredPayloads(map[string][]byte{
 		"nyxveil-server":         []byte("S"),
 		"nyxveilctl":             []byte("C"),
@@ -265,10 +247,8 @@ func TestProductionGateExecutableAfterUpgrade(t *testing.T) {
 			Mode: requiredAssetMode(name), Required: true,
 		})
 	}
-	updater.SignManifest(m, priv)
 
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), filepath.Join(root, "marker"))
-	u.PublicKey = pub
 	u.DaemonReload = func() error { return nil }
 	u.ExtraBinaries = map[string]string{
 		"nyxveilctl":             filepath.Join(root, "nyxveilctl"),
@@ -305,10 +285,6 @@ func TestProductionGateExecutableAfterUpgrade(t *testing.T) {
 }
 
 func TestAuxiliaryFilesHashVerified(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	goodGate := []byte("#!/bin/sh\ntrue\n")
 	payloads := withRequiredPayloads(map[string][]byte{
 		"nyxveil-server":         []byte("S"),
@@ -342,9 +318,7 @@ func TestAuxiliaryFilesHashVerified(t *testing.T) {
 			Mode: requiredAssetMode(name), Required: true,
 		})
 	}
-	updater.SignManifest(m, priv)
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), filepath.Join(root, "marker"))
-	u.PublicKey = pub
 	u.DaemonReload = func() error { return nil }
 	u.ExtraBinaries = map[string]string{
 		"nyxveilctl": filepath.Join(root, "ctl"), "nyxveil-catalog-verify": filepath.Join(root, "cat"),
@@ -357,7 +331,7 @@ func TestAuxiliaryFilesHashVerified(t *testing.T) {
 		"share-third-party-core": filepath.Join(root, "tp.prev"),
 	}
 	mapRequiredTestAssets(u, root)
-	err = u.Apply(m, func() bool { return true })
+	err := u.Apply(m, func() bool { return true })
 	if err == nil {
 		t.Fatal("expected sha256 mismatch for production-gate")
 	}
@@ -367,10 +341,6 @@ func TestAuxiliaryFilesHashVerified(t *testing.T) {
 }
 
 func TestAuxiliaryFilesRollback(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	payloads := withRequiredPayloads(map[string][]byte{
 		"nyxveil-server":         []byte("NEW-S"),
 		"nyxveilctl":             []byte("NEW-C"),
@@ -402,10 +372,8 @@ func TestAuxiliaryFilesRollback(t *testing.T) {
 			Mode: requiredAssetMode(name), Required: true,
 		})
 	}
-	updater.SignManifest(m, priv)
 
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), filepath.Join(root, "marker"))
-	u.PublicKey = pub
 	u.DaemonReload = func() error { return nil }
 	u.ExtraBinaries = map[string]string{
 		"nyxveilctl": ctlBin, "nyxveil-catalog-verify": filepath.Join(root, "catalog"),
@@ -418,7 +386,7 @@ func TestAuxiliaryFilesRollback(t *testing.T) {
 		"share-third-party-core": filepath.Join(root, "tp.prev"),
 	}
 	mapRequiredTestAssets(u, root)
-	err = u.Apply(m, func() bool { return false })
+	err := u.Apply(m, func() bool { return false })
 	if err == nil {
 		t.Fatal("expected health rollback")
 	}
@@ -436,10 +404,6 @@ func TestAuxiliaryFilesRollback(t *testing.T) {
 }
 
 func TestUpgradePreservesNodeIdentityAndTLS(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	payloads := withRequiredPayloads(map[string][]byte{
 		"nyxveil-server":         []byte("S2"),
 		"nyxveilctl":             []byte("C2"),
@@ -475,10 +439,8 @@ func TestUpgradePreservesNodeIdentityAndTLS(t *testing.T) {
 			Mode: requiredAssetMode(name), Required: true,
 		})
 	}
-	updater.SignManifest(m, priv)
 
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), filepath.Join(root, "marker"))
-	u.PublicKey = pub
 	u.DaemonReload = func() error { return nil }
 	u.StateDir = state
 	u.EnforceOwnership = func(string) error { return nil }

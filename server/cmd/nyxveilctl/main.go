@@ -321,7 +321,7 @@ func runUpdate(args []string) error {
 			return err
 		}
 	}
-	m, err := updater.ParseManifest(b, updater.UpdatePublicKey)
+	m, err := updater.ParseManifest(b)
 	if err != nil {
 		return err
 	}

@@ -17,8 +17,8 @@ need_cmd() {
 # Prefer WSL bash on Windows hosts when invoked via sh from CI helpers.
 need_cmd bash
 
-# jq/openssl only required for signed-download path; success path uses --skip-download.
-# Unsigned fail-closed path dies on missing signature without jq.
+# jq only required for remote-download path; success path uses --skip-download.
+# Fail-closed path dies when mock remote manifest lacks a complete asset contract.
 TMP="$(mktemp -d /tmp/nyxveil-curl-installer.XXXXXX)"
 cleanup() { rm -rf "${TMP}"; }
 trap cleanup EXIT
@@ -160,7 +160,7 @@ else
 fi
 rm -f "${PIPE_OUT}"
 
-echo "== mock fail-closed: unsigned download manifest =="
+echo "== mock fail-closed: incomplete remote download manifest =="
 MOCK_ROOT2="$(mktemp -d /tmp/nyxveil-mock-root2.XXXXXX)"
 set +e
 NYXVEIL_INSTALL_MOCK=1 NYXVEIL_INSTALL_MOCK_ROOT="${MOCK_ROOT2}" \
@@ -175,14 +175,14 @@ NYXVEIL_INSTALL_MOCK=1 NYXVEIL_INSTALL_MOCK_ROOT="${MOCK_ROOT2}" \
 rc=$?
 set -e
 if [[ "${rc}" -ne 0 ]]; then
-  pass "unsigned manifest download dies (rc=${rc})"
+  pass "incomplete remote manifest download dies (rc=${rc})"
 else
-  fail "unsigned manifest should fail closed"
+  fail "incomplete remote manifest should fail closed"
 fi
-if grep -qiE 'signature|fail-closed|invalid' /tmp/nyxveil-unsigned-out.txt; then
-  pass "error mentions signature/fail-closed"
+if grep -qiE 'missing fields|sha256|fail-closed|invalid|checksum|manifest' /tmp/nyxveil-unsigned-out.txt; then
+  pass "error mentions manifest/integrity failure"
 else
-  fail "expected signature error in output"
+  fail "expected manifest/integrity error in output"
   cat /tmp/nyxveil-unsigned-out.txt >&2 || true
 fi
 

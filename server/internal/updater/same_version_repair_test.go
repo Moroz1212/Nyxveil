@@ -1,8 +1,6 @@
 package updater_test
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -54,10 +52,6 @@ func newSameVersionFixture(t *testing.T) *sameVersionFixture {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	m := &updater.Manifest{
 		Version: "1.1.2", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1,
 	}
@@ -82,8 +76,6 @@ func newSameVersionFixture(t *testing.T) *sameVersionFixture {
 			Destination: signedDestinations[name], Mode: mode, Required: true,
 		})
 	}
-	updater.SignManifest(m, priv)
-
 	u := updater.New(paths["nyxveil-server"], filepath.Join(root, "state", "server.prev"), filepath.Join(root, "state", "marker"))
 	u.HTTP = server.Client()
 	u.StateDir = filepath.Join(root, "state")

@@ -43,11 +43,6 @@ jobs:
         run: |
           rm -rf dist
           bash scripts/build-release.sh
-          if [ -z "${{ secrets.NYXVEIL_RELEASE_SIGNING_KEY }}" ]; then
-            echo "::error::NYXVEIL_RELEASE_SIGNING_KEY secret is required (do not generate keys in CI)"
-            exit 1
-          fi
-          export NYXVEIL_RELEASE_SIGNING_KEY="${{ secrets.NYXVEIL_RELEASE_SIGNING_KEY }}"
           bash scripts/package-release.sh
           bash scripts/verify-release.sh
 

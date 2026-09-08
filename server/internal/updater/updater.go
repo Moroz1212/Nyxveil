@@ -1,5 +1,10 @@
 // Package updater downloads and atomically replaces nyxveil binaries.
 //
+// Trust model: GitHub Release is the authenticity source. Release manifests are
+// unsigned machine-readable contracts. Each downloaded asset is verified by
+// SHA-256 from the manifest (integrity). Destination allowlist, modes, atomic
+// replace, and rollback remain mandatory.
+//
 // Manifest JSON (snake_case), multi-asset preferred:
 //
 //	{
@@ -8,19 +13,16 @@
 //	  "min_core": "1.0.0",
 //	  "min_protocol": 1,
 //	  "assets": [
-//	    {"name":"nyxveil-server","sha256":"...","url":"..."},
-//	    {"name":"nyxveilctl","sha256":"...","url":"..."}
-//	  ],
-//	  "signature": "..."
+//	    {"name":"nyxveil-server","sha256":"...","url":"...","destination":"...","mode":"0755","required":true}
+//	  ]
 //	}
 //
 // Backward compatible with single url/sha256 (applies to BinaryPath only).
+// Optional legacy "signature" field is ignored if present.
 package updater
 
 import (
-	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -38,16 +40,6 @@ import (
 	"github.com/nyxveil/server/internal/paths"
 	"github.com/nyxveil/server/internal/version"
 )
-
-// UpdatePublicKey verifies release manifests (Ed25519).
-// Server 1.1.4 trust-root rotation (prior private key unavailable on build host).
-// Private key: GitHub Secret NYXVEIL_RELEASE_SIGNING_KEY / local .secrets/ only — never in git.
-var UpdatePublicKey = ed25519.PublicKey{
-	0xca, 0xf9, 0x21, 0x52, 0x1e, 0x21, 0x3c, 0xb1,
-	0xbc, 0xdc, 0x2f, 0x9d, 0xf4, 0x81, 0x6c, 0x2e,
-	0xcd, 0x43, 0x22, 0x2b, 0x23, 0xa4, 0x7d, 0x6f,
-	0x86, 0x96, 0x72, 0xe6, 0xab, 0x0e, 0x79, 0xaf,
-}
 
 // Asset is one binary in a multi-asset release manifest.
 type Asset struct {
@@ -68,16 +60,15 @@ type Manifest struct {
 	MinCore     string  `json:"min_core"`
 	MinProtocol uint16  `json:"min_protocol"`
 	Assets      []Asset `json:"assets,omitempty"`
-	Signature   string  `json:"signature"`
+	Signature   string  `json:"signature,omitempty"` // legacy; ignored
 }
 
 // HealthCheck is invoked after replace; false triggers rollback.
 type HealthCheck func() bool
 
-// Updater performs download → verify → atomic replace → health/rollback.
+// Updater performs download → SHA-256 verify → atomic replace → health/rollback.
 type Updater struct {
 	HTTP          *http.Client
-	PublicKey     ed25519.PublicKey
 	BinaryPath    string
 	PrevPath      string
 	MarkerPath    string
@@ -94,19 +85,19 @@ type Updater struct {
 	DaemonReload func() error
 }
 
-// New returns an updater with default HTTP client and embedded public key.
+// New returns an updater with a default HTTP client.
 func New(binaryPath, prevPath, markerPath string) *Updater {
 	return &Updater{
 		HTTP:       &http.Client{Timeout: 5 * time.Minute},
-		PublicKey:  UpdatePublicKey,
 		BinaryPath: binaryPath,
 		PrevPath:   prevPath,
 		MarkerPath: markerPath,
 	}
 }
 
-// ParseManifest unmarshals and verifies signature + SHA field format.
-func ParseManifest(data []byte, pub ed25519.PublicKey) (*Manifest, error) {
+// ParseManifest unmarshals a release manifest and validates required fields /
+// SHA-256 hex format. Signature fields are ignored (GitHub Release trust model).
+func ParseManifest(data []byte) (*Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, err
@@ -125,98 +116,12 @@ func ParseManifest(data []byte, pub ed25519.PublicKey) (*Manifest, error) {
 			return nil, fmt.Errorf("updater: bad asset sha256: %w", err)
 		}
 	}
-	if pub == nil {
-		pub = UpdatePublicKey
-	}
-	if isZeroKey(pub) {
-		return nil, fmt.Errorf("updater: update public key is placeholder; refusing")
-	}
-	sig, err := base64.RawURLEncoding.DecodeString(m.Signature)
-	if err != nil {
-		sig, err = base64.StdEncoding.DecodeString(m.Signature)
-		if err != nil {
-			return nil, fmt.Errorf("updater: bad signature encoding: %w", err)
-		}
-	}
-	msg := CanonicalManifestBytes(&m)
-	if !ed25519.Verify(pub, msg, sig) {
-		return nil, fmt.Errorf("updater: manifest signature invalid")
-	}
 	if m.SHA256 != "" {
 		if _, err := hex.DecodeString(strings.TrimSpace(m.SHA256)); err != nil {
 			return nil, fmt.Errorf("updater: bad sha256 hex: %w", err)
 		}
 	}
 	return &m, nil
-}
-
-// CanonicalManifestBytes builds the signed payload (no signature field).
-func CanonicalManifestBytes(m *Manifest) []byte {
-	type legacySignedAsset struct {
-		Name   string `json:"name"`
-		SHA256 string `json:"sha256"`
-		URL    string `json:"url"`
-	}
-	type signedAsset struct {
-		Name        string `json:"name"`
-		SHA256      string `json:"sha256"`
-		URL         string `json:"url"`
-		Destination string `json:"destination"`
-		Mode        string `json:"mode"`
-		Required    bool   `json:"required"`
-	}
-	type signed struct {
-		Version     string        `json:"version"`
-		Arch        string        `json:"arch"`
-		SHA256      string        `json:"sha256,omitempty"`
-		URL         string        `json:"url,omitempty"`
-		MinCore     string        `json:"min_core"`
-		MinProtocol uint16        `json:"min_protocol"`
-		Assets      []signedAsset `json:"assets,omitempty"`
-	}
-	legacyAssets := true
-	for _, a := range m.Assets {
-		if a.Destination != "" || a.Mode != "" || a.Required {
-			legacyAssets = false
-			break
-		}
-	}
-	if legacyAssets && len(m.Assets) > 0 {
-		type legacySigned struct {
-			Version     string              `json:"version"`
-			Arch        string              `json:"arch"`
-			SHA256      string              `json:"sha256,omitempty"`
-			URL         string              `json:"url,omitempty"`
-			MinCore     string              `json:"min_core"`
-			MinProtocol uint16              `json:"min_protocol"`
-			Assets      []legacySignedAsset `json:"assets,omitempty"`
-		}
-		s := legacySigned{
-			Version: m.Version, Arch: m.Arch, SHA256: m.SHA256, URL: m.URL,
-			MinCore: m.MinCore, MinProtocol: m.MinProtocol,
-		}
-		for _, a := range m.Assets {
-			s.Assets = append(s.Assets, legacySignedAsset{Name: a.Name, SHA256: a.SHA256, URL: a.URL})
-		}
-		b, _ := json.Marshal(s)
-		return b
-	}
-	s := signed{
-		Version:     m.Version,
-		Arch:        m.Arch,
-		SHA256:      m.SHA256,
-		URL:         m.URL,
-		MinCore:     m.MinCore,
-		MinProtocol: m.MinProtocol,
-	}
-	for _, a := range m.Assets {
-		s.Assets = append(s.Assets, signedAsset{
-			Name: a.Name, SHA256: a.SHA256, URL: a.URL, Destination: a.Destination,
-			Mode: a.Mode, Required: a.Required,
-		})
-	}
-	b, _ := json.Marshal(s)
-	return b
 }
 
 // ArchString returns GOOS/GOARCH for manifest matching.
@@ -242,7 +147,7 @@ func (e *IncompleteInstallError) Error() string {
 
 func (e *IncompleteInstallError) Unwrap() error { return e.Cause }
 
-// RequiredAssetNames must appear in every signed multi-asset release manifest.
+// RequiredAssetNames must appear in every multi-asset release manifest.
 var RequiredAssetNames = []string{
 	"nyxveil-server",
 	"nyxveilctl",
@@ -782,20 +687,6 @@ func copyFilePreserve(src, dest string) error {
 		return err
 	}
 	return filemeta.AtomicWrite(dest, b, mode, uid, gid)
-}
-
-func isZeroKey(pub ed25519.PublicKey) bool {
-	for _, b := range pub {
-		if b != 0 {
-			return false
-		}
-	}
-	return true
-}
-
-// SignManifest is a test/helper that signs CanonicalManifestBytes with priv.
-func SignManifest(m *Manifest, priv ed25519.PrivateKey) {
-	m.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, CanonicalManifestBytes(m)))
 }
 
 // DefaultReleaseBase is used when server.json has no update_url.

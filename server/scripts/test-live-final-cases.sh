@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # Process-level live-final-update integration tests (fixture release + stub ctl).
 set -euo pipefail
 
@@ -10,7 +10,6 @@ command -v python3 >/dev/null 2>&1 || die "python3 required"
 command -v curl >/dev/null 2>&1 || die "curl required"
 
 need_jq() { command -v jq >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 || die "jq or python3 required"; }
-need_openssl() { command -v openssl >/dev/null 2>&1 || die "openssl required"; }
 need_go() {
   if command -v go >/dev/null 2>&1; then
     return 0
@@ -21,10 +20,6 @@ need_go() {
   fi
   die "go required"
 }
-need_sign_key() { [[ -f "${ROOT}/.secrets/release-signing.ed25519" ]] || die "signing key required"; }
-
-
-PUB_HEX="caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af"
 
 host_arch() {
   case "$(uname -m)" in
@@ -76,13 +71,13 @@ CTL
   chmod 0755 "${dest}"
 }
 
-sign_fixture() {
+make_fixture_manifests() {
   local out="$1"
   local version="$2"
   local base="$3"
   (
     cd "${ROOT}"
-    go run ./scripts/sign-release.go \
+    go run ./scripts/make-release-manifest.go \
       -version "${version}" \
       -out "${out}" \
       -base-url "${base}" \
@@ -94,7 +89,9 @@ sign_fixture() {
       -arm64-catalog "${out}/nyxveil-catalog-verify-linux-arm64" \
       -production-gate "${out}/production-gate.sh" \
       -share-version "${out}/VERSION" \
-      -share-third-party "${out}/THIRD_PARTY_CORE.md" >/dev/null
+      -share-third-party "${out}/THIRD_PARTY_CORE.md" \
+      -update-service "${out}/nyxveil-update.service" \
+      -management-polkit "${out}/50-nyxveil-management.rules" >/dev/null
   )
 }
 
@@ -173,6 +170,8 @@ CTL
   printf '%s\n' '#!/usr/bin/env bash' 'echo RESULT=PASS' > "${out}/production-gate.sh"
   printf '%s\n' "${version}" > "${out}/VERSION"
   printf '%s\n' 'frozen-core' > "${out}/THIRD_PARTY_CORE.md"
+  printf '%s\n' '[Unit]' 'Description=Nyxveil update' > "${out}/nyxveil-update.service"
+  printf '%s\n' '// polkit stub' > "${out}/50-nyxveil-management.rules"
   cp -a "${ROOT}/scripts/bootstrap-cli-update.sh" "${out}/bootstrap-cli-update.sh"
   cp -a "${ROOT}/scripts/live-final-update.sh" "${out}/live-final-update.sh"
   chmod 0755 "${out}/production-gate.sh" "${out}/bootstrap-cli-update.sh" "${out}/live-final-update.sh"
@@ -223,14 +222,14 @@ prepare_served_fixture() {
   PREFIX="$(mktemp -d "${TMPDIR:-/tmp}/nv-prefix.XXXXXX")"
   PORT_FILE="${SRV}/.port"
   build_fixture_assets "${FX}" "1.1.3"
-  # Placeholder sign so files exist; resign after HTTP base known.
-  sign_fixture "${FX}" "1.1.3" "http://127.0.0.1:9"
+  # Placeholder manifests so files exist; rewrite after HTTP base known.
+  make_fixture_manifests "${FX}" "1.1.3" "http://127.0.0.1:9"
   write_sums "${FX}" 0
   cp -a "${FX}/." "${SRV}/"
   PID="$(start_http "${SRV}" "${PORT_FILE}")"
   wait_port "${PORT_FILE}"
   BASE="http://127.0.0.1:$(tr -d '[:space:]' < "${PORT_FILE}")"
-  sign_fixture "${SRV}" "1.1.3" "${BASE}"
+  make_fixture_manifests "${SRV}" "1.1.3" "${BASE}"
   write_sums "${SRV}" "${crlf}"
   cleanup() {
     kill "${PID}" 2>/dev/null || true
@@ -278,15 +277,15 @@ run_empty_dir_full() {
 
 case "${CASE}" in
   TestLiveFinalUpdateEmptyWorkingDirectory|TestLiveFinalUpdateHandlesLFChecksums)
-    need_jq; need_openssl; need_go; need_sign_key
+    need_jq; need_go
     run_empty_dir_full 0
     ;;
   TestLiveFinalUpdateHandlesCRLFChecksums)
-    need_jq; need_openssl; need_go; need_sign_key
+    need_jq; need_go
     run_empty_dir_full 1
     ;;
   TestLiveFinalUpdateDownloadsVersion|TestLiveFinalUpdateDownloadsBootstrap)
-    need_jq; need_openssl; need_go; need_sign_key
+    need_jq; need_go
     prepare_served_fixture 0
     place_only_live_final
     (
@@ -316,7 +315,7 @@ case "${CASE}" in
     echo "RESULT=PASS"
     ;;
   TestMissingVersionFailsBeforeModification)
-    need_jq; need_openssl
+    need_jq
     WORK="$(mktemp -d "${TMPDIR:-/tmp}/nv-empty.XXXXXX")"
     SRV="$(mktemp -d "${TMPDIR:-/tmp}/nv-srv.XXXXXX")"
     PREFIX="$(mktemp -d "${TMPDIR:-/tmp}/nv-prefix.XXXXXX")"
@@ -342,7 +341,7 @@ case "${CASE}" in
     echo "RESULT=PASS"
     ;;
   TestMissingBootstrapFailsBeforeModification)
-    need_jq; need_openssl; need_go; need_sign_key
+    need_jq; need_go
     prepare_served_fixture 0
     seed_old_install
     rm -f "${SRV}/bootstrap-cli-update.sh"
@@ -361,7 +360,7 @@ case "${CASE}" in
     echo "RESULT=PASS"
     ;;
   TestTamperedBootstrapFails)
-    need_jq; need_openssl; need_go; need_sign_key
+    need_jq; need_go
     prepare_served_fixture 0
     seed_old_install
     printf '%s\n' '#!/bin/bash' 'echo evil-no-pubkey' > "${SRV}/bootstrap-cli-update.sh"
@@ -392,7 +391,7 @@ PY
     echo "RESULT=PASS"
     ;;
   TestTamperedCtlFails)
-    need_jq; need_openssl; need_go; need_sign_key
+    need_jq; need_go
     prepare_served_fixture 0
     seed_old_install
     arch="$(tr -d '[:space:]' < "${SRV}/.arch")"
@@ -411,20 +410,13 @@ PY
     grep -q 'old-ctl-1.1.1' "${PREFIX}/usr/local/sbin/nyxveilctl"
     echo "RESULT=PASS"
     ;;
-  TestBootstrapTrustUsesReleaseSigningRoot)
-    grep -q "${PUB_HEX}" "${ROOT}/scripts/live-final-update.sh"
-    grep -q "${PUB_HEX}" "${ROOT}/scripts/bootstrap-cli-update.sh"
-    python3 - "${ROOT}" "${PUB_HEX}" <<'PY'
-import pathlib, re, sys
-root = pathlib.Path(sys.argv[1])
-pub = sys.argv[2]
-go = root.joinpath("internal/updater/updater.go").read_text(encoding="utf-8", errors="ignore")
-chunk = go.split("UpdatePublicKey")[1].split(")")[0]
-bytes_ = re.findall(r"0x([0-9a-fA-F]{2})", chunk)
-got = "".join(b.lower() for b in bytes_[:32])
-assert got == pub, (got, pub)
-print("trust-root-match")
-PY
+  TestLiveFinalTrustUsesGitHubReleaseModel)
+    grep -q 'SHA256SUMS' "${ROOT}/scripts/live-final-update.sh"
+    grep -q 'GitHub' "${ROOT}/scripts/live-final-update.sh"
+    grep -q 'sha256' "${ROOT}/scripts/bootstrap-cli-update.sh"
+    ! grep -q 'PUB_HEX' "${ROOT}/scripts/live-final-update.sh"
+    ! grep -q 'verify_manifest_signature' "${ROOT}/scripts/live-final-update.sh"
+    ! grep -q 'UpdatePublicKey' "${ROOT}/internal/updater/updater.go"
     echo "RESULT=PASS"
     ;;
   *)

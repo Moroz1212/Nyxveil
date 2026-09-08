@@ -26,7 +26,7 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 	wf := readFile(t, filepath.Join(root, "..", ".github", "workflows", "server-release.yml"))
 	inst := readFile(t, filepath.Join(root, "installer", "install.sh"))
 	pkg := readFile(t, filepath.Join(root, "scripts", "package-release.sh"))
-	sign := readFile(t, filepath.Join(root, "scripts", "sign-release.go"))
+	sign := readFile(t, filepath.Join(root, "scripts", "make-release-manifest.go"))
 
 	requiredAssets := []string{
 		"nyxveil-server-linux-amd64",
@@ -56,14 +56,14 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 		t.Error("package-release must ship production-gate.sh")
 	}
 	if !strings.Contains(sign, "production-gate") || !strings.Contains(sign, "share-version") {
-		t.Error("sign-release must include production-gate and share-version assets")
+		t.Error("make-release-manifest must include production-gate and share-version assets")
 	}
 	if !strings.Contains(sign, "nyxveil-update-service") || !strings.Contains(sign, "nyxveil-management-polkit") {
-		t.Error("sign-release must include management update unit and polkit assets")
+		t.Error("make-release-manifest must include management update unit and polkit assets")
 	}
 	for _, field := range []string{"Destination:", "Mode:", "Required: true"} {
 		if !strings.Contains(sign, field) {
-			t.Errorf("sign-release missing authoritative asset field %s", field)
+			t.Errorf("make-release-manifest missing authoritative asset field %s", field)
 		}
 	}
 	if !strings.Contains(inst, "production-gate") || !strings.Contains(inst, "/usr/local/share/nyxveil") {
@@ -76,7 +76,7 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 		t.Error("installer must download release-manifest-linux-${arch}.json")
 	}
 	if !strings.Contains(sign, "nyxveil-server-linux-") {
-		t.Error("sign-release must reference arch-qualified binary asset names in URLs")
+		t.Error("make-release-manifest must reference arch-qualified binary asset names in URLs")
 	}
 	if !strings.Contains(inst, ".assets[") && !strings.Contains(inst, ".assets|") {
 		t.Error("installer must install from manifest asset URLs")
@@ -86,7 +86,7 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 			continue
 		}
 		if !strings.Contains(sign, name) {
-			t.Errorf("sign-release missing required asset %s", name)
+			t.Errorf("make-release-manifest missing required asset %s", name)
 		}
 	}
 }
@@ -155,9 +155,9 @@ func TestUpdaterManifestNamesMatchGitHubWorkflow(t *testing.T) {
 
 func TestManagementAssetsHaveFixedAllowlist(t *testing.T) {
 	root := repoRoot(t)
-	sign := readFile(t, filepath.Join(root, "scripts", "sign-release.go"))
+	sign := readFile(t, filepath.Join(root, "scripts", "make-release-manifest.go"))
 	if !strings.Contains(sign, `paths.UpdateServiceUnit()`) || !strings.Contains(sign, `paths.ManagementPolkitRule()`) {
-		t.Fatal("sign-release must use fixed path helpers for management assets")
+		t.Fatal("make-release-manifest must use fixed path helpers for management assets")
 	}
 	if !strings.Contains(sign, `"0644"`) {
 		t.Fatal("management assets must be mode 0644")

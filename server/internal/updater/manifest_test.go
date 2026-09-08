@@ -1,8 +1,6 @@
 package updater
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,15 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestParseManifestVerifiesSignature(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestParseManifestAcceptsUnsigned(t *testing.T) {
 	m := &Manifest{
 		Version:     "1.0.1",
 		Arch:        ArchString(),
@@ -27,39 +22,57 @@ func TestParseManifestVerifiesSignature(t *testing.T) {
 		MinCore:     "1.0.0",
 		MinProtocol: 1,
 	}
-	SignManifest(m, priv)
 	raw, err := json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := ParseManifest(raw, pub)
+	got, err := ParseManifest(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Version != "1.0.1" {
 		t.Fatalf("%+v", got)
 	}
+}
 
-	m.Signature = "AAAA"
-	rawBad, _ := json.Marshal(m)
-	if _, err := ParseManifest(rawBad, pub); err == nil {
-		t.Fatal("expected signature failure")
+func TestParseManifestIgnoresLegacySignatureField(t *testing.T) {
+	m := &Manifest{
+		Version:     "1.0.1",
+		Arch:        ArchString(),
+		SHA256:      "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+		URL:         "https://example/bin",
+		MinCore:     "1.0.0",
+		MinProtocol: 1,
+		Signature:   "not-a-real-ed25519-signature-but-present-for-legacy",
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseManifest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != "1.0.1" {
+		t.Fatalf("%+v", got)
+	}
+	if got.Signature == "" {
+		t.Fatal("legacy signature field should round-trip when present")
 	}
 }
 
-func TestParseManifestRejectsPlaceholderKey(t *testing.T) {
-	m := &Manifest{Version: "1", SHA256: "aa", URL: "http://x", Signature: "x"}
-	raw, _ := json.Marshal(m)
-	if _, err := ParseManifest(raw, UpdatePublicKey); err == nil {
-		t.Fatal("expected placeholder key rejection")
+func TestParseManifestRejectsMissingRequired(t *testing.T) {
+	raw, _ := json.Marshal(&Manifest{Version: "1"})
+	if _, err := ParseManifest(raw); err == nil {
+		t.Fatal("expected missing fields rejection")
+	}
+	raw, _ = json.Marshal(&Manifest{})
+	if _, err := ParseManifest(raw); err == nil {
+		t.Fatal("expected missing version rejection")
 	}
 }
 
 func TestApplySHAAndRollback(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	payload := []byte("fake-binary-v2")
 	sum := sha256.Sum256(payload)
 	shaHex := hex.EncodeToString(sum[:])
@@ -96,10 +109,8 @@ func TestApplySHAAndRollback(t *testing.T) {
 		MinCore:     "1.0.0",
 		MinProtocol: 1,
 	}
-	SignManifest(m, priv)
 
 	u := New(bin, prev, marker)
-	u.PublicKey = pub
 
 	if err := u.Apply(m, func() bool { return true }); err != nil {
 		t.Fatal(err)
@@ -130,7 +141,6 @@ func TestApplySHAAndRollback(t *testing.T) {
 		Version: "1.0.2", Arch: ArchString(), SHA256: hex.EncodeToString(sum2[:]),
 		URL: srv2.URL, MinCore: "1.0.0", MinProtocol: 1,
 	}
-	SignManifest(m2, priv)
 	if err := u.Apply(m2, func() bool { return false }); err == nil {
 		t.Fatal("expected health failure")
 	}
@@ -140,14 +150,40 @@ func TestApplySHAAndRollback(t *testing.T) {
 	}
 }
 
-func TestCanonicalManifestBytesStable(t *testing.T) {
-	m := &Manifest{Version: "1", Arch: "linux/amd64", SHA256: "ab", URL: "u", MinCore: "1.0.0", MinProtocol: 1, Signature: "ignore"}
-	a := string(CanonicalManifestBytes(m))
-	b := string(CanonicalManifestBytes(m))
-	if a != b {
-		t.Fatal("unstable")
+func TestApplyRejectsWrongSHA256(t *testing.T) {
+	payload := []byte("payload")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "nyxveil-server")
+	if err := os.WriteFile(bin, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if !json.Valid([]byte(a)) {
-		t.Fatal("not json")
+	m := &Manifest{
+		Version: "1.0.1", Arch: ArchString(),
+		SHA256: strings.Repeat("ab", 32), URL: srv.URL,
+		MinCore: "1.0.0", MinProtocol: 1,
+	}
+	u := New(bin, filepath.Join(dir, "prev"), filepath.Join(dir, "marker"))
+	if err := u.Apply(m, nil); err == nil || !strings.Contains(err.Error(), "sha256") {
+		t.Fatalf("expected sha256 reject, got %v", err)
+	}
+	if got, _ := os.ReadFile(bin); string(got) != "old" {
+		t.Fatal("binary must remain on hash failure")
+	}
+}
+
+func TestApplyRejectsWrongArch(t *testing.T) {
+	m := &Manifest{
+		Version: "1.0.1", Arch: "not/" + ArchString(),
+		SHA256: strings.Repeat("aa", 32), URL: "http://example/bin",
+		MinCore: "1.0.0", MinProtocol: 1,
+	}
+	u := New(filepath.Join(t.TempDir(), "bin"), "", "")
+	if err := u.Apply(m, nil); err == nil || !strings.Contains(strings.ToLower(err.Error()), "arch") {
+		t.Fatalf("expected arch reject, got %v", err)
 	}
 }

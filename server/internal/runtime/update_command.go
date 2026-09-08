@@ -80,7 +80,7 @@ func (n *Node) executeUpdateNodeLatest(ctx context.Context, commandID string) {
 		n.reportCommandFailure(ctx, commandID, "manifest_download", err.Error())
 		return
 	}
-	mani, err := updater.ParseManifest(data, updater.UpdatePublicKey)
+	mani, err := updater.ParseManifest(data)
 	if err != nil {
 		n.clearUpdateMarker()
 		n.reportCommandFailure(ctx, commandID, "manifest_verify", err.Error())
@@ -99,7 +99,6 @@ func (n *Node) executeUpdateNodeLatest(ctx context.Context, commandID string) {
 	}
 	u := &updater.Updater{
 		HTTP:       &http.Client{Timeout: 5 * time.Minute},
-		PublicKey:  updater.UpdatePublicKey,
 		BinaryPath: binPath,
 		StateDir:   filepath.Dir(paths.CommandsState()),
 	}

@@ -9,8 +9,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/nyxveil/server/internal/updater"
 )
 
 func repoRootFromUpdaterTest(t *testing.T) string {
@@ -105,25 +103,25 @@ func assertChecksumParse(t *testing.T, sums, file string) {
 	}
 }
 
-func TestBootstrapTrustUsesReleaseSigningRoot(t *testing.T) {
+func TestLiveFinalTrustUsesGitHubReleaseModel(t *testing.T) {
 	root := repoRootFromUpdaterTest(t)
-	const pubHex = "caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af"
 	for _, rel := range []string{
 		filepath.Join("scripts", "live-final-update.sh"),
 		filepath.Join("scripts", "bootstrap-cli-update.sh"),
-		filepath.Join("installer", "install.sh"),
 	} {
 		b, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(b), pubHex) {
-			t.Fatalf("%s missing UpdatePublicKey hex", rel)
+		body := string(b)
+		if strings.Contains(body, "verify_manifest_signature") || strings.Contains(body, "PUB_HEX") {
+			t.Fatalf("%s must not require Ed25519 release signature", rel)
 		}
-	}
-	got := hex.EncodeToString(updater.UpdatePublicKey)
-	if got != pubHex {
-		t.Fatalf("UpdatePublicKey=%s want %s", got, pubHex)
+		hasSHA := strings.Contains(body, "SHA256SUMS") || strings.Contains(body, "sha256")
+		hasGitHub := strings.Contains(body, "GITHUB_REPO") || strings.Contains(body, "github.com") || strings.Contains(body, "GitHub")
+		if !hasSHA || !hasGitHub {
+			t.Fatalf("%s must reference SHA256SUMS/sha256 and GitHub release trust", rel)
+		}
 	}
 	live := string(mustRead(t, filepath.Join(root, "scripts", "live-final-update.sh")))
 	if strings.Contains(live, `${SCRIPT_DIR}/VERSION`) || strings.Contains(live, "${SCRIPT_DIR}/VERSION") {
@@ -144,15 +142,12 @@ func TestLiveFinalUpdateConsumerDistRelease(t *testing.T) {
 		t.Skip("dist/release not packaged yet")
 	}
 	if _, err := os.Stat(filepath.Join(dist, "release-manifest-linux-amd64.json")); err != nil {
-		t.Skip("dist/release unsigned (no manifests) — set NYXVEIL_RELEASE_SIGNING_KEY and re-package")
+		t.Skip("dist/release not packaged yet (no manifests)")
 	}
 	cmd := exec.Command("go", "run", "./scripts/verify-live-final-consumer.go", dist)
 	cmd.Dir = root
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		if strings.Contains(string(out), "manifest signature invalid") || strings.Contains(string(out), "manifest verify failed") {
-			t.Skipf("dist/release manifests not production-signed — set NYXVEIL_RELEASE_SIGNING_KEY and re-package\n%s", out)
-		}
 		t.Fatalf("consumer: %v\n%s", err, out)
 	}
 	if !strings.Contains(string(out), "LIVE_FINAL_UPDATE_CONSUMER=PASS") {

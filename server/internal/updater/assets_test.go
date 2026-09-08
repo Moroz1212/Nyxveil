@@ -1,8 +1,6 @@
 package updater
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -55,10 +53,6 @@ func mapInternalTestAssets(u *Updater, dir string) {
 }
 
 func TestParseManifestMultiAsset(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	m := &Manifest{
 		Version:     "1.0.1",
 		Arch:        ArchString(),
@@ -69,9 +63,8 @@ func TestParseManifestMultiAsset(t *testing.T) {
 			{Name: "nyxveilctl", SHA256: "bb", URL: "https://example/ctl"},
 		},
 	}
-	SignManifest(m, priv)
 	raw, _ := json.Marshal(m)
-	got, err := ParseManifest(raw, pub)
+	got, err := ParseManifest(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,10 +74,6 @@ func TestParseManifestMultiAsset(t *testing.T) {
 }
 
 func TestApplyMultiAsset(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	serverPayload := []byte("server-v2")
 	ctlPayload := []byte("ctl-v2")
 	serverSum := sha256.Sum256(serverPayload)
@@ -121,10 +110,8 @@ func TestApplyMultiAsset(t *testing.T) {
 		},
 	}
 	completeInternalTestAssets(m, Asset{SHA256: hex.EncodeToString(ctlSum[:]), URL: srv.URL + "/ctl"})
-	SignManifest(m, priv)
 
 	u := New(serverBin, filepath.Join(dir, "server.prev"), filepath.Join(dir, "marker"))
-	u.PublicKey = pub
 	u.ExtraBinaries = map[string]string{"nyxveilctl": ctlBin}
 	u.ExtraPrev = map[string]string{"nyxveilctl": filepath.Join(dir, "ctl.prev")}
 	mapInternalTestAssets(u, dir)
@@ -142,7 +129,7 @@ func TestApplyMultiAsset(t *testing.T) {
 	}
 }
 
-func TestCanonicalManifestBytesIncludesAssets(t *testing.T) {
+func TestManifestJSONIncludesAuthoritativeAssetFields(t *testing.T) {
 	m := &Manifest{
 		Version: "1", Arch: "linux/amd64", MinCore: "1.0.0", MinProtocol: 1,
 		Assets: []Asset{{
@@ -151,7 +138,10 @@ func TestCanonicalManifestBytesIncludesAssets(t *testing.T) {
 		}},
 		Signature: "ignore",
 	}
-	b := CanonicalManifestBytes(m)
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !json.Valid(b) {
 		t.Fatal("not json")
 	}
@@ -159,9 +149,6 @@ func TestCanonicalManifestBytesIncludesAssets(t *testing.T) {
 	_ = json.Unmarshal(b, &probe)
 	if _, ok := probe["assets"]; !ok {
 		t.Fatalf("%s", b)
-	}
-	if _, ok := probe["signature"]; ok {
-		t.Fatal("signature must be omitted")
 	}
 	assets := probe["assets"].([]any)
 	asset := assets[0].(map[string]any)

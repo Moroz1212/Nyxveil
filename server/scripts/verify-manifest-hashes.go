@@ -28,7 +28,7 @@ func main() {
 		if err != nil {
 			fatal("%v", err)
 		}
-		m, err := updater.ParseManifest(raw, updater.UpdatePublicKey)
+		m, err := updater.ParseManifest(raw)
 		if err != nil {
 			fatal("%s: %v", manPath, err)
 		}

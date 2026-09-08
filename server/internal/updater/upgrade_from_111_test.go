@@ -1,8 +1,6 @@
 package updater_test
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -61,10 +59,6 @@ func TestUpgradeFromReal111OldCtlTo112CompleteRelease(t *testing.T) {
 	httpServer := httptest.NewServer(mux)
 	t.Cleanup(httpServer.Close)
 
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	signedDestinations, _ := paths.DefaultExtraInstallMaps()
 	signedDestinations["nyxveil-server"] = paths.BinaryPath()
 	manifest := &updater.Manifest{
@@ -81,7 +75,6 @@ func TestUpgradeFromReal111OldCtlTo112CompleteRelease(t *testing.T) {
 			Destination: signedDestinations[name], Mode: mode, Required: true,
 		})
 	}
-	updater.SignManifest(manifest, priv)
 	rawManifest, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +89,6 @@ func TestUpgradeFromReal111OldCtlTo112CompleteRelease(t *testing.T) {
 		ManifestURL: httpServer.URL + "/release-manifest.json",
 		WantVersion: "1.1.2",
 		CtlPath:     ctlPath,
-		PublicKey:   pub,
 		HTTP:        httpServer.Client(),
 	}); err != nil {
 		t.Fatal(err)
@@ -113,7 +105,6 @@ func TestUpgradeFromReal111OldCtlTo112CompleteRelease(t *testing.T) {
 
 	full := updater.New(serverPath, remap(paths.PreviousBinary()), remap(paths.RollbackMarker()))
 	full.HTTP = httpServer.Client()
-	full.PublicKey = pub
 	full.ExtraBinaries = extraDest
 	full.ExtraPrev = extraPrev
 	full.StateDir = remap(paths.StateDir)

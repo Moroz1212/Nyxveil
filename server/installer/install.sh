@@ -5,19 +5,15 @@
 #
 # Release verification (fail-closed when downloading):
 #   1. Download release-manifest-linux-${arch}.json from tag server-v${VERSION}
-#   2. Build CanonicalManifestBytes matching Go updater.CanonicalManifestBytes
-#      (JSON object without "signature", field order/omitempty as encoding/json)
-#   3. Verify Ed25519 signature (PureEd25519) with openssl pkeyutl -rawin -verify
-#      against embedded UpdatePublicKey (PUB_HEX below)
-#   4. Download each asset URL; sha256sum -c; install
-#   Missing/invalid manifest, signature, or sha в†’ die (no WARN skip).
+#      (GitHub Release = authenticity)
+#   2. Parse unsigned manifest (version/arch/assets required)
+#   3. Download each asset URL; verify SHA-256; install
+#   Missing/invalid manifest or sha → die (no WARN skip).
 # Local --binary-dir / --skip-download skips remote verify.
 set -euo pipefail
 
 readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.9}"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
-# Same Ed25519 public key as internal/updater.UpdatePublicKey
-readonly PUB_HEX="caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af"
 readonly DEFAULT_VPN_SUBNET="10.66.0.0/24"
 readonly MIN_RAM_MB_WARN=700
 readonly MIN_DISK_MB=200
@@ -599,119 +595,12 @@ ensure_dirs() {
   install -d -m 0755 -o root -g root "$(dirname "${SYSCTL_FILE}")"
 }
 
-# --- Ed25519 manifest verify (matches updater.CanonicalManifestBytes) ---------
+# --- Unsigned release manifest parse (GitHub Release trust + SHA-256) ---------
 
-hex_to_bin() {
-  local hex="$1"
-  local i
-  for ((i = 0; i < ${#hex}; i += 2)); do
-    printf "\\x${hex:i:2}"
-  done
-}
-
-b64url_decode() {
-  local s="$1"
-  case $(( ${#s} % 4 )) in
-    2) s="${s}==" ;;
-    3) s="${s}=" ;;
-  esac
-  s="$(printf '%s' "${s}" | tr '_-' '/+')"
-  printf '%s' "${s}" | base64 -d 2>/dev/null
-}
-
-# Write Ed25519 SubjectPublicKeyInfo PEM for PUB_HEX.
-write_update_pubkey_pem() {
-  local dest="$1"
-  local der
-  der="$(mktemp)"
-  {
-    hex_to_bin "302a300506032b6570032100"
-    hex_to_bin "${PUB_HEX}"
-  } > "${der}"
-  {
-    echo "-----BEGIN PUBLIC KEY-----"
-    base64 -w 64 "${der}" 2>/dev/null || base64 "${der}" | fold -w 64
-    echo "-----END PUBLIC KEY-----"
-  } > "${dest}"
-  rm -f "${der}"
-}
-
-# Canonical signed payload: same shape as Go updater.CanonicalManifestBytes.
-# Must match json.Marshal output EXACTLY (no trailing LF). Command substitution
-# strips jq's trailing newline; printf '%s' must not add one back.
-canonical_manifest_bytes() {
-  local manifest="$1"
-  local canonical
-
-  command -v jq >/dev/null 2>&1 ||
-    die "jq required to verify release manifest"
-
-  canonical="$(
-    jq -c '
-      . as $manifest |
-      {
-        version: .version,
-        arch: .arch
-      }
-      + (if (.sha256 | type) == "string" and .sha256 != ""
-         then {sha256: .sha256}
-         else {}
-         end)
-      + (if (.url | type) == "string" and .url != ""
-         then {url: .url}
-         else {}
-         end)
-      + {
-        min_core: .min_core,
-        min_protocol: .min_protocol
-      }
-      + (if (.assets | type) == "array" and (.assets | length) > 0
-         then {
-           assets: [
-             .assets[] |
-             if ($manifest.assets | any(
-               ((.destination // "") != "" or (.mode // "") != "" or (.required // false) == true)
-             ))
-             then {
-                 name: .name,
-                 sha256: .sha256,
-                 url: .url,
-                 destination: .destination,
-                 mode: .mode,
-                 required: .required
-               }
-             else {
-                 name: .name,
-                 sha256: .sha256,
-                 url: .url
-               }
-             end
-           ]
-         }
-         else {}
-         end)
-    ' "${manifest}"
-  )"
-
-  printf '%s' "${canonical}"
-}
-
-verify_manifest_signature() {
+verify_release_manifest() {
   local manifest="$1"
 
-  # Fail-closed on missing signature before requiring jq/openssl (curl|bash minimal hosts).
-  local sig_b64
-  sig_b64="$(sed -n 's/.*"signature"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${manifest}" | head -n1 || true)"
-  if [[ -z "${sig_b64}" || "${sig_b64}" == "null" ]]; then
-    # Also try jq if present (signature may be multiline вЂ” still fail closed).
-    if command -v jq >/dev/null 2>&1; then
-      sig_b64="$(jq -r '.signature // empty' "${manifest}")"
-    fi
-  fi
-  [[ -n "${sig_b64}" && "${sig_b64}" != "null" ]] || die "release manifest missing signature (fail-closed)"
-
-  command -v jq >/dev/null 2>&1 || die "jq required to verify release manifest"
-  command -v openssl >/dev/null 2>&1 || die "openssl required to verify release manifest"
+  command -v jq >/dev/null 2>&1 || die "jq required to parse release manifest"
 
   local version arch
   version="$(jq -r '.version // empty' "${manifest}")"
@@ -728,26 +617,7 @@ verify_manifest_signature() {
   if [[ "${assets_n}" -eq 0 && "${legacy_ok}" -eq 0 ]]; then
     die "release manifest missing assets (and no legacy url/sha256)"
   fi
-
-  local msg_file sig_file pem
-  msg_file="$(mktemp)"
-  sig_file="$(mktemp)"
-  pem="$(mktemp)"
-  canonical_manifest_bytes "${manifest}" > "${msg_file}"
-  if ! b64url_decode "${sig_b64}" > "${sig_file}"; then
-    if ! printf '%s' "${sig_b64}" | base64 -d > "${sig_file}" 2>/dev/null; then
-      rm -f "${msg_file}" "${sig_file}" "${pem}"
-      die "release manifest signature encoding invalid"
-    fi
-  fi
-  write_update_pubkey_pem "${pem}"
-  # PureEd25519: openssl pkeyutl -rawin verifies raw message bytes (no pre-hash).
-  if ! openssl pkeyutl -verify -pubin -inkey "${pem}" -rawin -in "${msg_file}" -sigfile "${sig_file}" >/dev/null 2>&1; then
-    rm -f "${msg_file}" "${sig_file}" "${pem}"
-    die "release manifest Ed25519 signature invalid (fail-closed)"
-  fi
-  rm -f "${msg_file}" "${sig_file}" "${pem}"
-  log "manifest signature OK (Ed25519)"
+  log "manifest parse OK (unsigned; GitHub Release trust)"
 }
 
 http_get() {
@@ -817,8 +687,8 @@ download_or_copy_binaries() {
     die "--skip-download requires --binary-dir"
   fi
 
-  # Fail-closed remote path: signed manifest required.
-  # (jq/openssl required only after a signature field is present.)
+  # Fail-closed remote path: unsigned manifest + SHA-256 assets.
+  # (jq required to parse the release contract.)
 
   tmp="$(mktemp -d /tmp/nyxveil-dl.XXXXXX)"
   local tag base man
@@ -827,7 +697,7 @@ download_or_copy_binaries() {
   man="${base}/release-manifest-linux-${arch}.json"
   log "downloading manifest ${man}"
   http_get "${man}" "${tmp}/manifest.json"
-  verify_manifest_signature "${tmp}/manifest.json"
+  verify_release_manifest "${tmp}/manifest.json"
 
   local want_arch="linux/${arch}"
   local got_arch
@@ -1410,12 +1280,7 @@ main() {
   # CI / interop helpers (no root, no install side effects).
   if [[ "${1:-}" == "--verify-manifest" ]]; then
     [[ -n "${2:-}" && -f "${2}" ]] || die "usage: install.sh --verify-manifest PATH"
-    verify_manifest_signature "$2"
-    exit 0
-  fi
-  if [[ "${1:-}" == "--dump-canonical" ]]; then
-    [[ -n "${2:-}" && -f "${2}" ]] || die "usage: install.sh --dump-canonical PATH"
-    canonical_manifest_bytes "$2"
+    verify_release_manifest "$2"
     exit 0
   fi
 

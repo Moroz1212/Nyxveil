@@ -1,27 +1,23 @@
 #!/usr/bin/env bash
-# live-final-update.sh вЂ” self-contained CLI-first final update for legacy nodes.
+# live-final-update.sh — self-contained CLI-first final update for nodes.
 #
-# Trust root (cryptographic authenticity):
-#   Embedded Ed25519 UpdatePublicKey (PUB_HEX), identical to installer /
-#   bootstrap-cli-update.sh / internal/updater.UpdatePublicKey.
-#   Signed release-manifest-linux-${arch}.json is verified first; ctl SHA-256
-#   and subsequent nyxveilctl update are bound to that signature.
-#
-# SHA256SUMS (if fetched) is corruption convenience metadata ONLY. It is never
-# the authenticity root. Do not treat script+SHA256SUMS from the same URL as
-# cryptographic proof by themselves.
+# Trust model:
+#   Authenticity = GitHub repository / GitHub Release (HTTPS download).
+#   Integrity = SHA-256 from release-manifest + SHA256SUMS.
+#   No Ed25519 release signing keys.
 #
 # Self-contained: after the operator downloads and executes THIS script with
 # --base-url, the script creates a private workdir and fetches every required
-# trust/input file. It never assumes VERSION/SHA256SUMS/bootstrap already exist
+# input file. It never assumes VERSION/SHA256SUMS/bootstrap already exist
 # beside the script (e.g. in /tmp).
 #
 # NEVER touches Frozen Core / VPN dataplane config directly; only replaces
-# nyxveilctl first, then runs the new signed updater.
+# nyxveilctl first, then runs the new updater.
+#
+# ONE NODE AT A TIME PER LOCATION.
 set -euo pipefail
 umask 077
 
-readonly PUB_HEX="${NYXVEIL_UPDATE_PUB_HEX:-caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af}"
 readonly DEFAULT_VERSION="1.1.9"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 
@@ -44,11 +40,11 @@ Usage: live-final-update.sh [options]
 
   --version X.Y.Z   Target version (default: fetch VERSION from --base-url, else 1.1.9)
   --base-url URL    Release asset base URL (online mode)
-  --local-dir DIR   Flat release directory (no network; still signature-verifies)
+  --local-dir DIR   Flat release directory (no network; still SHA-256 verifies)
   --verify-chain    Download/verify trust chain only; do not modify the system
   -h, --help        Show this help
 
-Trust: embedded Ed25519 release public key в†’ signed manifest в†’ asset SHA-256.
+Trust: GitHub Release HTTPS → SHA256SUMS / manifest SHA-256 → assets.
 EOF
 }
 
@@ -77,144 +73,17 @@ require_root() {
   [[ "$(id -u)" -eq 0 ]] || die "root required"
 }
 
-hex_to_bin() {
-  local hex="$1" i
-  for ((i = 0; i < ${#hex}; i += 2)); do
-    printf "\\x${hex:i:2}"
-  done
-}
-
-b64url_decode() {
-  local s="$1"
-  case $(( ${#s} % 4 )) in
-    2) s="${s}==" ;;
-    3) s="${s}=" ;;
-  esac
-  s="$(printf '%s' "${s}" | tr '_-' '/+')"
-  printf '%s' "${s}" | base64 -d 2>/dev/null
-}
-
-write_update_pubkey_pem() {
-  local dest="$1" der
-  der="$(mktemp "${WORK}/pub.XXXXXX")"
-  {
-    hex_to_bin "302a300506032b6570032100"
-    hex_to_bin "${PUB_HEX}"
-  } > "${der}"
-  {
-    echo "-----BEGIN PUBLIC KEY-----"
-    base64 -w 64 "${der}" 2>/dev/null || base64 "${der}" | fold -w 64
-    echo "-----END PUBLIC KEY-----"
-  } > "${dest}"
-  rm -f "${der}"
-}
-
-# Must match Go CanonicalManifestBytes / installer / bootstrap-cli-update.sh.
-canonical_manifest_bytes() {
-  local manifest="$1"
-  if [[ -n "${NYXVEIL_MANIFEST_TOOL:-}" ]]; then
-    # Test/host helper: e.g. NYXVEIL_MANIFEST_TOOL='go run ./scripts/manifest-tool.go'
-    # shellcheck disable=SC2086
-    eval ${NYXVEIL_MANIFEST_TOOL} canon "'${manifest}'"
-    return 0
-  fi
-  if command -v jq >/dev/null 2>&1; then
-    local canonical
-    canonical="$(
-      jq -c '
-        . as $manifest |
-        {
-          version: .version,
-          arch: .arch
-        }
-        + (if (.sha256 | type) == "string" and .sha256 != ""
-           then {sha256: .sha256}
-           else {}
-           end)
-        + (if (.url | type) == "string" and .url != ""
-           then {url: .url}
-           else {}
-           end)
-        + {
-          min_core: .min_core,
-          min_protocol: .min_protocol
-        }
-        + (if (.assets | type) == "array" and (.assets | length) > 0
-           then {
-             assets: [
-               .assets[] |
-               if ($manifest.assets | any(
-                 ((.destination // "") != "" or (.mode // "") != "" or (.required // false) == true)
-               ))
-               then {
-                   name: .name,
-                   sha256: .sha256,
-                   url: .url,
-                   destination: .destination,
-                   mode: .mode,
-                   required: .required
-                 }
-               else {
-                   name: .name,
-                   sha256: .sha256,
-                   url: .url
-                 }
-               end
-             ]
-           }
-           else {}
-           end)
-      ' "${manifest}"
-    )"
-    printf '%s' "${canonical}"
-    return 0
-  fi
-  command -v python3 >/dev/null 2>&1 || die "jq, python3, or NYXVEIL_MANIFEST_TOOL required to verify release manifest"
-  python3 - "${manifest}" <<'PY'
-import json, sys
-from pathlib import Path
-m = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-out = {"version": m["version"], "arch": m["arch"]}
-if isinstance(m.get("sha256"), str) and m["sha256"]:
-    out["sha256"] = m["sha256"]
-if isinstance(m.get("url"), str) and m["url"]:
-    out["url"] = m["url"]
-out["min_core"] = m["min_core"]
-out["min_protocol"] = m["min_protocol"]
-assets = m.get("assets") or []
-if isinstance(assets, list) and assets:
-    rich = any(
-        (a.get("destination") or "") != ""
-        or (a.get("mode") or "") != ""
-        or a.get("required") is True
-        for a in assets
-    )
-    out_assets = []
-    for a in assets:
-        item = {"name": a["name"], "sha256": a["sha256"], "url": a["url"]}
-        if rich:
-            item["destination"] = a.get("destination", "")
-            item["mode"] = a.get("mode", "")
-            item["required"] = bool(a.get("required", False))
-        out_assets.append(item)
-    out["assets"] = out_assets
-sys.stdout.write(json.dumps(out, separators=(",", ":"), ensure_ascii=False))
-PY
-}
-
 manifest_field() {
   local manifest="$1"
-  local field="$2"
-  if [[ -n "${NYXVEIL_MANIFEST_TOOL:-}" ]]; then
-    # shellcheck disable=SC2086
-    eval ${NYXVEIL_MANIFEST_TOOL} field "'${manifest}'" "'${field}'"
-    return 0
-  fi
+  local expr="$2"
   if command -v jq >/dev/null 2>&1; then
-    jq -r "${field}" "${manifest}"
+    jq -r "${expr}" "${manifest}"
     return 0
   fi
-  python3 - "${manifest}" "${field}" <<'PY'
+  if command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; then
+    local py=python3
+    command -v python3 >/dev/null 2>&1 || py=python
+    "${py}" - "${manifest}" "${expr}" <<'PY'
 import json, sys
 from pathlib import Path
 m = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -223,8 +92,6 @@ if expr == ".version":
     print(m.get("version",""))
 elif expr == ".arch":
     print(m.get("arch",""))
-elif expr == ".signature // empty":
-    print(m.get("signature") or "")
 elif "nyxveilctl" in expr:
     for a in m.get("assets") or []:
         if a.get("name") in ("nyxveilctl","ctl"):
@@ -240,25 +107,18 @@ elif "nyxveilctl" in expr:
 else:
     raise SystemExit(f"unsupported field {expr}")
 PY
-}
-
-verify_manifest_signature() {
-  local manifest="$1"
-  local sig_b64 msg pem sigbin
-  sig_b64="$(manifest_field "${manifest}" '.signature // empty')"
-  [[ -n "${sig_b64}" ]] || die "manifest missing signature"
-  msg="${WORK}/canonical.json"
-  canonical_manifest_bytes "${manifest}" > "${msg}"
-  pem="${WORK}/update.pub.pem"
-  write_update_pubkey_pem "${pem}"
-  sigbin="${WORK}/sig.bin"
-  b64url_decode "${sig_b64}" > "${sigbin}" || die "bad signature encoding"
-  openssl pkeyutl -verify -pubin -inkey "${pem}" -rawin -in "${msg}" -sigfile "${sigbin}" >/dev/null 2>&1 \
-    || die "manifest signature INVALID вЂ” refusing (system unmodified)"
+    return 0
+  fi
+  if [[ -n "${NYXVEIL_MANIFEST_TOOL:-}" ]]; then
+    # Test/host helper: e.g. NYXVEIL_MANIFEST_TOOL='go run -C ... ./scripts/manifest-tool.go'
+    # shellcheck disable=SC2086
+    eval ${NYXVEIL_MANIFEST_TOOL} field "'${manifest}'" "'${expr}'"
+    return 0
+  fi
+  die "jq, python3, or NYXVEIL_MANIFEST_TOOL required"
 }
 
 # Textual checksum lists may be published with CRLF from Windows builders.
-# Normalize only the checksum *listing* for parsing вЂ” never mutate binaries.
 checksum_lines() {
   local sums="$1"
   [[ -f "${sums}" ]] || die "missing checksum file: ${sums}"
@@ -312,10 +172,12 @@ atomic_install_ctl() {
 require_root
 command -v sha256sum >/dev/null 2>&1 || die "sha256sum required"
 command -v grep >/dev/null 2>&1 || die "grep required"
-command -v openssl >/dev/null 2>&1 || die "openssl required"
 command -v curl >/dev/null 2>&1 || die "curl required"
 command -v tr >/dev/null 2>&1 || die "tr required"
-if ! command -v jq >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
+if ! command -v jq >/dev/null 2>&1 \
+  && ! command -v python3 >/dev/null 2>&1 \
+  && ! command -v python >/dev/null 2>&1 \
+  && [[ -z "${NYXVEIL_MANIFEST_TOOL:-}" ]]; then
   die "jq or python3 required"
 fi
 
@@ -339,17 +201,19 @@ if [[ -n "${LOCAL_DIR}" ]]; then
   if [[ -f "${LOCAL_DIR}/bootstrap-cli-update.sh" ]]; then
     cp -a "${LOCAL_DIR}/bootstrap-cli-update.sh" "${BOOTSTRAP_SH}"
   fi
-  if [[ -f "${LOCAL_DIR}/SHA256SUMS" && -f "${BOOTSTRAP_SH}" ]]; then
+  if [[ -f "${LOCAL_DIR}/SHA256SUMS" ]]; then
     cp -a "${LOCAL_DIR}/SHA256SUMS" "${WORK}/SHA256SUMS"
-    # Corruption check only (CRLF-safe). Authenticity is the Ed25519 manifest.
-    verify_named_checksum "${WORK}/SHA256SUMS" "${BOOTSTRAP_SH}"
+    verify_named_checksum "${WORK}/SHA256SUMS" "${MANIFEST}"
+    if [[ -f "${BOOTSTRAP_SH}" ]]; then
+      verify_named_checksum "${WORK}/SHA256SUMS" "${BOOTSTRAP_SH}"
+    fi
   fi
   BASE_URL="${BASE_URL:-${LOCAL_DIR}}"
 else
   [[ -n "${BASE_URL}" ]] || die "online mode requires --base-url or NYXVEIL_RELEASE_BASE_URL"
   BASE_URL="${BASE_URL%/}"
 
-  log "fetching VERSION and signed manifest into private workdir"
+  log "fetching VERSION, SHA256SUMS, and unsigned manifest into private workdir"
   if [[ -z "${VERSION}" ]]; then
     fetch "${BASE_URL}/VERSION" "${WORK}/VERSION"
     [[ -s "${WORK}/VERSION" ]] || die "VERSION download empty"
@@ -357,25 +221,19 @@ else
     [[ -n "${VERSION}" ]] || die "VERSION unresolved after download"
   fi
 
+  fetch "${BASE_URL}/SHA256SUMS" "${WORK}/SHA256SUMS"
   fetch "${BASE_URL}/release-manifest-linux-${ARCH}.json" "${MANIFEST}"
   fetch "${BASE_URL}/nyxveilctl-linux-${ARCH}" "${NEW_CTL}"
   fetch "${BASE_URL}/bootstrap-cli-update.sh" "${BOOTSTRAP_SH}"
-  # Optional corruption metadata (never authenticity root).
-  if curl -fsSL "${BASE_URL}/SHA256SUMS" -o "${WORK}/SHA256SUMS" 2>/dev/null; then
-    verify_named_checksum "${WORK}/SHA256SUMS" "${BOOTSTRAP_SH}"
-    log "bootstrap-cli-update.sh checksum OK (corruption check; trust root is Ed25519)"
-  else
-    log "SHA256SUMS unavailable; continuing with Ed25519 manifest trust only"
-  fi
+  verify_named_checksum "${WORK}/SHA256SUMS" "${MANIFEST}"
+  verify_named_checksum "${WORK}/SHA256SUMS" "${BOOTSTRAP_SH}"
+  log "SHA256SUMS integrity OK (GitHub Release authenticity)"
 fi
 
 [[ -n "${VERSION}" ]] || VERSION="${DEFAULT_VERSION}"
 [[ -n "${VERSION}" ]] || die "VERSION unresolved"
 
-log "verifying release manifest with embedded UpdatePublicKey"
-verify_manifest_signature "${MANIFEST}"
-log "manifest signature OK (trust root=UpdatePublicKey)"
-
+log "parsing unsigned release manifest"
 MV="$(manifest_field "${MANIFEST}" '.version')"
 MA="$(manifest_field "${MANIFEST}" '.arch')"
 [[ "${MV}" == "${VERSION}" ]] || die "version mismatch have ${MV} want ${VERSION}"
@@ -390,9 +248,6 @@ log "ctl asset verified sha256=${GOT_SHA}"
 
 if [[ -f "${BOOTSTRAP_SH}" ]]; then
   chmod 0755 "${BOOTSTRAP_SH}"
-  # Fail closed if a substituted bootstrap does not embed the same release trust root.
-  grep -q "${PUB_HEX}" "${BOOTSTRAP_SH}" || die "bootstrap-cli-update.sh missing UpdatePublicKey trust root"
-  log "bootstrap trust root matches UpdatePublicKey"
 fi
 
 if [[ "${VERIFY_CHAIN_ONLY}" -eq 1 ]]; then
@@ -403,7 +258,7 @@ fi
 
 log "installing verified nyxveilctl only (server untouched)"
 atomic_install_ctl "${NEW_CTL}"
-log "ctl upgraded; running full signed update"
+log "ctl upgraded; running full update"
 
 export NYXVEIL_BIN_DIR="${BIN_DIR}"
 export NYXVEIL_SHARE_DIR="${SHARE_DIR}"
@@ -422,8 +277,6 @@ test -x "${SHARE_DIR}/scripts/production-gate.sh" ||
   die "production gate missing or not executable after update"
 test -f "${SHARE_DIR}/VERSION" || die "share VERSION missing after update"
 
-# nyxveilctl update now runs the installed production gate as part of the
-# single operator command contract. Do not invoke the gate a second time here.
 log "release assets complete; production gate already executed by nyxveilctl update"
 if [[ "${NYXVEIL_SKIP_GATE:-0}" == "1" ]]; then
   log "NYXVEIL_SKIP_GATE=1 - update skipped production gate"

@@ -14,7 +14,7 @@ import (
 
 func main() {
 	if len(os.Args) < 3 {
-		fatal("usage: manifest-tool canon|field FILE [EXPR]")
+		fatal("usage: manifest-tool print|field FILE [EXPR]")
 	}
 	cmd := os.Args[1]
 	raw, err := os.ReadFile(os.Args[2])
@@ -22,12 +22,16 @@ func main() {
 		fatal("%v", err)
 	}
 	switch cmd {
-	case "canon":
-		var m updater.Manifest
-		if err := json.Unmarshal(raw, &m); err != nil {
+	case "print", "canon":
+		m, err := updater.ParseManifest(raw)
+		if err != nil {
 			fatal("%v", err)
 		}
-		os.Stdout.Write(updater.CanonicalManifestBytes(&m))
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(m); err != nil {
+			fatal("%v", err)
+		}
 	case "field":
 		if len(os.Args) < 4 {
 			fatal("field requires EXPR")

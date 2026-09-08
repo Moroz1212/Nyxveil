@@ -1,8 +1,6 @@
 package updater_test
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,10 +22,6 @@ func TestWrongManagementDestinationFailsClosed(t *testing.T) {
 	hs := httptest.NewServer(mux)
 	t.Cleanup(hs.Close)
 
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	m := &updater.Manifest{Version: "1.1.9", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1}
 	dest, _ := paths.DefaultExtraInstallMaps()
 	dest["nyxveil-server"] = paths.BinaryPath()
@@ -41,7 +35,6 @@ func TestWrongManagementDestinationFailsClosed(t *testing.T) {
 			Destination: d, Mode: requiredAssetMode(name), Required: true,
 		})
 	}
-	updater.SignManifest(m, priv)
 
 	root := tempRoot(t)
 	u := updater.New(filepath.Join(root, "server"), filepath.Join(root, "server.prev"), "")
@@ -62,10 +55,6 @@ func TestWrongManagementModeFailsClosed(t *testing.T) {
 	hs := httptest.NewServer(mux)
 	t.Cleanup(hs.Close)
 
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	m := &updater.Manifest{Version: "1.1.9", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1}
 	dest, _ := paths.DefaultExtraInstallMaps()
 	dest["nyxveil-server"] = paths.BinaryPath()
@@ -79,7 +68,6 @@ func TestWrongManagementModeFailsClosed(t *testing.T) {
 			Destination: dest[name], Mode: mode, Required: true,
 		})
 	}
-	updater.SignManifest(m, priv)
 
 	root := tempRoot(t)
 	u := updater.New(filepath.Join(root, "server"), filepath.Join(root, "server.prev"), "")
@@ -100,10 +88,6 @@ func TestUnknownRequiredPrivilegedAssetFailsClosed(t *testing.T) {
 	hs := httptest.NewServer(mux)
 	t.Cleanup(hs.Close)
 
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	m := &updater.Manifest{Version: "1.1.9", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1}
 	dest, _ := paths.DefaultExtraInstallMaps()
 	dest["nyxveil-server"] = paths.BinaryPath()
@@ -117,7 +101,6 @@ func TestUnknownRequiredPrivilegedAssetFailsClosed(t *testing.T) {
 		Name: "evil-root-writer", SHA256: shaHex([]byte("x")), URL: hs.URL + "/nyxveilctl",
 		Destination: "/etc/passwd", Mode: "0644", Required: true,
 	})
-	updater.SignManifest(m, priv)
 
 	root := tempRoot(t)
 	u := updater.New(filepath.Join(root, "server"), filepath.Join(root, "server.prev"), "")
@@ -138,10 +121,6 @@ func TestManagementAssetRollbackRemovesNewFiles(t *testing.T) {
 	hs := httptest.NewServer(mux)
 	t.Cleanup(hs.Close)
 
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	root := tempRoot(t)
 	serverBin := filepath.Join(root, "server")
 	_ = os.WriteFile(serverBin, []byte("old"), 0o755)
@@ -153,7 +132,6 @@ func TestManagementAssetRollbackRemovesNewFiles(t *testing.T) {
 			Mode: requiredAssetMode(name), Required: true,
 		})
 	}
-	updater.SignManifest(m, priv)
 
 	reloadCalls := 0
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), "")
@@ -163,7 +141,7 @@ func TestManagementAssetRollbackRemovesNewFiles(t *testing.T) {
 	}
 	mapRequiredTestAssets(u, root)
 
-	err = u.Apply(m, func() bool { return false })
+	err := u.Apply(m, func() bool { return false })
 	if err == nil {
 		t.Fatal("expected health failure")
 	}
@@ -187,10 +165,6 @@ func TestDaemonReloadInvokedAfterUpdateUnitInstall(t *testing.T) {
 	hs := httptest.NewServer(mux)
 	t.Cleanup(hs.Close)
 
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	root := tempRoot(t)
 	serverBin := filepath.Join(root, "server")
 	_ = os.WriteFile(serverBin, []byte("old"), 0o755)
@@ -202,7 +176,6 @@ func TestDaemonReloadInvokedAfterUpdateUnitInstall(t *testing.T) {
 			Mode: requiredAssetMode(name), Required: true,
 		})
 	}
-	updater.SignManifest(m, priv)
 
 	calls := 0
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), "")

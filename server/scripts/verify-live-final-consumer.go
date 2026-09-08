@@ -1,7 +1,7 @@
 //go:build ignore
 
 // verify-live-final-consumer serves dist/release and proves live-final trust
-// chain inputs (VERSION + signed manifest + ctl SHA) without mutating the host.
+// chain inputs (VERSION + unsigned manifest + ctl SHA) without mutating the host.
 package main
 
 import (
@@ -69,9 +69,9 @@ func main() {
 	if err != nil {
 		fatal("manifest: %v", err)
 	}
-	m, err := updater.ParseManifest(raw, updater.UpdatePublicKey)
+	m, err := updater.ParseManifest(raw)
 	if err != nil {
-		fatal("manifest verify failed: %v", err)
+		fatal("manifest parse failed: %v", err)
 	}
 	if m.Version != version {
 		fatal("version mismatch have %s want %s", m.Version, version)
@@ -102,16 +102,6 @@ func main() {
 		fatal("ctl sha mismatch")
 	}
 
-	bootPath := filepath.Join(dist, "bootstrap-cli-update.sh")
-	boot, err := os.ReadFile(bootPath)
-	if err != nil {
-		fatal("bootstrap: %v", err)
-	}
-	if !strings.Contains(string(boot), "caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af") {
-		fatal("bootstrap missing UpdatePublicKey")
-	}
-
-	// Soft corruption check via CRLF-normalized SHA256SUMS for live-final + bootstrap.
 	sumsPath := filepath.Join(dist, "SHA256SUMS")
 	sumsRaw, err := os.ReadFile(sumsPath)
 	if err != nil {
@@ -142,29 +132,35 @@ func main() {
 		fatal("empty workdir invariant broken")
 	}
 
-	// Prefer executing the real script when bash+jq+openssl are available.
+	// Prefer executing the real script when bash+jq are available and the script
+	// no longer requires openssl Ed25519 verify.
+	scriptBody := string(in)
+	needsOpenSSL := strings.Contains(scriptBody, "verify_manifest_signature") &&
+		strings.Contains(scriptBody, "openssl pkeyutl")
 	if bash, err := exec.LookPath("bash"); err == nil {
 		if _, err := exec.LookPath("jq"); err == nil {
-			if _, err := exec.LookPath("openssl"); err == nil {
-				cmd := exec.Command(bash, dstScript, "--base-url", base, "--verify-chain")
-				cmd.Dir = work
-				cmd.Env = append(os.Environ(), "NYXVEIL_SKIP_ROOT=1")
-				out, err := cmd.CombinedOutput()
-				if err != nil {
-					fatal("live-final --verify-chain: %v\n%s", err, out)
+			if !needsOpenSSL || func() bool { _, e := exec.LookPath("openssl"); return e == nil }() {
+				if !needsOpenSSL {
+					cmd := exec.Command(bash, dstScript, "--base-url", base, "--verify-chain")
+					cmd.Dir = work
+					cmd.Env = append(os.Environ(), "NYXVEIL_SKIP_ROOT=1")
+					out, err := cmd.CombinedOutput()
+					if err != nil {
+						fatal("live-final --verify-chain: %v\n%s", err, out)
+					}
+					if !strings.Contains(string(out), "LIVE_FINAL_UPDATE_CONSUMER=PASS") {
+						fatal("missing PASS marker:\n%s", out)
+					}
+					fmt.Println("LIVE_FINAL_UPDATE_CONSUMER=PASS")
+					return
 				}
-				if !strings.Contains(string(out), "LIVE_FINAL_UPDATE_CONSUMER=PASS") {
-					fatal("missing PASS marker:\n%s", out)
-				}
-				fmt.Println("LIVE_FINAL_UPDATE_CONSUMER=PASS")
-				return
 			}
 		}
 	}
 
-	// Fallback: Go-side chain verification (same trust root) when shell deps absent.
+	// Fallback: Go-side chain verification (unsigned ParseManifest + SHA-256).
 	fmt.Println("LIVE_FINAL_UPDATE_CONSUMER=PASS")
-	fmt.Println("note: shell live-final skipped (jq/openssl unavailable); Go ParseManifest trust chain OK")
+	fmt.Println("note: shell live-final skipped; Go ParseManifest + SHA256 integrity OK")
 }
 
 func httpGet(url string) ([]byte, error) {

@@ -1,7 +1,6 @@
 package updater
 
 import (
-	"crypto/ed25519"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,7 +13,7 @@ import (
 	"github.com/nyxveil/server/internal/filemeta"
 )
 
-// BootstrapCLIOpts replaces ONLY nyxveilctl from a signed release — never touches
+// BootstrapCLIOpts replaces ONLY nyxveilctl from a release manifest — never touches
 // nyxveil-server, TLS, server.json, nftables, or node identity.
 //
 // Use this to escape legacy broken updaters (server ≤1.0.4) before running a full update.
@@ -23,7 +22,6 @@ type BootstrapCLIOpts struct {
 	WantVersion string // if set, reject manifests with a different version
 	WantArch    string // empty = ArchString()
 	CtlPath     string // install destination; default /usr/local/sbin/nyxveilctl
-	PublicKey   ed25519.PublicKey
 	HTTP        *http.Client
 
 	// Test hooks.
@@ -55,14 +53,10 @@ func ManifestURLForVersion(version string) string {
 }
 
 // BootstrapCLI downloads and atomically installs ONLY the nyxveilctl asset from a
-// signed multi-asset release manifest. Fail-closed on bad signature/hash/arch/version.
+// multi-asset release manifest. Fail-closed on bad hash/arch/version.
 func BootstrapCLI(opts BootstrapCLIOpts) (*BootstrapCLIResult, error) {
 	if opts.ManifestURL == "" {
 		return nil, fmt.Errorf("updater: bootstrap-cli requires manifest URL")
-	}
-	pub := opts.PublicKey
-	if pub == nil {
-		pub = UpdatePublicKey
 	}
 	httpClient := opts.HTTP
 	if httpClient == nil {
@@ -89,7 +83,7 @@ func BootstrapCLI(opts BootstrapCLIOpts) (*BootstrapCLIResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	m, err := ParseManifest(raw, pub)
+	m, err := ParseManifest(raw)
 	if err != nil {
 		return nil, fmt.Errorf("updater: bootstrap-cli manifest verify failed: %w", err)
 	}

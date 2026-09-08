@@ -139,9 +139,9 @@ func TestReleaseConsumerFromDistOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := ParseManifest(raw, UpdatePublicKey)
+	m, err := ParseManifest(raw)
 	if err != nil {
-		t.Skipf("dist/release manifests not production-signed (%v) — set NYXVEIL_RELEASE_SIGNING_KEY and re-package", err)
+		t.Fatalf("dist/release manifest must parse without signature: %v", err)
 	}
 
 	absoluteDist, err := filepath.Abs(dist)

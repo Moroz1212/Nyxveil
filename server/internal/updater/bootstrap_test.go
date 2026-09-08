@@ -1,7 +1,6 @@
 package updater_test
 
 import (
-	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -33,10 +32,6 @@ func TestBootstrapCLIReplacesOnlyCtl(t *testing.T) {
 
 	newCtl := []byte("CTL-1.0.5")
 	sumCtl := hex.EncodeToString(sha256Sum(newCtl))
-	pub, priv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ctl", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(newCtl) })
@@ -50,7 +45,6 @@ func TestBootstrapCLIReplacesOnlyCtl(t *testing.T) {
 	hs := httptest.NewServer(mux)
 	defer hs.Close()
 	m.Assets[1].URL = hs.URL + "/ctl"
-	updater.SignManifest(m, priv)
 	raw, err := json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +55,6 @@ func TestBootstrapCLIReplacesOnlyCtl(t *testing.T) {
 		ManifestURL: hs.URL + "/manifest.json",
 		WantVersion: "1.0.5",
 		CtlPath:     ctl,
-		PublicKey:   pub,
 		HTTP:        hs.Client(),
 	})
 	if err != nil {
@@ -87,39 +80,10 @@ func TestBootstrapCLIReplacesOnlyCtl(t *testing.T) {
 	}
 }
 
-func TestBootstrapCLIBadSignatureKeepsOld(t *testing.T) {
-	dir := tempDir(t)
-	ctl := filepath.Join(dir, "nyxveilctl")
-	_ = os.WriteFile(ctl, []byte("CTL-1.0.3"), 0o755)
-	pub, _, _ := ed25519.GenerateKey(nil)
-	_, other, _ := ed25519.GenerateKey(nil)
-
-	m := &updater.Manifest{
-		Version: "1.0.5", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1,
-		Assets: []updater.Asset{{Name: "nyxveilctl", SHA256: strings.Repeat("b", 64), URL: "http://example/ctl"}},
-	}
-	updater.SignManifest(m, other)
-	raw, _ := json.Marshal(m)
-	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(raw) }))
-	defer hs.Close()
-
-	_, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
-		ManifestURL: hs.URL, WantVersion: "1.0.5", CtlPath: ctl, PublicKey: pub, HTTP: hs.Client(),
-	})
-	if err == nil {
-		t.Fatal("expected signature reject")
-	}
-	got, _ := os.ReadFile(ctl)
-	if string(got) != "CTL-1.0.3" {
-		t.Fatal("old CLI must remain")
-	}
-}
-
 func TestBootstrapCLIBadHashKeepsOld(t *testing.T) {
 	dir := tempDir(t)
 	ctl := filepath.Join(dir, "nyxveilctl")
 	_ = os.WriteFile(ctl, []byte("CTL-1.0.3"), 0o755)
-	pub, priv, _ := ed25519.GenerateKey(nil)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ctl", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("WRONG")) })
 	hs := httptest.NewServer(mux)
@@ -128,12 +92,11 @@ func TestBootstrapCLIBadHashKeepsOld(t *testing.T) {
 		Version: "1.0.5", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1,
 		Assets: []updater.Asset{{Name: "nyxveilctl", SHA256: strings.Repeat("c", 64), URL: hs.URL + "/ctl"}},
 	}
-	updater.SignManifest(m, priv)
 	raw, _ := json.Marshal(m)
 	mux.HandleFunc("/m.json", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(raw) })
 
 	_, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
-		ManifestURL: hs.URL + "/m.json", WantVersion: "1.0.5", CtlPath: ctl, PublicKey: pub, HTTP: hs.Client(),
+		ManifestURL: hs.URL + "/m.json", WantVersion: "1.0.5", CtlPath: ctl, HTTP: hs.Client(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "sha256") {
 		t.Fatalf("err=%v", err)
@@ -148,7 +111,6 @@ func TestBootstrapCLIAtomicRenameFailureKeepsOld(t *testing.T) {
 	dir := tempDir(t)
 	ctl := filepath.Join(dir, "nyxveilctl")
 	_ = os.WriteFile(ctl, []byte("CTL-1.0.3"), 0o755)
-	pub, priv, _ := ed25519.GenerateKey(nil)
 	newCtl := []byte("CTL-1.0.5")
 	sum := hex.EncodeToString(sha256Sum(newCtl))
 	mux := http.NewServeMux()
@@ -159,12 +121,11 @@ func TestBootstrapCLIAtomicRenameFailureKeepsOld(t *testing.T) {
 		Version: "1.0.5", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1,
 		Assets: []updater.Asset{{Name: "nyxveilctl", SHA256: sum, URL: hs.URL + "/ctl"}},
 	}
-	updater.SignManifest(m, priv)
 	raw, _ := json.Marshal(m)
 	mux.HandleFunc("/m.json", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(raw) })
 
 	_, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
-		ManifestURL: hs.URL + "/m.json", WantVersion: "1.0.5", CtlPath: ctl, PublicKey: pub, HTTP: hs.Client(),
+		ManifestURL: hs.URL + "/m.json", WantVersion: "1.0.5", CtlPath: ctl, HTTP: hs.Client(),
 		AtomicInstall: func(src, dest string) error { return os.ErrPermission },
 	})
 	if err == nil {
@@ -197,7 +158,6 @@ func TestLegacy103To105BootstrapThenUpdate(t *testing.T) {
 	newCtl := []byte("CTL-1.0.5")
 	sumS := hex.EncodeToString(sha256Sum(newServer))
 	sumC := hex.EncodeToString(sha256Sum(newCtl))
-	pub, priv, _ := ed25519.GenerateKey(nil)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/server", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(newServer) })
@@ -213,13 +173,12 @@ func TestLegacy103To105BootstrapThenUpdate(t *testing.T) {
 		},
 	}
 	completeRequiredTestAssets(m, updater.Asset{SHA256: sumC, URL: hs.URL + "/ctl"})
-	updater.SignManifest(m, priv)
 	raw, _ := json.Marshal(m)
 	mux.HandleFunc("/manifest.json", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(raw) })
 	manifestURL := hs.URL + "/manifest.json"
 
 	if _, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
-		ManifestURL: manifestURL, WantVersion: "1.0.5", CtlPath: ctl, PublicKey: pub, HTTP: hs.Client(),
+		ManifestURL: manifestURL, WantVersion: "1.0.5", CtlPath: ctl, HTTP: hs.Client(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -239,9 +198,8 @@ func TestLegacy103To105BootstrapThenUpdate(t *testing.T) {
 	mapRequiredTestAssets(u, dir)
 	u.StateDir = state
 	u.HTTP = hs.Client()
-	u.PublicKey = pub
 	u.EnforceOwnership = filemeta.EnforceRuntimeTLS
-	parsed, err := updater.ParseManifest(raw, pub)
+	parsed, err := updater.ParseManifest(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +240,6 @@ func TestFullUpdateFailureAfterBootstrapRestoresServer103(t *testing.T) {
 	newCtl := []byte("CTL-1.0.5-B")
 	sumS := hex.EncodeToString(sha256Sum(newServer))
 	sumC := hex.EncodeToString(sha256Sum(newCtl))
-	pub, priv, _ := ed25519.GenerateKey(nil)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/server", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(newServer) })
 	mux.HandleFunc("/ctl", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(newCtl) })
@@ -296,7 +253,6 @@ func TestFullUpdateFailureAfterBootstrapRestoresServer103(t *testing.T) {
 		},
 	}
 	completeRequiredTestAssets(m, updater.Asset{SHA256: sumC, URL: hs.URL + "/ctl"})
-	updater.SignManifest(m, priv)
 	raw, _ := json.Marshal(m)
 
 	u := updater.New(server, prev, filepath.Join(state, "marker"))
@@ -305,9 +261,8 @@ func TestFullUpdateFailureAfterBootstrapRestoresServer103(t *testing.T) {
 	mapRequiredTestAssets(u, dir)
 	u.StateDir = state
 	u.HTTP = hs.Client()
-	u.PublicKey = pub
 	u.EnforceOwnership = filemeta.EnforceRuntimeTLS
-	parsed, _ := updater.ParseManifest(raw, pub)
+	parsed, _ := updater.ParseManifest(raw)
 
 	err := u.Apply(parsed, func() bool {
 		_ = os.WriteFile(tlsKey, []byte("ROOT-KEY"), 0o600)
@@ -347,7 +302,6 @@ func TestBootstrapCLIUpdateDoesNotTouchConfig(t *testing.T) {
 	_ = os.WriteFile(ctl, []byte("CTL-OLD"), 0o755)
 	newCtl := []byte("CTL-NEW")
 	sumCtl := hex.EncodeToString(sha256Sum(newCtl))
-	pub, priv, _ := ed25519.GenerateKey(nil)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ctl", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(newCtl) })
 	hs := httptest.NewServer(mux)
@@ -356,11 +310,10 @@ func TestBootstrapCLIUpdateDoesNotTouchConfig(t *testing.T) {
 		Version: "1.0.9", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1,
 		Assets: []updater.Asset{{Name: "nyxveilctl", SHA256: sumCtl, URL: hs.URL + "/ctl"}},
 	}
-	updater.SignManifest(m, priv)
 	raw, _ := json.Marshal(m)
 	mux.HandleFunc("/m.json", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(raw) })
 	if _, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
-		ManifestURL: hs.URL + "/m.json", WantVersion: "1.0.9", CtlPath: ctl, PublicKey: pub, HTTP: hs.Client(),
+		ManifestURL: hs.URL + "/m.json", WantVersion: "1.0.9", CtlPath: ctl, HTTP: hs.Client(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -376,10 +329,6 @@ func TestBootstrapCLIUpdateDoesNotTouchTLS(t *testing.T) {
 
 func TestBootstrapCLIUpdatePreservesNodeIdentity(t *testing.T) {
 	TestLegacy103To105BootstrapThenUpdate(t)
-}
-
-func TestBootstrapCLIUpdateVerifiesManifestSignature(t *testing.T) {
-	TestBootstrapCLIBadSignatureKeepsOld(t)
 }
 
 func TestBootstrapCLIUpdateVerifiesSHA256(t *testing.T) {

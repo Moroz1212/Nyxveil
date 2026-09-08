@@ -1,8 +1,6 @@
 package updater_test
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -75,7 +73,7 @@ func TestMissingVersionFailsBeforeModification(t *testing.T) {
 }
 
 func TestMissingBootstrapFailsBeforeModification(t *testing.T) {
-	fx := buildSignedReleaseFixture(t, version.ServerVersion, false)
+	fx := buildReleaseFixture(t, version.ServerVersion, false)
 	os.Remove(filepath.Join(fx.dir, "bootstrap-cli-update.sh"))
 	prefix := t.TempDir()
 	bin := filepath.Join(prefix, "usr", "local", "sbin")
@@ -91,7 +89,7 @@ func TestMissingBootstrapFailsBeforeModification(t *testing.T) {
 	}
 	cmd := exec.Command(bash, dst, "--base-url", fx.base)
 	cmd.Dir = work
-	cmd.Env = liveFinalEnv(t, "NYXVEIL_BIN_DIR="+bin, "NYXVEIL_UPDATE_PUB_HEX="+fx.pubHex)
+	cmd.Env = liveFinalEnv(t, "NYXVEIL_BIN_DIR="+bin)
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("expected missing bootstrap failure:\n%s", out)
 	}
@@ -101,12 +99,12 @@ func TestMissingBootstrapFailsBeforeModification(t *testing.T) {
 }
 
 func TestTamperedBootstrapFails(t *testing.T) {
-	fx := buildSignedReleaseFixture(t, version.ServerVersion, false)
-	evil := []byte("#!/bin/bash\necho evil-no-pubkey\n")
+	fx := buildReleaseFixture(t, version.ServerVersion, false)
+	evil := []byte("#!/bin/bash\necho evil-bootstrap\n")
 	if err := os.WriteFile(filepath.Join(fx.dir, "bootstrap-cli-update.sh"), evil, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	rewriteSumsForFile(t, fx.dir, "bootstrap-cli-update.sh", evil)
+	// Leave SHA256SUMS pointing at the original bootstrap so integrity check fails.
 	prefix := t.TempDir()
 	bin := filepath.Join(prefix, "usr", "local", "sbin")
 	_ = os.MkdirAll(bin, 0o755)
@@ -121,7 +119,7 @@ func TestTamperedBootstrapFails(t *testing.T) {
 	}
 	cmd := exec.Command(bash, dst, "--base-url", fx.base, "--verify-chain")
 	cmd.Dir = work
-	cmd.Env = liveFinalEnv(t, "NYXVEIL_BIN_DIR="+bin, "NYXVEIL_UPDATE_PUB_HEX="+fx.pubHex)
+	cmd.Env = liveFinalEnv(t, "NYXVEIL_BIN_DIR="+bin)
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("expected tampered bootstrap failure:\n%s", out)
 	}
@@ -131,7 +129,7 @@ func TestTamperedBootstrapFails(t *testing.T) {
 }
 
 func TestTamperedCtlFails(t *testing.T) {
-	fx := buildSignedReleaseFixture(t, version.ServerVersion, false)
+	fx := buildReleaseFixture(t, version.ServerVersion, false)
 	arch := "amd64"
 	if runtime.GOARCH == "arm64" {
 		arch = "arm64"
@@ -157,7 +155,6 @@ func TestTamperedCtlFails(t *testing.T) {
 		"NYXVEIL_BIN_DIR="+bin,
 		"NYXVEIL_SHARE_DIR="+filepath.Join(prefix, "usr", "local", "share", "nyxveil"),
 		"NYXVEIL_STATE_DIR="+filepath.Join(prefix, "var", "lib", "nyxveil"),
-		"NYXVEIL_UPDATE_PUB_HEX="+fx.pubHex,
 	)
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("expected tampered ctl failure:\n%s", out)
@@ -174,10 +171,9 @@ type fixtureOpts struct {
 	assertNoCwdLeak bool
 }
 
-type signedFixture struct {
-	dir    string
-	base   string
-	pubHex string
+type releaseFixture struct {
+	dir  string
+	base string
 }
 
 func manifestToolEnv(t *testing.T) string {
@@ -201,10 +197,7 @@ func runLiveFinalProcessFixture(t *testing.T, opts fixtureOpts) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash required")
 	}
-	if _, err := exec.LookPath("openssl"); err != nil {
-		t.Skip("openssl required")
-	}
-	fx := buildSignedReleaseFixture(t, version.ServerVersion, opts.crlfSums)
+	fx := buildReleaseFixture(t, version.ServerVersion, opts.crlfSums)
 	work := t.TempDir()
 	dst := filepath.Join(work, "live-final-update.sh")
 	copyFile(t, filepath.Join(repoRootFromUpdaterTest(t), "scripts", "live-final-update.sh"), dst)
@@ -214,7 +207,7 @@ func runLiveFinalProcessFixture(t *testing.T, opts fixtureOpts) {
 	}
 
 	args := []string{dst, "--base-url", fx.base}
-	env := liveFinalEnv(t, "NYXVEIL_UPDATE_PUB_HEX="+fx.pubHex)
+	env := liveFinalEnv(t)
 	prefix := t.TempDir()
 	bin := filepath.Join(prefix, "usr", "local", "sbin")
 	share := filepath.Join(prefix, "usr", "local", "share", "nyxveil")
@@ -277,15 +270,10 @@ func runLiveFinalProcessFixture(t *testing.T, opts fixtureOpts) {
 	}
 }
 
-func buildSignedReleaseFixture(t *testing.T, version string, crlf bool) signedFixture {
+func buildReleaseFixture(t *testing.T, version string, crlf bool) releaseFixture {
 	t.Helper()
 	dir := t.TempDir()
 	root := repoRootFromUpdaterTest(t)
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubHex := hex.EncodeToString(pub)
 
 	payloads := map[string][]byte{
 		"nyxveil-server":            []byte("#!/usr/bin/env bash\necho server-" + version + "\n"),
@@ -317,8 +305,6 @@ func buildSignedReleaseFixture(t *testing.T, version string, crlf bool) signedFi
 	}
 	copyFile(t, filepath.Join(root, "scripts", "bootstrap-cli-update.sh"), filepath.Join(dir, "bootstrap-cli-update.sh"))
 	copyFile(t, filepath.Join(root, "scripts", "live-final-update.sh"), filepath.Join(dir, "live-final-update.sh"))
-	rewritePubHex(t, filepath.Join(dir, "bootstrap-cli-update.sh"), pubHex)
-	rewritePubHex(t, filepath.Join(dir, "live-final-update.sh"), pubHex)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -329,32 +315,14 @@ func buildSignedReleaseFixture(t *testing.T, version string, crlf bool) signedFi
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
 
-	// Ephemeral key: tests must not require production .secrets on developer hosts.
 	for _, arch := range []string{"amd64", "arm64"} {
-		writeTestManifest(t, dir, version, arch, base, priv)
+		writeTestManifest(t, dir, version, arch, base)
 	}
 	writeReleaseSums(t, dir, crlf)
-	return signedFixture{dir: dir, base: base, pubHex: pubHex}
+	return releaseFixture{dir: dir, base: base}
 }
 
-const productionPubHex = "caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af"
-
-func rewritePubHex(t *testing.T, path, pubHex string) {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	updated := strings.ReplaceAll(string(b), productionPubHex, pubHex)
-	if updated == string(b) {
-		t.Fatalf("%s missing production PUB_HEX to rewrite", path)
-	}
-	if err := os.WriteFile(path, []byte(updated), 0o755); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func writeTestManifest(t *testing.T, dir, version, arch, base string, priv ed25519.PrivateKey) {
+func writeTestManifest(t *testing.T, dir, version, arch, base string) {
 	t.Helper()
 	type item struct {
 		name, file, dest, mode string
@@ -379,7 +347,6 @@ func writeTestManifest(t *testing.T, dir, version, arch, base string, priv ed255
 			Destination: it.dest, Mode: it.mode, Required: true,
 		})
 	}
-	updater.SignManifest(m, priv)
 	raw, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -389,7 +356,7 @@ func writeTestManifest(t *testing.T, dir, version, arch, base string, priv ed255
 	if err := os.WriteFile(out, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := updater.ParseManifest(raw, priv.Public().(ed25519.PublicKey)); err != nil {
+	if _, err := updater.ParseManifest(raw); err != nil {
 		t.Fatalf("fixture self-verify: %v", err)
 	}
 }

@@ -79,9 +79,9 @@ package_arch() {
   cp -a "${ROOT}/systemd/50-nyxveil-management.rules" "${dest}/systemd/"
   cp -a "${ROOT}/firewall/nftables-nyxveil.conf" "${dest}/firewall/"
   cp -a "${ROOT}/scripts/"*.sh "${dest}/scripts/"
-  # Do not ship sign-release private-key tooling secrets; Go helper is fine to include for rebuilds.
-  if [[ -f "${ROOT}/scripts/sign-release.go" ]]; then
-    cp -a "${ROOT}/scripts/sign-release.go" "${dest}/scripts/"
+  # Manifest generator (unsigned; no release signing keys).
+  if [[ -f "${ROOT}/scripts/make-release-manifest.go" ]]; then
+    cp -a "${ROOT}/scripts/make-release-manifest.go" "${dest}/scripts/"
   fi
   if [[ -f "${ROOT}/scripts/verify-manifest-hashes.go" ]]; then
     cp -a "${ROOT}/scripts/verify-manifest-hashes.go" "${dest}/scripts/"
@@ -91,6 +91,9 @@ package_arch() {
   fi
   if [[ -f "${ROOT}/scripts/verify-release.sh" ]]; then
     cp -a "${ROOT}/scripts/verify-release.sh" "${dest}/scripts/"
+  fi
+  if [[ -f "${ROOT}/scripts/migrate-to-github-trust.sh" ]]; then
+    cp -a "${ROOT}/scripts/migrate-to-github-trust.sh" "${dest}/scripts/"
   fi
   cp -a "${ROOT}/docs/"*.md "${dest}/docs/" 2>/dev/null || true
   cp -a "${ROOT}/README.md" "${dest}/" 2>/dev/null || true
@@ -112,7 +115,7 @@ package_arch() {
 package_arch amd64
 package_arch arm64
 
-# Arch-independent auxiliary install/gate assets (hashed + signed into manifests).
+# Arch-independent auxiliary install/gate assets (hashed into unsigned manifests).
 bash "${ROOT}/scripts/normalize-shell-lf.sh" "${ROOT}/scripts/production-gate.sh"
 cp -a "${ROOT}/scripts/production-gate.sh" "${DIST}/production-gate.sh"
 chmod 0755 "${DIST}/production-gate.sh"
@@ -146,59 +149,22 @@ bash "${ROOT}/scripts/assert-no-crlf.sh" \
   "${DIST}/linux-amd64/scripts" "${DIST}/linux-arm64/scripts" \
   "${DIST}/linux-amd64/installer" "${DIST}/linux-arm64/installer"
 
-# Sign manifests (fail-closed unless SKIP_SIGN=1 for local unsigned experiments).
-if [[ "${SKIP_SIGN:-0}" == "1" ]]; then
-  echo "SKIP_SIGN=1 — not writing signed manifests" >&2
-  # Unsigned local packages cannot claim production upload completeness.
-  REQUIRED_UPLOADS=(
-    nyxveil-server-linux-amd64
-    nyxveilctl-linux-amd64
-    nyxveil-catalog-verify-linux-amd64
-    nyxveil-server-linux-arm64
-    nyxveilctl-linux-arm64
-    nyxveil-catalog-verify-linux-arm64
-    production-gate.sh
-    nyxveil-update.service
-    50-nyxveil-management.rules
-    VERSION
-    THIRD_PARTY_CORE.md
-    bootstrap-cli-update.sh
-    live-final-update.sh
-    SHA256SUMS
-    "UPLOAD-LIST-server-v${VERSION}.txt"
-  )
-  HASHED_UPLOADS=(
-    nyxveil-server-linux-amd64
-    nyxveilctl-linux-amd64
-    nyxveil-catalog-verify-linux-amd64
-    nyxveil-server-linux-arm64
-    nyxveilctl-linux-arm64
-    nyxveil-catalog-verify-linux-arm64
-    production-gate.sh
-    nyxveil-update.service
-    50-nyxveil-management.rules
-    VERSION
-    THIRD_PARTY_CORE.md
-    bootstrap-cli-update.sh
-    live-final-update.sh
-  )
-else
-  go run ./scripts/sign-release.go \
-    -version "${VERSION}" \
-    -out "${DIST}" \
-    -base-url "${BASE_URL}" \
-    -amd64-server "${BIN_SRC}/nyxveil-server-linux-amd64" \
-    -amd64-ctl "${BIN_SRC}/nyxveilctl-linux-amd64" \
-    -amd64-catalog "${BIN_SRC}/nyxveil-catalog-verify-linux-amd64" \
-    -arm64-server "${BIN_SRC}/nyxveil-server-linux-arm64" \
-    -arm64-ctl "${BIN_SRC}/nyxveilctl-linux-arm64" \
-    -arm64-catalog "${BIN_SRC}/nyxveil-catalog-verify-linux-arm64" \
-    -production-gate "${DIST}/production-gate.sh" \
-    -share-version "${DIST}/VERSION" \
-    -share-third-party "${DIST}/THIRD_PARTY_CORE.md" \
-    -update-service "${DIST}/nyxveil-update.service" \
-    -management-polkit "${DIST}/50-nyxveil-management.rules"
-fi
+# Build unsigned release manifests (GitHub Release = authenticity; SHA-256 = integrity).
+go run ./scripts/make-release-manifest.go \
+  -version "${VERSION}" \
+  -out "${DIST}" \
+  -base-url "${BASE_URL}" \
+  -amd64-server "${BIN_SRC}/nyxveil-server-linux-amd64" \
+  -amd64-ctl "${BIN_SRC}/nyxveilctl-linux-amd64" \
+  -amd64-catalog "${BIN_SRC}/nyxveil-catalog-verify-linux-amd64" \
+  -arm64-server "${BIN_SRC}/nyxveil-server-linux-arm64" \
+  -arm64-ctl "${BIN_SRC}/nyxveilctl-linux-arm64" \
+  -arm64-catalog "${BIN_SRC}/nyxveil-catalog-verify-linux-arm64" \
+  -production-gate "${DIST}/production-gate.sh" \
+  -share-version "${DIST}/VERSION" \
+  -share-third-party "${DIST}/THIRD_PARTY_CORE.md" \
+  -update-service "${DIST}/nyxveil-update.service" \
+  -management-polkit "${DIST}/50-nyxveil-management.rules"
 
 # Exact flat files that must be uploaded for this server release. Keep this
 # generated list adjacent to the assets so upload tooling cannot omit auxiliaries.
@@ -273,21 +239,23 @@ Management prerequisites (required for Control Plane UpdateNodeLatest):
   /etc/polkit-1/rules.d/50-nyxveil-management.rules
 
 Trust model:
-  Cryptographic authenticity = embedded Ed25519 UpdatePublicKey inside
-  live-final-update.sh / bootstrap-cli-update.sh / nyxveilctl verifying the
-  signed release manifest. SHA256SUMS is corruption convenience only.
+  Authenticity = GitHub repository / GitHub Release (HTTPS).
+  Integrity = SHA-256 in release manifests and SHA256SUMS.
+  No Ed25519 release signing keys.
 
-Live final update (ONE command; soft integrity check then Ed25519 trust):
+Live final / migrate (ONE node at a time per location):
   BASE=https://github.com/Moroz1212/Nyxveil/releases/download/server-v${VERSION}
   cd "\$(mktemp -d)" && curl -fsSLO "\$BASE/SHA256SUMS" "\$BASE/live-final-update.sh" && \\
   tr -d '\\r' < SHA256SUMS | grep -E ' [*]?live-final-update.sh\$' | sha256sum -c - && \\
   chmod 0755 live-final-update.sh && \\
   sudo ./live-final-update.sh --base-url "\$BASE"
 
-live-final-update.sh is self-contained: it creates a private workdir, fetches
-VERSION + signed manifest + ctl + bootstrap, verifies the signed manifest with
-the embedded release public key, upgrades ctl only, runs full update, then
-production-gate. Do not run the old 1.1.1 updater first.
+Legacy nodes still on the old signed updater must use migrate-to-github-trust.sh
+(or live-final-update.sh) once, then subsequent updates use Control Plane again.
+
+live-final-update.sh is self-contained: private workdir, fetches VERSION +
+unsigned manifest + ctl + bootstrap, verifies SHA-256, upgrades ctl only,
+runs full update, then production-gate.
 
 Offline install (example amd64):
   tar -xzf nyxveil-server-${VERSION}-linux-amd64.tar.gz
@@ -300,9 +268,5 @@ bash "${ROOT}/scripts/assert-no-crlf.sh" "${DIST}/NOTES.txt"
 
 echo "Packaged ${TAG} in ${DIST}"
 ls -la "${DIST}"
-if [[ "${SKIP_SIGN:-0}" == "1" ]]; then
-  echo "SKIP_SIGN=1 — skipping verify-release (unsigned)"
-else
-  bash "${ROOT}/scripts/verify-release.sh"
-  bash "${ROOT}/scripts/check-release-upload-set.sh"
-fi
+bash "${ROOT}/scripts/verify-release.sh"
+bash "${ROOT}/scripts/check-release-upload-set.sh"

@@ -122,7 +122,7 @@ echo "==> live-final-update.sh parses under bash and is executable"
 bash -n "${DIST}/live-final-update.sh"
 bash "${DIST}/live-final-update.sh" --help >/dev/null
 
-echo "==> Manifest asset hashes match release binaries (signed ParseManifest)"
+echo "==> Manifest asset hashes match release binaries (unsigned ParseManifest)"
 go run ./scripts/verify-manifest-hashes.go -dist "${DIST}" -version "${VERSION}"
 
 echo "==> Version consistency"

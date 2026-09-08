@@ -33,7 +33,7 @@ required=(
   firewall/nftables-nyxveil.conf
   scripts/build-release.sh
   scripts/package-release.sh
-  scripts/sign-release.go
+  scripts/make-release-manifest.go
   scripts/test-install.sh
   scripts/test-curl-installer.sh
   scripts/serv_wrappers.sh

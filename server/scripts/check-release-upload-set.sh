@@ -50,12 +50,12 @@ bash "${ROOT}/scripts/assert-no-crlf.sh" \
   tr -d '\r' < SHA256SUMS | sha256sum -c - >/dev/null
 )
 
-# This helper parses and signature-verifies both manifests with Go ParseManifest,
+# This helper parses both unsigned manifests with Go ParseManifest,
 # checks all required names, and hashes each referenced flat release asset.
 go run "${ROOT}/scripts/verify-manifest-hashes.go" -dist "${DIST}" -version "${VERSION}" >/dev/null
 
 echo "RELEASE_UPLOAD_SET=PASS"
 
-# Consumer test: empty-dir invariant + Ed25519 trust chain against ONLY dist/release.
+# Consumer test: empty-dir invariant + GitHub/SHA256 trust chain against ONLY dist/release.
 go run "${ROOT}/scripts/verify-live-final-consumer.go" "${DIST}"
 echo "LIVE_FINAL_UPDATE_CONSUMER=PASS"

@@ -91,10 +91,11 @@ sudo ./installer/install.sh --binary-dir . --skip-download \
 Fail-closed when not using `--binary-dir`:
 
 1. Download `release-manifest-linux-${arch}.json` from GitHub release `server-v${VERSION}`
-2. Verify Ed25519 signature over canonical JSON bytes (same as Go `updater.CanonicalManifestBytes`) with openssl PureEd25519 (`pkeyutl -rawin -verify`)
+   (GitHub Release = authenticity)
+2. Parse unsigned manifest (version / arch / assets)
 3. Download each asset; verify SHA-256; install
 
-Missing/invalid manifest, signature, or checksum → installer exits nonzero (no WARN skip).
+Missing/invalid manifest or checksum → installer exits nonzero (no WARN skip).
 
 ## What the installer does
 
