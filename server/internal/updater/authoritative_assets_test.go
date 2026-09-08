@@ -42,6 +42,7 @@ func testRequiredUpdate(t *testing.T) (*Updater, *Manifest, map[string]string) {
 	u := New(filepath.Join(root, "sbin", "nyxveil-server"), filepath.Join(root, "prev", "server"), filepath.Join(root, "marker"))
 	u.StateDir = filepath.Join(root, "state")
 	u.EnforceOwnership = func(string) error { return nil }
+	u.DaemonReload = func() error { return nil }
 	u.ExtraBinaries = map[string]string{}
 	u.ExtraPrev = map[string]string{}
 	m := &Manifest{Version: "1.1.2", Arch: ArchString(), MinCore: "1.0.0", MinProtocol: 1}
@@ -154,6 +155,7 @@ func TestReleaseConsumerFromDistOnly(t *testing.T) {
 	u := New(filepath.Join(root, "usr", "local", "sbin", "nyxveil-server"), filepath.Join(root, "prev", "server"), "")
 	u.StateDir = filepath.Join(root, "state")
 	u.EnforceOwnership = func(string) error { return nil }
+	u.DaemonReload = func() error { return nil }
 	u.ExtraBinaries = map[string]string{}
 	for i := range m.Assets {
 		a := &m.Assets[i]

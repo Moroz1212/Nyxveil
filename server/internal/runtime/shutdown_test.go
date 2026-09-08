@@ -111,6 +111,7 @@ func assertShutdownUnder(t *testing.T, max time.Duration) {
 	n, err := rt.New(rt.Options{
 		ConfigPath:  cfgPath,
 		KeyPath:     keyPath,
+		AppliedPath: filepath.Join(dir, "applied-config.json"),
 		SkipTUN:     true,
 		TestMode:    true,
 		ControlHTTP: "127.0.0.1:0",
@@ -137,6 +138,7 @@ func assertShutdownUnder(t *testing.T, max time.Duration) {
 
 func writeMinimalCfg(t *testing.T, path, cpURL string) {
 	t.Helper()
+	dir := filepath.Dir(path)
 	cfg := localconfig.Default()
 	cfg.ControlPlaneURL = cpURL
 	cfg.NodeID = "nv-test"
@@ -145,6 +147,8 @@ func writeMinimalCfg(t *testing.T, path, cpURL string) {
 	cfg.DNSServers = []string{"1.1.1.1"}
 	cfg.TLSListen = "127.0.0.1:0"
 	cfg.QUICListen = "127.0.0.1:0"
+	cfg.TLSCertFile = filepath.Join(dir, "tls.crt")
+	cfg.TLSKeyFile = filepath.Join(dir, "tls.key")
 	if err := cfg.Save(path); err != nil {
 		t.Fatal(err)
 	}

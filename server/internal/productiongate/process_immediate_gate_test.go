@@ -90,6 +90,8 @@ func TestProcessImmediatePostUpdateGateCPReachable(t *testing.T) {
 		"tls_listen":        "127.0.0.1:0",
 		"quic_listen":       "127.0.0.1:0",
 		"heartbeat_sec":     1,
+		"tls_cert_file":     filepath.Join(state, "tls.crt"),
+		"tls_key_file":      filepath.Join(state, "tls.key"),
 	}
 	writeJSON(t, cfgPath, cfg)
 	if err := os.WriteFile(filepath.Join(state, "ticket-keys.json"), []byte(keysJSON), 0o600); err != nil {

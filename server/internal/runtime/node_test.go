@@ -81,6 +81,8 @@ func TestApplyConfigVersionBlockAndPersist(t *testing.T) {
 	cfg.PublicHost = "127.0.0.1"
 	cfg.TLSListen = "127.0.0.1:0"
 	cfg.QUICListen = "127.0.0.1:0"
+	cfg.TLSCertFile = filepath.Join(dir, "tls.crt")
+	cfg.TLSKeyFile = filepath.Join(dir, "tls.key")
 	raw, _ := json.Marshal(cfg)
 	_ = os.WriteFile(cfgPath, raw, 0o644)
 

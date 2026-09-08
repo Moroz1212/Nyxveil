@@ -48,6 +48,10 @@ func mapInternalTestAssets(u *Updater, dir string) {
 			u.ExtraPrev[name] = filepath.Join(dir, name+".prev")
 		}
 	}
+	// Unit tests must never invoke host systemctl daemon-reload.
+	if u.DaemonReload == nil {
+		u.DaemonReload = func() error { return nil }
+	}
 }
 
 func TestParseManifestMultiAsset(t *testing.T) {

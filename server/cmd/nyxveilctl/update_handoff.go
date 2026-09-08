@@ -236,19 +236,37 @@ func rollbackAcrossHandoff(tx *updateTransaction) error {
 	_ = writeUpdateTransaction(tx)
 
 	fmt.Println("update-resume failed; rolling back previous binaries/TLS ownership…")
-	u := updater.New(tx.ServerPath, paths.PreviousBinary(), paths.RollbackMarker())
+	stateDir := runtimeStateDir()
+	prevServer := paths.PreviousBinary()
+	marker := paths.RollbackMarker()
+	if stateDir != paths.StateDir {
+		prevServer = filepath.Join(stateDir, "nyxveil-server.prev")
+		marker = filepath.Join(stateDir, "rollback.marker")
+	}
+	u := updater.New(tx.ServerPath, prevServer, marker)
 	extraDest, extraPrev := paths.DefaultExtraInstallMaps()
+	if stateDir != paths.StateDir {
+		// Test / isolated layout: never touch host systemd or production install paths.
+		u.DaemonReload = func() error { return nil }
+		for name := range extraDest {
+			if name == "nyxveilctl" {
+				continue
+			}
+			extraDest[name] = filepath.Join(stateDir, name)
+			extraPrev[name] = filepath.Join(stateDir, name+".prev")
+		}
+	}
 	extraDest["nyxveilctl"] = tx.CtlPath
 	extraPrev["nyxveilctl"] = tx.CtlPrev
 	u.ExtraBinaries = extraDest
 	u.ExtraPrev = extraPrev
-	u.StateDir = paths.StateDir
+	u.StateDir = stateDir
 	u.EnforceOwnership = filemeta.EnforceRuntimeTLS
 
 	if err := u.RollbackInstalled(); err != nil {
 		fmt.Printf("rollback binary restore error: %v\n", err)
 	}
-	_ = filemeta.EnforceRuntimeTLS(paths.StateDir)
+	_ = filemeta.EnforceRuntimeTLS(stateDir)
 	if runtime.GOOS != "windows" {
 		_ = restartUnit("nyxveil-server")
 		rb, ok := verifyRollbackHealth(tx.PreBaseline, 45)
@@ -264,4 +282,11 @@ func rollbackAcrossHandoff(tx *updateTransaction) error {
 	tx.Phase = txPhaseRolledBack
 	_ = writeUpdateTransaction(tx)
 	return fmt.Errorf("update-resume failed; rolled back to previous release")
+}
+
+func runtimeStateDir() string {
+	if v := strings.TrimSpace(os.Getenv("NYXVEIL_STATE_DIR")); v != "" {
+		return v
+	}
+	return paths.StateDir
 }

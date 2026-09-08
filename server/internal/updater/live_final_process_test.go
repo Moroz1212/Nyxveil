@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nyxveil/server/internal/updater"
+	"github.com/nyxveil/server/internal/version"
 )
 
 func TestLiveFinalUpdateEmptyWorkingDirectory(t *testing.T) {
@@ -74,7 +75,7 @@ func TestMissingVersionFailsBeforeModification(t *testing.T) {
 }
 
 func TestMissingBootstrapFailsBeforeModification(t *testing.T) {
-	fx := buildSignedReleaseFixture(t, "1.1.7", false)
+	fx := buildSignedReleaseFixture(t, version.ServerVersion, false)
 	os.Remove(filepath.Join(fx.dir, "bootstrap-cli-update.sh"))
 	prefix := t.TempDir()
 	bin := filepath.Join(prefix, "usr", "local", "sbin")
@@ -100,7 +101,7 @@ func TestMissingBootstrapFailsBeforeModification(t *testing.T) {
 }
 
 func TestTamperedBootstrapFails(t *testing.T) {
-	fx := buildSignedReleaseFixture(t, "1.1.7", false)
+	fx := buildSignedReleaseFixture(t, version.ServerVersion, false)
 	evil := []byte("#!/bin/bash\necho evil-no-pubkey\n")
 	if err := os.WriteFile(filepath.Join(fx.dir, "bootstrap-cli-update.sh"), evil, 0o755); err != nil {
 		t.Fatal(err)
@@ -130,7 +131,7 @@ func TestTamperedBootstrapFails(t *testing.T) {
 }
 
 func TestTamperedCtlFails(t *testing.T) {
-	fx := buildSignedReleaseFixture(t, "1.1.7", false)
+	fx := buildSignedReleaseFixture(t, version.ServerVersion, false)
 	arch := "amd64"
 	if runtime.GOARCH == "arm64" {
 		arch = "arm64"
@@ -203,7 +204,7 @@ func runLiveFinalProcessFixture(t *testing.T, opts fixtureOpts) {
 	if _, err := exec.LookPath("openssl"); err != nil {
 		t.Skip("openssl required")
 	}
-	fx := buildSignedReleaseFixture(t, "1.1.7", opts.crlfSums)
+	fx := buildSignedReleaseFixture(t, version.ServerVersion, opts.crlfSums)
 	work := t.TempDir()
 	dst := filepath.Join(work, "live-final-update.sh")
 	copyFile(t, filepath.Join(repoRootFromUpdaterTest(t), "scripts", "live-final-update.sh"), dst)
@@ -270,8 +271,8 @@ func runLiveFinalProcessFixture(t *testing.T, opts fixtureOpts) {
 		if _, err := os.Stat(filepath.Join(prefix, "etc", "polkit-1", "rules.d", "50-nyxveil-management.rules")); err != nil {
 			t.Fatalf("missing polkit: %v\nout=%s", err, out)
 		}
-		if got := strings.TrimSpace(string(mustRead(t, filepath.Join(share, "VERSION")))); got != "1.1.9" {
-			t.Fatalf("share VERSION=%q", got)
+		if got := strings.TrimSpace(string(mustRead(t, filepath.Join(share, "VERSION")))); got != version.ServerVersion {
+			t.Fatalf("share VERSION=%q want %s", got, version.ServerVersion)
 		}
 	}
 }

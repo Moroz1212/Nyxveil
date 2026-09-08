@@ -69,6 +69,7 @@ func TestUpdateRollbackRestartsPreviousService(t *testing.T) {
 	}
 
 	u := updater.New(server, prev, filepath.Join(dir, "marker"))
+	u.DaemonReload = func() error { return nil }
 	u.ExtraBinaries = map[string]string{"nyxveilctl": ctl}
 	u.ExtraPrev = map[string]string{"nyxveilctl": ctlPrev}
 	for _, name := range updater.RequiredAssetNames[2:] {

@@ -79,6 +79,10 @@ func mapRequiredTestAssets(u *updater.Updater, root string) {
 			u.ExtraPrev[name] = filepath.Join(root, name+".prev")
 		}
 	}
+	// Unit tests must never invoke host systemctl daemon-reload.
+	if u.DaemonReload == nil {
+		u.DaemonReload = func() error { return nil }
+	}
 }
 
 func tempRoot(t *testing.T) string {
