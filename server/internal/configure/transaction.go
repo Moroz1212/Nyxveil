@@ -18,11 +18,11 @@ import (
 
 // Result summarizes a configure run (never includes private keys).
 type Result struct {
-	DryRun      bool     `json:"dry_run"`
-	NodeID      string   `json:"node_id"`
-	LocationID  string   `json:"location_id"`
-	PublicHost  string   `json:"public_host"`
-	DNSServers  []string `json:"dns_servers"`
+	DryRun     bool     `json:"dry_run"`
+	NodeID     string   `json:"node_id"`
+	LocationID string   `json:"location_id"`
+	PublicHost string   `json:"public_host"`
+	DNSServers []string `json:"dns_servers"`
 
 	ControlPlaneURL     string `json:"control_plane_url,omitempty"`
 	PrevControlPlaneURL string `json:"previous_control_plane_url,omitempty"`
@@ -37,8 +37,8 @@ type Result struct {
 	RolledBack  bool   `json:"rolled_back,omitempty"`
 
 	// Rollback nuance when old CP URL is no longer TLS-valid after CP hostname migration.
-	RollbackConfigComplete            bool `json:"rollback_config_complete,omitempty"`
-	RollbackEndpointHealthImpossible  bool `json:"rollback_endpoint_health_impossible,omitempty"`
+	RollbackConfigComplete           bool `json:"rollback_config_complete,omitempty"`
+	RollbackEndpointHealthImpossible bool `json:"rollback_endpoint_health_impossible,omitempty"`
 
 	Message string `json:"message,omitempty"`
 }

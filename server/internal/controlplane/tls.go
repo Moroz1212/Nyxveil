@@ -18,9 +18,9 @@ import (
 type TrustMode string
 
 const (
-	TrustSystem         TrustMode = "SystemTrust"
-	TrustPinnedCA       TrustMode = "PinnedCA"
-	TrustSelfSignedPin  TrustMode = "SelfSignedPinned"
+	TrustSystem        TrustMode = "SystemTrust"
+	TrustPinnedCA      TrustMode = "PinnedCA"
+	TrustSelfSignedPin TrustMode = "SelfSignedPinned"
 )
 
 // TLSOptions configures the shared Control Plane TLS policy.
@@ -33,12 +33,12 @@ type TLSOptions struct {
 
 // TLSResult is the built config plus operator-safe diagnostics (no secrets).
 type TLSResult struct {
-	Config              *tls.Config
-	Host                string
-	ServerName          string
-	TrustMode           TrustMode
+	Config               *tls.Config
+	Host                 string
+	ServerName           string
+	TrustMode            TrustMode
 	SystemRootPoolLoaded bool
-	MinVersion          uint16
+	MinVersion           uint16
 }
 
 // BuildTLS constructs the single production Control Plane tls.Config.

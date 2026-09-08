@@ -19,7 +19,7 @@ func TestServerSIGTERMExitsCleanly(t *testing.T) {
 	assertShutdownUnder(t, 3*time.Second)
 }
 
-func TestCPWorkerStopsOnContextCancel(t *testing.T)       { assertShutdownUnder(t, 3*time.Second) }
+func TestCPWorkerStopsOnContextCancel(t *testing.T)        { assertShutdownUnder(t, 3*time.Second) }
 func TestTicketKeyWorkerStopsOnContextCancel(t *testing.T) { assertShutdownUnder(t, 3*time.Second) }
 func TestHeartbeatWorkerStopsOnContextCancel(t *testing.T) { assertShutdownUnder(t, 3*time.Second) }
 func TestQUICStopsCleanly(t *testing.T)                    { assertShutdownUnder(t, 3*time.Second) }

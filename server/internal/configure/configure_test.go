@@ -150,16 +150,16 @@ func TestApplyDryRunNoWrite(t *testing.T) {
 	// Apply checks paths.NodeKey() which is /var/lib/... — skip full Apply on Windows without hooks.
 	// Instead test DryRun path with Skip* and a temp node key by setting only what we can.
 	opts := configure.Options{
-		ConfigPath:     cfgPath,
-		PublicHost:     "fi-hel-01.nyxveil.ru",
-		DNSServers:     "1.1.1.1,1.0.0.1",
-		TLSDomain:      "fi-hel-01.nyxveil.ru",
-		TLSEmail:       "ops@example.com",
-		DryRun:         true,
-		SkipCP:         true,
-		SkipFW:         true,
-		SkipSvc:        true,
-		PublicIPHint:   "46.8.218.27",
+		ConfigPath:   cfgPath,
+		PublicHost:   "fi-hel-01.nyxveil.ru",
+		DNSServers:   "1.1.1.1,1.0.0.1",
+		TLSDomain:    "fi-hel-01.nyxveil.ru",
+		TLSEmail:     "ops@example.com",
+		DryRun:       true,
+		SkipCP:       true,
+		SkipFW:       true,
+		SkipSvc:      true,
+		PublicIPHint: "46.8.218.27",
 		LookupIP: func(host string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP("46.8.218.27")}, nil
 		},
@@ -233,15 +233,15 @@ func TestApplyPreservesNodeIDWithHooks(t *testing.T) {
 	}
 	// Idempotent second apply
 	_, err = configure.Apply(context.Background(), configure.Options{
-		ConfigPath:   cfgPath,
-		NodeKeyPath:  keyPath,
-		StateDir:     state,
-		NFTFile:      filepath.Join(dir, "nft.conf"),
-		PublicHost:   "fi-hel-01.nyxveil.ru",
-		DNSServers:   "1.1.1.1,1.0.0.1",
-		SkipFW:       true,
-		SkipSvc:      true,
-		SkipCP:       true,
+		ConfigPath:  cfgPath,
+		NodeKeyPath: keyPath,
+		StateDir:    state,
+		NFTFile:     filepath.Join(dir, "nft.conf"),
+		PublicHost:  "fi-hel-01.nyxveil.ru",
+		DNSServers:  "1.1.1.1,1.0.0.1",
+		SkipFW:      true,
+		SkipSvc:     true,
+		SkipCP:      true,
 	})
 	if err != nil {
 		t.Fatal(err)

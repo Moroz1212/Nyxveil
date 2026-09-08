@@ -109,12 +109,12 @@ func DataplaneRegressed(pre, post Baseline) (bool, string) {
 
 // UpdateResult summarizes post-update health evaluation (no secrets).
 type UpdateResult struct {
-	OK                              bool   `json:"ok"`
-	UpdateSuccess                   bool   `json:"update_success"`
-	DataplaneHealthy                bool   `json:"dataplane_healthy"`
-	ManagementPlaneConnected        bool   `json:"management_plane_connected"`
-	PreexistingManagementDegradation bool  `json:"preexisting_management_degradation"`
-	Reason                          string `json:"reason,omitempty"`
+	OK                               bool   `json:"ok"`
+	UpdateSuccess                    bool   `json:"update_success"`
+	DataplaneHealthy                 bool   `json:"dataplane_healthy"`
+	ManagementPlaneConnected         bool   `json:"management_plane_connected"`
+	PreexistingManagementDegradation bool   `json:"preexisting_management_degradation"`
+	Reason                           string `json:"reason,omitempty"`
 }
 
 // EvaluatePostUpdate decides whether an update may commit given pre-update baseline and post status.

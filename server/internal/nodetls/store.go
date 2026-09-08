@@ -1,8 +1,9 @@
 // Package nodetls manages VPN node leaf certificates for client-facing TLS/QUIC.
 //
 // Trust model (Frozen Core unchanged):
-//   clients use normal x509 validation (SystemTrust or explicit RootCAs) THEN SPKI pin.
-//   Self-signed leaves fail SystemTrust even with a correct catalog pin.
+//
+//	clients use normal x509 validation (SystemTrust or explicit RootCAs) THEN SPKI pin.
+//	Self-signed leaves fail SystemTrust even with a correct catalog pin.
 //
 // Operator-provided files (tls_cert_file / tls_key_file) are never overwritten by
 // ACME or self-signed generation unless ReplaceExisting is set.

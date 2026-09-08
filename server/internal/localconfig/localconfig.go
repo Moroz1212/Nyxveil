@@ -15,15 +15,15 @@ import (
 // (location, capacity, transport/ECH policy, config_version, …) live in
 // /var/lib/nyxveil/applied-config.json.
 type File struct {
-	ControlPlaneURL     string `json:"control_plane_url"`
-	NodeID              string `json:"node_id"`
-	LocationID          string `json:"location_id"` // bootstrap only; applied-config overrides at runtime
-	DisplayName         string `json:"display_name"`
-	ConfigVersion       int64  `json:"config_version,omitempty"` // bootstrap/legacy; authoritative value is applied-config
-	ServerName          string `json:"server_name,omitempty"`
-	PublicHost          string `json:"public_host,omitempty"`
-	TLSListen           string `json:"tls_listen,omitempty"`
-	QUICListen          string `json:"quic_listen,omitempty"`
+	ControlPlaneURL     string   `json:"control_plane_url"`
+	NodeID              string   `json:"node_id"`
+	LocationID          string   `json:"location_id"` // bootstrap only; applied-config overrides at runtime
+	DisplayName         string   `json:"display_name"`
+	ConfigVersion       int64    `json:"config_version,omitempty"` // bootstrap/legacy; authoritative value is applied-config
+	ServerName          string   `json:"server_name,omitempty"`
+	PublicHost          string   `json:"public_host,omitempty"`
+	TLSListen           string   `json:"tls_listen,omitempty"`
+	QUICListen          string   `json:"quic_listen,omitempty"`
 	VPNSubnetCIDR       string   `json:"vpn_subnet_cidr,omitempty"`
 	DNSServers          []string `json:"dns_servers,omitempty"` // operator IPv4 resolvers for TypeConfig; required for production VPN
 	HeartbeatSec        int      `json:"heartbeat_seconds,omitempty"`
