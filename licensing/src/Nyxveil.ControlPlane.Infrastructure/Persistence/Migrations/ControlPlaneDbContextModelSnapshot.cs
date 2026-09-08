@@ -296,6 +296,73 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                     b.ToTable("CatalogVersions", (string)null);
                 });
 
+            modelBuilder.Entity("Nyxveil.ControlPlane.Domain.Entities.CertificateRenewalOperation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AcmeOrderUrl")
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.Property<DateTime?>("ChallengeExpiresAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ChallengeName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("ChallengeValue")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("Domain")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.Property<string>("NewThumbprint")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("OldThumbprint")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Status", "CreatedAt");
+
+                    b.ToTable("CertificateRenewalOperations", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_CertificateRenewalOperations_Status", "[Status] BETWEEN 0 AND 7");
+                        });
+                });
+
             modelBuilder.Entity("Nyxveil.ControlPlane.Domain.Entities.Device", b =>
                 {
                     b.Property<Guid>("Id")
@@ -562,6 +629,10 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
 
+                    b.Property<string>("LastBootId")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
                     b.Property<DateTime?>("LastRenewalAttempt")
                         .HasColumnType("datetime2");
 
@@ -583,6 +654,10 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
 
+                    b.Property<string>("ManagementCapabilities")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
                     b.Property<DateTime?>("NextPlannedRenewal")
                         .HasColumnType("datetime2");
 
@@ -593,6 +668,10 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("varbinary(32)");
+
+                    b.Property<string>("ReportedServerVersion")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
 
                     b.Property<string>("ServerName")
                         .HasMaxLength(256)
@@ -609,6 +688,11 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("int");
 
+                    b.Property<bool>("SupportsNodeCommands")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
                     b.Property<bool>("TestOnly")
                         .HasColumnType("bit");
 
@@ -617,6 +701,9 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                         .HasColumnType("nvarchar(32)");
 
                     b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("VersionReportedAt")
                         .HasColumnType("datetime2");
 
                     b.HasKey("NodeId");
@@ -642,6 +729,100 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("CK_Nodes_PublicIdentityLen", "DATALENGTH([PublicIdentity]) = 32");
 
                             t.HasCheckConstraint("CK_Nodes_Status", "[Status] BETWEEN 0 AND 3");
+                        });
+                });
+
+            modelBuilder.Entity("Nyxveil.ControlPlane.Domain.Entities.NodeCommand", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("ClaimedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("CorrelationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("IssuedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("NodeId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("PayloadJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("PreviousVersion")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("ProgressMessage")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<string>("ProgressPhase")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime?>("ProgressUpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ResultCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("ResultMessage")
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.Property<DateTime?>("StartedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<string>("TargetVersion")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<int>("Type")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CorrelationId");
+
+                    b.HasIndex("ExpiresAt");
+
+                    b.HasIndex("NodeId", "Status", "IssuedAt");
+
+                    b.ToTable("NodeCommands", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_NodeCommands_AttemptCount", "[AttemptCount] >= 0");
+
+                            t.HasCheckConstraint("CK_NodeCommands_Status", "[Status] BETWEEN 0 AND 10");
+
+                            t.HasCheckConstraint("CK_NodeCommands_Type", "[Type] BETWEEN 0 AND 3");
                         });
                 });
 
@@ -1122,6 +1303,9 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
 
+                    b.Property<DateTime?>("PromotedAt")
+                        .HasColumnType("datetime2");
+
                     b.Property<byte[]>("ProtectedPrivateKey")
                         .IsRequired()
                         .HasColumnType("varbinary(max)");
@@ -1130,6 +1314,9 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("varbinary(32)");
+
+                    b.Property<DateTime?>("RetireAfter")
+                        .HasColumnType("datetime2");
 
                     b.Property<DateTime?>("RetiredAt")
                         .HasColumnType("datetime2");
@@ -1148,7 +1335,7 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("CK_SigningKeysMetadata_PublicKeyLen", "DATALENGTH([PublicKey]) = 32");
 
-                            t.HasCheckConstraint("CK_SigningKeysMetadata_Status", "[Status] BETWEEN 0 AND 2");
+                            t.HasCheckConstraint("CK_SigningKeysMetadata_Status", "[Status] BETWEEN 0 AND 3");
                         });
                 });
 
@@ -1445,6 +1632,17 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
                     b.Navigation("Location");
                 });
 
+            modelBuilder.Entity("Nyxveil.ControlPlane.Domain.Entities.NodeCommand", b =>
+                {
+                    b.HasOne("Nyxveil.ControlPlane.Domain.Entities.Node", "Node")
+                        .WithMany("Commands")
+                        .HasForeignKey("NodeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Node");
+                });
+
             modelBuilder.Entity("Nyxveil.ControlPlane.Domain.Entities.NodeConfig", b =>
                 {
                     b.HasOne("Nyxveil.ControlPlane.Domain.Entities.Node", "Node")
@@ -1529,6 +1727,8 @@ namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Nyxveil.ControlPlane.Domain.Entities.Node", b =>
                 {
+                    b.Navigation("Commands");
+
                     b.Navigation("Endpoints");
 
                     b.Navigation("Transports");

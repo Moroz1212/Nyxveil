@@ -82,7 +82,9 @@ public sealed class SigningKeyBackupService : ISigningKeyBackupService
                     NonceB64 = Convert.ToBase64String(encrypted.Nonce),
                     CiphertextB64 = Convert.ToBase64String(encrypted.Ciphertext),
                     TagB64 = Convert.ToBase64String(encrypted.Tag),
-                    RetiredAt = row.RetiredAt
+                    RetiredAt = row.RetiredAt,
+                    PromotedAt = row.PromotedAt,
+                    RetireAfter = row.RetireAfter
                 });
             }
             finally
@@ -184,7 +186,9 @@ public sealed class SigningKeyBackupService : ISigningKeyBackupService
                         ProtectedPrivateKey = protectedPrivate,
                         Status = status,
                         CreatedAt = key.CreatedAt.UtcDateTime,
-                        RetiredAt = key.RetiredAt
+                        RetiredAt = key.RetiredAt,
+                        PromotedAt = key.PromotedAt,
+                        RetireAfter = key.RetireAfter
                     });
 
                     if (status == SigningKeyStatus.Current)
@@ -203,6 +207,8 @@ public sealed class SigningKeyBackupService : ISigningKeyBackupService
                     existing.ProtectedPrivateKey = protectedPrivate;
                     existing.Status = status;
                     existing.RetiredAt = key.RetiredAt;
+                    existing.PromotedAt = key.PromotedAt;
+                    existing.RetireAfter = key.RetireAfter;
                 }
             }
             finally

@@ -1,10 +1,10 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Hardened emergency production deployment for Nyxveil Control Plane 1.1.2.
+  Hardened emergency production deployment for Nyxveil Control Plane 1.3.0.
 
 .DESCRIPTION
-  Backs up and verifies production, rehearses schema v2 against a disposable
+  Backs up and verifies production, rehearses schema v3 against a disposable
   restored database, then performs the service outage and deploy. No live
   service, production database, or installed files are changed before rehearsal passes.
 #>
@@ -15,7 +15,7 @@ param(
     [string]$ServiceName = 'NyxveilControlPlane',
     [string]$MigrationScript = '',
     [string]$ReleaseZip = '',
-    [string]$ExpectedSchemaVersion = '2'
+    [string]$ExpectedSchemaVersion = '4'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,7 +25,7 @@ $licensingRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $PSScriptRoot 'Nyxveil.ControlPlane.Deploy.psm1') -Force
 
 $requiredServiceName = 'NyxveilControlPlane'
-$validationScript = Join-Path $licensingRoot 'database\migrations\validate_schema_v2.sql'
+$validationScript = Join-Path $licensingRoot 'database\migrations\validate_schema_v3.sql'
 $stage = 'precheck'
 $failedGate = ''
 $gateLog = ''
@@ -249,7 +249,7 @@ function New-SanitizedDiagnosticBundle {
     $bundle = Join-Path ([IO.Path]::GetTempPath()) ("nyxveil-production-deploy-{0:yyyyMMdd-HHmmss}-{1}" -f (Get-Date), [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $bundle -Force | Out-Null
     @(
-        'release_version=1.1.2'
+        'release_version=1.3.0'
         "powershell_version=$($PSVersionTable.PSVersion)"
         "os_version=$([Environment]::OSVersion.VersionString)"
         "expected_schema_version=$script:ExpectedSchemaVersion"
@@ -280,12 +280,12 @@ try {
     if ($ServiceName -cne $requiredServiceName) {
         throw "This deploy may only operate on service '$requiredServiceName'."
     }
-    if ($ExpectedSchemaVersion -cne '2') {
-        throw "Control Plane 1.1.2 requires ExpectedSchemaVersion=2."
+    if ($ExpectedSchemaVersion -cne '4') {
+        throw "Control Plane 1.3.0 requires ExpectedSchemaVersion=4."
     }
     $releaseVersion = (Get-Content -LiteralPath (Join-Path $licensingRoot 'VERSION') -Raw).Trim()
-    if ($releaseVersion -cne '1.1.2') {
-        throw "This wrapper requires licensing VERSION 1.1.2; found '$releaseVersion'."
+    if ($releaseVersion -cne '1.3.0') {
+        throw "This wrapper requires licensing VERSION 1.3.0; found '$releaseVersion'."
     }
 
     $PublishDir = (Resolve-Path -LiteralPath $PublishDir -ErrorAction Stop).Path
@@ -368,8 +368,8 @@ try {
     }
     else {
         $zipCandidates = @(
-            (Join-Path $licensingRoot 'Nyxveil-ControlPlane-v1.1.2-release.zip'),
-            (Join-Path (Split-Path -Parent $licensingRoot) 'Nyxveil-ControlPlane-v1.1.2-release.zip')
+            (Join-Path $licensingRoot 'Nyxveil-ControlPlane-v1.3.0-release.zip'),
+            (Join-Path (Split-Path -Parent $licensingRoot) 'Nyxveil-ControlPlane-v1.3.0-release.zip')
         )
         $ReleaseZip = $zipCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
     }
@@ -458,7 +458,7 @@ try {
 
     # 10. RECORD EXPECTED SCHEMA VERSION.
     $stage = 'write_operational_config'
-    $op | Add-Member -NotePropertyName ExpectedSchemaVersion -NotePropertyValue '2' -Force
+    $op | Add-Member -NotePropertyName ExpectedSchemaVersion -NotePropertyValue '4' -Force
     Write-OperationalConfig -Config $op -InstallDir $InstallDir
 
     # 11. START ONLY THE CONTROL PLANE SERVICE.

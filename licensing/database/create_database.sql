@@ -1,6 +1,6 @@
-﻿/*
+/*
 ================================================================================
-  Nyxveil Control Plane вЂ” Database bootstrap (idempotent)
+  Nyxveil Control Plane — Database bootstrap (idempotent)
 ================================================================================
   Product:   Nyxveil Licensing / Control Plane
   Version:   1.0.0 (see ../VERSION)
@@ -1217,6 +1217,247 @@ IF NOT EXISTS (
 BEGIN
     INSERT INTO [__EFMigrationsHistory] ([MigrationId], [ProductVersion])
     VALUES (N'20260906161021_NodeLifecycleAndCertMetadata', N'10.0.11');
+END;
+
+COMMIT;
+GO
+
+BEGIN TRANSACTION;
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908110155_NodeCommandsAndCertRenewal'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [LastBootId] nvarchar(128) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908110155_NodeCommandsAndCertRenewal'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [ManagementCapabilities] nvarchar(512) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908110155_NodeCommandsAndCertRenewal'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [SupportsNodeCommands] bit NOT NULL DEFAULT CAST(0 AS bit);
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908110155_NodeCommandsAndCertRenewal'
+)
+BEGIN
+    CREATE TABLE [CertificateRenewalOperations] (
+        [Id] uniqueidentifier NOT NULL,
+        [Status] int NOT NULL,
+        [Domain] nvarchar(256) NOT NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(256) NOT NULL,
+        [UpdatedAt] datetime2 NOT NULL,
+        [AcmeOrderUrl] nvarchar(1024) NULL,
+        [ChallengeName] nvarchar(256) NOT NULL,
+        [ChallengeValue] nvarchar(512) NOT NULL,
+        [ChallengeExpiresAt] datetime2 NULL,
+        [NewThumbprint] nvarchar(128) NULL,
+        [OldThumbprint] nvarchar(128) NULL,
+        [ErrorMessage] nvarchar(1024) NULL,
+        [CompletedAt] datetime2 NULL,
+        CONSTRAINT [PK_CertificateRenewalOperations] PRIMARY KEY ([Id]),
+        CONSTRAINT [CK_CertificateRenewalOperations_Status] CHECK ([Status] BETWEEN 0 AND 7)
+    );
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908110155_NodeCommandsAndCertRenewal'
+)
+BEGIN
+    CREATE TABLE [NodeCommands] (
+        [Id] uniqueidentifier NOT NULL,
+        [NodeId] nvarchar(128) NOT NULL,
+        [Type] int NOT NULL,
+        [Status] int NOT NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(256) NOT NULL,
+        [IssuedAt] datetime2 NOT NULL,
+        [ExpiresAt] datetime2 NOT NULL,
+        [ClaimedAt] datetime2 NULL,
+        [StartedAt] datetime2 NULL,
+        [CompletedAt] datetime2 NULL,
+        [ResultCode] nvarchar(64) NULL,
+        [ResultMessage] nvarchar(1024) NULL,
+        [AttemptCount] int NOT NULL,
+        [CorrelationId] uniqueidentifier NOT NULL,
+        [PayloadJson] nvarchar(max) NULL,
+        CONSTRAINT [PK_NodeCommands] PRIMARY KEY ([Id]),
+        CONSTRAINT [CK_NodeCommands_AttemptCount] CHECK ([AttemptCount] >= 0),
+        CONSTRAINT [CK_NodeCommands_Status] CHECK ([Status] BETWEEN 0 AND 10),
+        CONSTRAINT [CK_NodeCommands_Type] CHECK ([Type] BETWEEN 0 AND 2),
+        CONSTRAINT [FK_NodeCommands_Nodes_NodeId] FOREIGN KEY ([NodeId]) REFERENCES [Nodes] ([NodeId]) ON DELETE CASCADE
+    );
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908110155_NodeCommandsAndCertRenewal'
+)
+BEGIN
+    CREATE INDEX [IX_CertificateRenewalOperations_Status_CreatedAt] ON [CertificateRenewalOperations] ([Status], [CreatedAt]);
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908110155_NodeCommandsAndCertRenewal'
+)
+BEGIN
+    CREATE INDEX [IX_NodeCommands_CorrelationId] ON [NodeCommands] ([CorrelationId]);
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908110155_NodeCommandsAndCertRenewal'
+)
+BEGIN
+    CREATE INDEX [IX_NodeCommands_ExpiresAt] ON [NodeCommands] ([ExpiresAt]);
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908110155_NodeCommandsAndCertRenewal'
+)
+BEGIN
+    CREATE INDEX [IX_NodeCommands_NodeId_Status_IssuedAt] ON [NodeCommands] ([NodeId], [Status], [IssuedAt]);
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908110155_NodeCommandsAndCertRenewal'
+)
+BEGIN
+    INSERT INTO [__EFMigrationsHistory] ([MigrationId], [ProductVersion])
+    VALUES (N'20260908110155_NodeCommandsAndCertRenewal', N'10.0.11');
+END;
+
+COMMIT;
+GO
+
+BEGIN TRANSACTION;
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908115039_VersionMgmtSigningRetiring'
+)
+BEGIN
+    ALTER TABLE [SigningKeysMetadata] DROP CONSTRAINT [CK_SigningKeysMetadata_Status];
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908115039_VersionMgmtSigningRetiring'
+)
+BEGIN
+    ALTER TABLE [NodeCommands] DROP CONSTRAINT [CK_NodeCommands_Type];
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908115039_VersionMgmtSigningRetiring'
+)
+BEGIN
+    ALTER TABLE [SigningKeysMetadata] ADD [PromotedAt] datetime2 NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908115039_VersionMgmtSigningRetiring'
+)
+BEGIN
+    ALTER TABLE [SigningKeysMetadata] ADD [RetireAfter] datetime2 NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908115039_VersionMgmtSigningRetiring'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [ReportedServerVersion] nvarchar(64) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908115039_VersionMgmtSigningRetiring'
+)
+BEGIN
+    ALTER TABLE [Nodes] ADD [VersionReportedAt] datetime2 NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908115039_VersionMgmtSigningRetiring'
+)
+BEGIN
+    ALTER TABLE [NodeCommands] ADD [PreviousVersion] nvarchar(64) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908115039_VersionMgmtSigningRetiring'
+)
+BEGIN
+    ALTER TABLE [NodeCommands] ADD [ProgressMessage] nvarchar(512) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908115039_VersionMgmtSigningRetiring'
+)
+BEGIN
+    ALTER TABLE [NodeCommands] ADD [ProgressPhase] nvarchar(64) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908115039_VersionMgmtSigningRetiring'
+)
+BEGIN
+    ALTER TABLE [NodeCommands] ADD [ProgressUpdatedAt] datetime2 NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908115039_VersionMgmtSigningRetiring'
+)
+BEGIN
+    ALTER TABLE [NodeCommands] ADD [TargetVersion] nvarchar(64) NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908115039_VersionMgmtSigningRetiring'
+)
+BEGIN
+    EXEC(N'ALTER TABLE [SigningKeysMetadata] ADD CONSTRAINT [CK_SigningKeysMetadata_Status] CHECK ([Status] BETWEEN 0 AND 3)');
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908115039_VersionMgmtSigningRetiring'
+)
+BEGIN
+    EXEC(N'ALTER TABLE [NodeCommands] ADD CONSTRAINT [CK_NodeCommands_Type] CHECK ([Type] BETWEEN 0 AND 3)');
+END;
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20260908115039_VersionMgmtSigningRetiring'
+)
+BEGIN
+    INSERT INTO [__EFMigrationsHistory] ([MigrationId], [ProductVersion])
+    VALUES (N'20260908115039_VersionMgmtSigningRetiring', N'10.0.11');
 END;
 
 COMMIT;

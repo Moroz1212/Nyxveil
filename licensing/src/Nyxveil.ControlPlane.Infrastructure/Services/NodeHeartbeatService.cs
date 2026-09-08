@@ -58,6 +58,17 @@ public sealed class NodeHeartbeatService : INodeHeartbeatService
         if (request.LastRenewalSuccess.HasValue) node.LastSuccessfulRenewal = request.LastRenewalSuccess;
         if (request.LastRenewalNext.HasValue) node.NextPlannedRenewal = request.LastRenewalNext;
         if (request.LastRenewalError is not null) node.LastRenewalError = request.LastRenewalError.Trim();
+        if (request.ManagementCapabilities is not null)
+            node.ManagementCapabilities = Truncate(request.ManagementCapabilities.Trim(), 512);
+        if (request.BootId is not null)
+            node.LastBootId = Truncate(request.BootId.Trim(), 128);
+        if (request.SupportsCommands.HasValue)
+            node.SupportsNodeCommands = request.SupportsCommands.Value;
+        if (!string.IsNullOrWhiteSpace(request.Version))
+        {
+            node.ReportedServerVersion = Truncate(request.Version.Trim(), 64);
+            node.VersionReportedAt = now;
+        }
 
         // Runtime capacity may be reported, but never exceeds admin-configured NodeConfig.Capacity.
         if (request.Capacity > 0)
@@ -121,4 +132,7 @@ public sealed class NodeHeartbeatService : INodeHeartbeatService
     }
 
     private static double ClampPercent(double v) => Math.Clamp(v, 0, 100);
+
+    private static string? Truncate(string? value, int max) =>
+        value is null ? null : (value.Length <= max ? value : value[..max]);
 }

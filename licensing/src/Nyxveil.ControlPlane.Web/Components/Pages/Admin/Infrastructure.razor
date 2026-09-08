@@ -1,0 +1,253 @@
+@page "/admin/infrastructure"
+@attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
+@rendermode InteractiveServer
+@inject IServiceScopeFactory Scopes
+@inject AuthenticationStateProvider AuthState
+@using Nyxveil.ControlPlane.Application.Abstractions
+@using Nyxveil.ControlPlane.Domain.Enums
+@using Nyxveil.ControlPlane.Application.Common
+@using Microsoft.AspNetCore.Identity
+@using Nyxveil.ControlPlane.Infrastructure.Identity
+
+<div class="page-header">
+    <div>
+        <h1>Инфраструктура</h1>
+        <div class="sub">Сертификаты Control Plane и VPN-серверов · удалённые операции · UTC</div>
+    </div>
+    <div class="actions">
+        <button class="btn btn-ghost" @onclick="RefreshAsync" disabled="@_busy">Обновить</button>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_error))
+{
+    <div class="alert alert-error">@_error</div>
+}
+@if (!string.IsNullOrEmpty(_info))
+{
+    <div class="alert">@_info</div>
+}
+
+@if (_overview is null)
+{
+    <p class="muted">Загрузка…</p>
+}
+else
+{
+    <div class="panel">
+        <h3>CONTROL PLANE</h3>
+        <p><strong>@(_overview.ControlPlaneCertificate.Hostname.Length > 0 ? _overview.ControlPlaneCertificate.Hostname : "cp")</strong></p>
+        <p class="muted">
+            Сертификат: <span class="@HealthClass(_overview.ControlPlaneCertificate.Health)">@HealthLabel(_overview.ControlPlaneCertificate.Health)</span>
+            · Истекает: @(_overview.ControlPlaneCertificate.NotAfter?.ToString("dd.MM.yyyy") ?? "—")
+            · Осталось: @(_overview.ControlPlaneCertificate.DaysRemaining?.ToString() ?? "—") дн.
+        </p>
+        <p class="muted">Issuer: @(_overview.ControlPlaneCertificate.Issuer ?? "—") · Thumbprint: @(_overview.ControlPlaneCertificate.Thumbprint ?? "—")</p>
+        <p class="muted">Store: @_overview.ControlPlaneCertificate.Store · Private key: @(_overview.ControlPlaneCertificate.HasPrivateKey ? "да" : "нет") · Trust: @(_overview.ControlPlaneCertificate.SystemTrustOk ? "OK" : "FAIL") · ACL: @(_overview.ControlPlaneCertificate.ServicePrivateKeyAccessOk ? "OK" : "FAIL")</p>
+        <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
+            <div class="actions" style="margin-top:.75rem">
+                <a class="btn" href="/admin/infrastructure/cp-certificate">Обновить сертификат</a>
+            </div>
+        </AuthorizeView>
+    </div>
+
+    <h2 style="margin:1.5rem 0 .75rem">VPN NODES</h2>
+    <div class="stats-grid">
+        @foreach (var n in _overview.Nodes)
+        {
+            <div class="panel">
+                <h3>@n.DisplayName</h3>
+                <div class="mono muted">@n.NodeId</div>
+                <p class="muted">
+                    Сертификат: <span class="@HealthClass(n.Health)">@HealthLabel(n.Health)</span>
+                    · Осталось: @(n.DaysRemaining?.ToString() ?? "—") дн.
+                </p>
+                <p class="muted">До: @(n.CertNotAfter?.ToString("dd.MM.yyyy") ?? "—") · Remote mgmt: @(n.SupportsNodeCommands ? "да" : "не поддерживается")</p>
+                <div class="actions">
+                    <a class="btn btn-ghost" href="@($"/admin/nodes/{Uri.EscapeDataString(n.NodeId)}")">Открыть</a>
+                    @if (n.SupportsNodeCommands)
+                    {
+                        <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
+                            <button class="btn btn-ghost" disabled="@_busy" @onclick="() => EnqueueAsync(n.NodeId, NodeCommandType.RenewCertificate)">Обновить сертификат</button>
+                            <button class="btn btn-ghost" disabled="@_busy" @onclick="() => EnqueueAsync(n.NodeId, NodeCommandType.RestartNyxveilService)">Перезапустить Nyxveil</button>
+                        </AuthorizeView>
+                        <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
+                            <button class="btn btn-danger" disabled="@_busy" @onclick="() => PrepareReboot(n)">Перезагрузить сервер</button>
+                        </AuthorizeView>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
+        <div class="panel" style="margin-top:1rem">
+            <h3>Server Releases</h3>
+            <p class="muted">Последняя проверка GitHub и обновление ПО — через карточку сервера (SuperAdmin).</p>
+            <button class="btn btn-ghost" disabled="@_busy" @onclick="RefreshReleasesAsync">Проверить обновления</button>
+            @if (_releaseInfo is not null)
+            {
+                <p>Последняя версия: <strong>@(_releaseInfo.LatestVersion ?? "—")</strong> · Tag: @(_releaseInfo.ReleaseTag ?? "—")</p>
+                <p class="muted">Проверка: @(_releaseInfo.LastCheckedAt?.ToString("dd.MM.yyyy HH:mm 'UTC'") ?? "—") · @_releaseInfo.SourceStatus</p>
+            }
+        </div>
+    </AuthorizeView>
+
+    <div class="panel" style="margin-top:1.5rem">
+        <h3>Последние операции</h3>
+        <div class="table-wrap">
+            <table class="data">
+                <thead>
+                    <tr>
+                        <th>Время (UTC)</th>
+                        <th>Node</th>
+                        <th>Операция</th>
+                        <th>Кем</th>
+                        <th>Статус</th>
+                        <th>Завершено</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var c in _overview.RecentCommands)
+                {
+                    <tr>
+                        <td>@c.CreatedAt.ToString("dd.MM.yyyy HH:mm")</td>
+                        <td class="mono">@c.NodeId</td>
+                        <td>@CommandLabel(c.Type)</td>
+                        <td>@c.CreatedBy</td>
+                        <td>@c.Status</td>
+                        <td>@(c.CompletedAt?.ToString("dd.MM.yyyy HH:mm") ?? "—")</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+<ConfirmDialog @bind-Visible="_confirmReboot"
+               Title="Перезагрузить сервер"
+               Message="@_rebootMessage"
+               RequiredConfirmation="@_rebootConfirmText"
+               ConfirmText="Перезагрузить"
+               OnConfirm="ConfirmRebootAsync" />
+
+@code {
+    private InfrastructureOverviewDto? _overview;
+    private ServerReleaseInfo? _releaseInfo;
+    private bool _busy;
+    private string? _error;
+    private string? _info;
+    private bool _confirmReboot;
+    private string _rebootNodeId = "";
+    private string _rebootMessage = "";
+    private string _rebootConfirmText = "REBOOT";
+
+    protected override async Task OnInitializedAsync() => await RefreshAsync();
+
+    private async Task RefreshAsync()
+    {
+        _error = null;
+        await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            _overview = await sp.GetRequiredService<IInfrastructureOverviewService>()
+                .GetOverviewAsync();
+            _releaseInfo = await sp.GetRequiredService<IServerReleaseService>().GetLatestAsync();
+        });
+    }
+
+    private async Task RefreshReleasesAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                _releaseInfo = await sp.GetRequiredService<IServerReleaseService>().RefreshAsync();
+            });
+            _info = "Метаданные релизов обновлены (серверы не обновлялись).";
+        }
+        catch (Exception ex)
+        {
+            _error = UiText.Error(ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task EnqueueAsync(string nodeId, NodeCommandType type)
+    {
+        if (_busy) return;
+        _busy = true;
+        _error = null;
+        _info = null;
+        try
+        {
+            var state = await AuthState.GetAuthenticationStateAsync();
+            var actor = state.User.Identity?.Name ?? "admin";
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var um = sp.GetRequiredService<UserManager<ApplicationUser>>();
+                var user = await um.GetUserAsync(state.User);
+                var roles = user is null ? Array.Empty<string>() : await um.GetRolesAsync(user);
+                await sp.GetRequiredService<INodeCommandService>()
+                    .EnqueueAsync(nodeId, type, actor, roles);
+            });
+            _info = "Команда отправлена. Ожидайте выполнения на сервере.";
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = UiText.Error(ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void PrepareReboot(NodeCertificateHealthDto n)
+    {
+        _rebootNodeId = n.NodeId;
+        _rebootConfirmText = string.IsNullOrWhiteSpace(n.DisplayName) ? "REBOOT" : n.DisplayName;
+        var sessionsWarn = n.CurrentSessions > 0
+            ? $" На сервере активно {n.CurrentSessions} соединений. Они будут разорваны."
+            : "";
+        _rebootMessage =
+            $"Перезагрузить ОС сервера {n.DisplayName} ({n.NodeId})?{sessionsWarn} Введите «{_rebootConfirmText}» для подтверждения.";
+        _confirmReboot = true;
+    }
+
+    private async Task ConfirmRebootAsync()
+    {
+        await EnqueueAsync(_rebootNodeId, NodeCommandType.RebootHost);
+    }
+
+    private static string HealthClass(string health) => health switch
+    {
+        nameof(CertificateHealthStatus.Healthy) => "ok",
+        nameof(CertificateHealthStatus.ExpiringSoon) => "warn",
+        nameof(CertificateHealthStatus.Critical) or nameof(CertificateHealthStatus.Expired) => "err",
+        _ => "muted"
+    };
+
+    private static string HealthLabel(string health) => health switch
+    {
+        nameof(CertificateHealthStatus.Healthy) => "Действителен",
+        nameof(CertificateHealthStatus.ExpiringSoon) => "Скоро истечёт",
+        nameof(CertificateHealthStatus.Critical) => "Критично",
+        nameof(CertificateHealthStatus.Expired) => "Истёк",
+        _ => health
+    };
+
+    private static string CommandLabel(string type) => type switch
+    {
+        nameof(NodeCommandType.RenewCertificate) => "Обновление сертификата",
+        nameof(NodeCommandType.RestartNyxveilService) => "Перезапуск Nyxveil",
+        nameof(NodeCommandType.RebootHost) => "Перезагрузка ОС",
+        _ => type
+    };
+}

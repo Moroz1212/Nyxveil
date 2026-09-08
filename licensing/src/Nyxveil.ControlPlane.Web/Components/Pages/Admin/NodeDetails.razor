@@ -108,13 +108,107 @@ else
 
     <div class="panel">
         <h3>TLS и состояние среды</h3>
-        <p class="muted">Режим: @(_node.TlsMode ?? "—") · Субъект: @(_node.CertSubject ?? "—") · Издатель: @(_node.CertIssuer ?? "—")</p>
-        <p class="muted">SAN: @(_node.CertSan ?? "—") · Действителен до: @(_node.CertNotAfter?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? "—") · Отпечаток: @(_node.CertThumbprint ?? "—")</p>
-        <p class="muted">TUN=@Flag(_health?.TunReady) · TLS=@Flag(_health?.TlsOk) · QUIC=@Flag(_health?.QuicOk) · Bridge=@Flag(_health?.BridgeOk) · Ticket keys=@Flag(_health?.TicketKeysLoaded) · CP=@Flag(_health?.CpConnected)</p>
+        @{
+            var certHealth = CertificateExpiry.Evaluate(_node.CertNotAfter, DateTime.UtcNow);
+            var daysLeft = CertificateExpiry.DaysRemaining(_node.CertNotAfter, DateTime.UtcNow);
+        }
+        <p>
+            <StatusBadge Status="@certHealth.ToString()" />
+            · Осталось: @(daysLeft?.ToString() ?? "—") дн.
+        </p>
+        <p class="muted">TLS mode: @(_node.TlsMode ?? "—")</p>
+        <p class="muted">Subject: @(_node.CertSubject ?? "—")</p>
+        <p class="muted">Issuer: @(_node.CertIssuer ?? "—")</p>
+        <p class="muted">SAN: @(_node.CertSan ?? "—")</p>
+        <p class="muted">NotBefore: @(_node.CertNotBefore?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? "—")</p>
+        <p class="muted">NotAfter: @(_node.CertNotAfter?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? "—")</p>
+        <p class="muted">Thumbprint: @(_node.CertThumbprint ?? "—")</p>
+        <p class="muted">ACME auto renew: @(_node.AcmeAutoRenew ? "включён" : "выключен")</p>
+        <p class="muted">Last renewal attempt: @(_node.LastRenewalAttempt?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? "—")</p>
+        <p class="muted">Last successful renewal: @(_node.LastSuccessfulRenewal?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? "—")</p>
+        <p class="muted">Next planned renewal: @(_node.NextPlannedRenewal?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? "—")</p>
         @if (!string.IsNullOrWhiteSpace(_node.LastRenewalError))
         {
             <div class="alert alert-error">Ошибка обновления сертификата: @_node.LastRenewalError</div>
         }
+        <p class="muted">TUN=@Flag(_health?.TunReady) · TLS=@Flag(_health?.TlsOk) · QUIC=@Flag(_health?.QuicOk) · Bridge=@Flag(_health?.BridgeOk) · Ticket keys=@Flag(_health?.TicketKeysLoaded) · CP=@Flag(_health?.CpConnected)</p>
+        <p class="muted">Remote management: @(_node.SupportsNodeCommands ? "поддерживается" : "не поддерживается этой версией node")</p>
+        @{
+            var installed = NodeVersionEvaluator.EffectiveInstalledVersion(_node.ReportedServerVersion, _node.ServerVersion);
+            var hasUpdateCap = (_node.ManagementCapabilities ?? "").Contains("node_update", StringComparison.OrdinalIgnoreCase);
+        }
+        <div class="panel" style="margin-top:.75rem; box-shadow:none; border:0; padding:0">
+            <h3>Версия сервера</h3>
+            <p>Установлено: <strong>@(installed ?? "—")</strong></p>
+            <p class="muted">Последний отчёт: @(_node.VersionReportedAt?.ToString("dd.MM.yyyy HH:mm 'UTC'") ?? "—")</p>
+            <p class="muted">Актуальная: @(_latestVersion ?? "—") · GitHub: @(_latestTag ?? "—")</p>
+            <p>Статус: <strong>@NodeVersionEvaluator.DisplayRu(NodeVersionEvaluator.Evaluate(installed, _latestVersion, _minSupported))</strong></p>
+            <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
+                @if (hasUpdateCap && _node.SupportsNodeCommands)
+                {
+                    var st = NodeVersionEvaluator.Evaluate(installed, _latestVersion, _minSupported);
+                    @if (st is NodeVersionStatus.UpdateAvailable or NodeVersionStatus.Unsupported)
+                    {
+                        <button class="btn" disabled="@_busy" @onclick="PrepareUpdate">Обновить до @(_latestVersion ?? "latest")</button>
+                    }
+                    else if (st == NodeVersionStatus.Current)
+                    {
+                        <button class="btn" disabled="true">Актуальная версия</button>
+                    }
+                }
+                else if (_node.SupportsNodeCommands)
+                {
+                    <p class="muted">Удалённое обновление не поддерживается этой версией.</p>
+                }
+            </AuthorizeView>
+        </div>
+        @if (_node.SupportsNodeCommands)
+        {
+            <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
+                <div class="actions" style="margin-top:.75rem">
+                    <button class="btn" disabled="@_busy" @onclick="() => EnqueueAsync(NodeCommandType.RenewCertificate)">Обновить сертификат сейчас</button>
+                    <button class="btn btn-ghost" disabled="@_busy" @onclick="() => EnqueueAsync(NodeCommandType.RestartNyxveilService)">Перезапустить Nyxveil</button>
+                </div>
+            </AuthorizeView>
+            <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
+                <div class="actions" style="margin-top:.5rem">
+                    <button class="btn btn-danger" disabled="@_busy" @onclick="PrepareReboot">Перезагрузить сервер</button>
+                </div>
+            </AuthorizeView>
+        }
+        @if (!string.IsNullOrEmpty(_cmdInfo))
+        {
+            <p class="muted" style="margin-top:.5rem">@_cmdInfo</p>
+        }
+    </div>
+
+    <div class="panel">
+        <h3>Последние команды</h3>
+        <div class="table-wrap">
+            <table class="data">
+                <thead>
+                    <tr>
+                        <th>Время (UTC)</th>
+                        <th>Операция</th>
+                        <th>Кем</th>
+                        <th>Статус</th>
+                        <th>Результат</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var c in _commands)
+                {
+                    <tr>
+                        <td>@c.CreatedAt.ToString("dd.MM.yyyy HH:mm")</td>
+                        <td>@CommandLabel(c.Type)</td>
+                        <td>@c.CreatedBy</td>
+                        <td>@c.Status</td>
+                        <td class="muted">@(c.ResultMessage ?? c.ResultCode ?? "—")</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
     </div>
 
     @if (_node.DeletedAt is not null)
@@ -157,6 +251,17 @@ else
                RequiredConfirmation="@DeleteConfirmation"
                ConfirmText="Удалить"
                OnConfirm="DeleteAsync" />
+<ConfirmDialog @bind-Visible="_confirmReboot"
+               Title="Перезагрузить сервер"
+               Message="@_rebootMessage"
+               RequiredConfirmation="@DeleteConfirmation"
+               ConfirmText="Перезагрузить"
+               OnConfirm="ConfirmRebootAsync" />
+<ConfirmDialog @bind-Visible="_confirmUpdate"
+               Title="Обновить сервер"
+               Message="@_updateMessage"
+               ConfirmText="Обновить"
+               OnConfirm="ConfirmUpdateAsync" />
 
 @code {
     [Parameter] public string NodeId { get; set; } = "";
@@ -166,13 +271,22 @@ else
     private NodeHealth? _health;
     private List<NodeEndpoint> _endpoints = new();
     private List<NodeMetric> _metrics = new();
+    private List<NodeCommand> _commands = new();
     private bool _confirmMaint;
     private bool _confirmDelete;
+    private bool _confirmReboot;
+    private bool _confirmUpdate;
+    private string _rebootMessage = "";
+    private string _updateMessage = "";
+    private string? _latestVersion;
+    private string? _latestTag;
+    private string? _minSupported;
     private NodeDecommissionPreview? _deletePreview;
     private bool _busy;
     private int _editCapacity;
     private string _editLocation = "";
     private string? _error;
+    private string? _cmdInfo;
     private string DeleteConfirmation => string.IsNullOrWhiteSpace(_node?.DisplayName) ? NodeId : _node.DisplayName;
 
     protected override async Task OnParametersSetAsync() => await LoadAsync();
@@ -189,8 +303,14 @@ else
             _health = await db.NodeHealth.FirstOrDefaultAsync(h => h.NodeId == NodeId);
             _endpoints = await db.NodeEndpoints.Where(e => e.NodeId == NodeId).OrderBy(e => e.Priority).ToListAsync();
             _metrics = await db.NodeMetrics.Where(m => m.NodeId == NodeId).OrderByDescending(m => m.Timestamp).Take(50).ToListAsync();
+            _commands = (await sp.GetRequiredService<INodeCommandService>().ListForNodeAsync(NodeId, 20)).ToList();
             _editCapacity = _cfg?.Capacity ?? _node.Capacity;
             _editLocation = _node.LocationId;
+            var release = await sp.GetRequiredService<IServerReleaseService>().GetLatestAsync();
+            _latestVersion = release.LatestVersion;
+            _latestTag = release.ReleaseTag;
+            _minSupported = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<Nyxveil.ControlPlane.Application.Options.ServerReleasePolicyOptions>>()
+                .Value.MinimumSupportedVersion;
         });
     }
 
@@ -198,6 +318,77 @@ else
     {
         var state = await AuthState.GetAuthenticationStateAsync();
         return state.User.Identity?.Name ?? "admin";
+    }
+
+    private async Task EnqueueAsync(NodeCommandType type)
+    {
+        if (_busy) return;
+        _busy = true;
+        _error = null;
+        _cmdInfo = null;
+        try
+        {
+            var state = await AuthState.GetAuthenticationStateAsync();
+            var actor = state.User.Identity?.Name ?? "admin";
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var um = sp.GetRequiredService<UserManager<ApplicationUser>>();
+                var user = await um.GetUserAsync(state.User);
+                var roles = user is null ? Array.Empty<string>() : await um.GetRolesAsync(user);
+                await sp.GetRequiredService<INodeCommandService>()
+                    .EnqueueAsync(NodeId, type, actor, roles);
+            });
+            _cmdInfo = type switch
+            {
+                NodeCommandType.RenewCertificate => "Команда отправлена → ожидание node → обновление сертификата…",
+                NodeCommandType.RestartNyxveilService => "Перезапуск… ожидание сервера…",
+                _ => "Команда отправлена."
+            };
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = UiText.Error(ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void PrepareReboot()
+    {
+        if (_node is null) return;
+        var sessionsWarn = _node.CurrentSessions > 0
+            ? $" На сервере активно {_node.CurrentSessions} соединений. Они будут разорваны."
+            : "";
+        _rebootMessage =
+            $"Перезагрузить ОС сервера {_node.DisplayName} ({_node.NodeId})?{sessionsWarn} Введите «{DeleteConfirmation}» для подтверждения.";
+        _confirmReboot = true;
+    }
+
+    private void PrepareUpdate()
+    {
+        if (_node is null) return;
+        var installed = NodeVersionEvaluator.EffectiveInstalledVersion(_node.ReportedServerVersion, _node.ServerVersion) ?? "—";
+        var sessionsWarn = _node.CurrentSessions > 0
+            ? $" Активные VPN-соединения ({_node.CurrentSessions}) могут быть разорваны."
+            : "";
+        _updateMessage =
+            $"Node: {_node.DisplayName} · Location: {_node.LocationId} · {installed} → {_latestVersion}.{sessionsWarn} Во время обновления сервис будет перезапущен.";
+        _confirmUpdate = true;
+    }
+
+    private async Task ConfirmRebootAsync()
+    {
+        await EnqueueAsync(NodeCommandType.RebootHost);
+        _cmdInfo = "Перезагрузка принята. Ожидание Offline → Online…";
+    }
+
+    private async Task ConfirmUpdateAsync()
+    {
+        await EnqueueAsync(NodeCommandType.UpdateNodeLatest);
+        _cmdInfo = "Обновление отправлено. Ожидание CheckingLatest → Installing → Restarting → heartbeat…";
     }
 
     private async Task RunNodeActionAsync(Func<INodeManagementService, string, Task> action)
@@ -261,4 +452,13 @@ else
     }
 
     private static string Flag(bool? value) => value switch { true => "OK", false => "FAIL", _ => "—" };
+
+    private static string CommandLabel(NodeCommandType type) => type switch
+    {
+        NodeCommandType.RenewCertificate => "Обновление сертификата",
+        NodeCommandType.RestartNyxveilService => "Перезапуск Nyxveil",
+        NodeCommandType.RebootHost => "Перезагрузка ОС",
+        NodeCommandType.UpdateNodeLatest => "Обновление ПО",
+        _ => type.ToString()
+    };
 }

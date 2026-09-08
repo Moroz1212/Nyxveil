@@ -36,6 +36,8 @@ public class ControlPlaneDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<AuditLogEntry> AuditLog => Set<AuditLogEntry>();
     public DbSet<SystemSetting> SystemSettings => Set<SystemSetting>();
     public DbSet<PaymentEvent> PaymentEvents => Set<PaymentEvent>();
+    public DbSet<NodeCommand> NodeCommands => Set<NodeCommand>();
+    public DbSet<CertificateRenewalOperation> CertificateRenewalOperations => Set<CertificateRenewalOperation>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -164,6 +166,10 @@ public class ControlPlaneDbContext : IdentityDbContext<ApplicationUser>
             e.Property(x => x.CertSan).HasMaxLength(1024);
             e.Property(x => x.CertThumbprint).HasMaxLength(128);
             e.Property(x => x.LastRenewalError).HasMaxLength(512);
+            e.Property(x => x.ManagementCapabilities).HasMaxLength(512);
+            e.Property(x => x.LastBootId).HasMaxLength(128);
+            e.Property(x => x.SupportsNodeCommands).HasDefaultValue(false);
+            e.Property(x => x.ReportedServerVersion).HasMaxLength(64);
             e.Property(x => x.SpkiPin).HasMaxLength(32);
             e.Property(x => x.PublicIdentity).HasMaxLength(32).IsRequired();
             e.HasIndex(x => x.LocationId);
@@ -354,7 +360,7 @@ public class ControlPlaneDbContext : IdentityDbContext<ApplicationUser>
             e.HasIndex(x => x.Status);
             e.ToTable(t =>
             {
-                t.HasCheckConstraint("CK_SigningKeysMetadata_Status", "[Status] BETWEEN 0 AND 2");
+                t.HasCheckConstraint("CK_SigningKeysMetadata_Status", "[Status] BETWEEN 0 AND 3");
                 t.HasCheckConstraint("CK_SigningKeysMetadata_PublicKeyLen", "DATALENGTH([PublicKey]) = 32");
             });
         });
@@ -398,6 +404,49 @@ public class ControlPlaneDbContext : IdentityDbContext<ApplicationUser>
                 t.HasCheckConstraint("CK_PaymentEvents_Status", "[Status] BETWEEN 0 AND 3");
                 t.HasCheckConstraint("CK_PaymentEvents_Amount", "[Amount] IS NULL OR [Amount] >= 0");
             });
+        });
+
+        builder.Entity<NodeCommand>(e =>
+        {
+            e.ToTable("NodeCommands");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.NodeId).HasMaxLength(128).IsRequired();
+            e.Property(x => x.CreatedBy).HasMaxLength(256).IsRequired();
+            e.Property(x => x.ResultCode).HasMaxLength(64);
+            e.Property(x => x.ResultMessage).HasMaxLength(1024);
+            e.Property(x => x.PayloadJson);
+            e.Property(x => x.ProgressPhase).HasMaxLength(64);
+            e.Property(x => x.ProgressMessage).HasMaxLength(512);
+            e.Property(x => x.PreviousVersion).HasMaxLength(64);
+            e.Property(x => x.TargetVersion).HasMaxLength(64);
+            e.HasIndex(x => new { x.NodeId, x.Status, x.IssuedAt });
+            e.HasIndex(x => x.ExpiresAt);
+            e.HasIndex(x => x.CorrelationId);
+            e.HasOne(x => x.Node).WithMany(n => n.Commands).HasForeignKey(x => x.NodeId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.ToTable(t =>
+            {
+                t.HasCheckConstraint("CK_NodeCommands_Type", "[Type] BETWEEN 0 AND 3");
+                t.HasCheckConstraint("CK_NodeCommands_Status", "[Status] BETWEEN 0 AND 10");
+                t.HasCheckConstraint("CK_NodeCommands_AttemptCount", "[AttemptCount] >= 0");
+            });
+        });
+
+        builder.Entity<CertificateRenewalOperation>(e =>
+        {
+            e.ToTable("CertificateRenewalOperations");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Domain).HasMaxLength(256).IsRequired();
+            e.Property(x => x.CreatedBy).HasMaxLength(256).IsRequired();
+            e.Property(x => x.AcmeOrderUrl).HasMaxLength(1024);
+            e.Property(x => x.ChallengeName).HasMaxLength(256).IsRequired();
+            e.Property(x => x.ChallengeValue).HasMaxLength(512).IsRequired();
+            e.Property(x => x.NewThumbprint).HasMaxLength(128);
+            e.Property(x => x.OldThumbprint).HasMaxLength(128);
+            e.Property(x => x.ErrorMessage).HasMaxLength(1024);
+            e.HasIndex(x => new { x.Status, x.CreatedAt });
+            e.ToTable(t =>
+                t.HasCheckConstraint("CK_CertificateRenewalOperations_Status", "[Status] BETWEEN 0 AND 7"));
         });
     }
 }

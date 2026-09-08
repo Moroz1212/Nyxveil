@@ -93,9 +93,26 @@ public class Node
     [MaxLength(512)]
     public string? LastRenewalError { get; set; }
 
+    /// <summary>Comma-separated capabilities: certificate_renew,service_restart,host_reboot.</summary>
+    [MaxLength(512)]
+    public string? ManagementCapabilities { get; set; }
+
+    [MaxLength(128)]
+    public string? LastBootId { get; set; }
+
+    public bool SupportsNodeCommands { get; set; }
+
+    /// <summary>Runtime application version from authenticated heartbeat (preferred over registration ServerVersion).</summary>
+    [MaxLength(64)]
+    public string? ReportedServerVersion { get; set; }
+
+    public DateTime? VersionReportedAt { get; set; }
+
     public Location Location { get; set; } = null!;
 
     public ICollection<NodeEndpoint> Endpoints { get; set; } = new List<NodeEndpoint>();
 
     public ICollection<NodeTransport> Transports { get; set; } = new List<NodeTransport>();
+
+    public ICollection<NodeCommand> Commands { get; set; } = new List<NodeCommand>();
 }

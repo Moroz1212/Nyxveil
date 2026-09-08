@@ -108,6 +108,8 @@ public sealed class PortableKeyBundle
     public string CiphertextB64 { get; set; } = string.Empty;
     public string TagB64 { get; set; } = string.Empty;
     public DateTime? RetiredAt { get; set; }
+    public DateTime? PromotedAt { get; set; }
+    public DateTime? RetireAfter { get; set; }
 }
 
 /// <summary>Portable License KEK bundle.</summary>

@@ -120,6 +120,8 @@ type Node struct {
 	verifyServedSPKI      func(context.Context, []byte) error
 	validateStagedTLS     func(string, string, string, time.Time) error
 
+	commandStore *commandDedupeStore
+
 	cancel context.CancelFunc
 	runCtx context.Context
 	wg     sync.WaitGroup
@@ -518,6 +520,8 @@ func (n *Node) Start(parent context.Context) error {
 
 	n.wg.Add(1)
 	go n.loop(ctx)
+	n.wg.Add(1)
+	go n.commandPollLoop(ctx)
 	if strings.TrimSpace(cfg.ACMEDomain) != "" {
 		n.wg.Add(1)
 		go n.acmeRenewLoop(ctx)
@@ -860,6 +864,9 @@ func (n *Node) addHeartbeatMetadata(hb *controlplane.HeartbeatRequest, st health
 	hb.TicketKeysLoaded = boolPtr(st.TicketKeysLoaded)
 	hb.RevocationStale = boolPtr(st.RevocationStale)
 	hb.CPConnected = boolPtr(st.CPConnected)
+	hb.SupportsCommands = boolPtr(true)
+	hb.ManagementCapabilities = managementCapabilitiesList
+	hb.BootID = readBootID()
 
 	n.renewMu.RLock()
 	hb.LastRenewalAttempt = formatOptionalTime(n.lastRenewalAttempt)

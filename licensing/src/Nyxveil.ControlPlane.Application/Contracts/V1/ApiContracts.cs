@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Nyxveil.ControlPlane.Application.Serialization;
 
 namespace Nyxveil.ControlPlane.Application.Contracts.V1;
 
@@ -202,6 +203,16 @@ public sealed class NodeHeartbeatRequest
 
     [JsonPropertyName("cp_connected")]
     public bool? CpConnected { get; set; }
+
+    [JsonPropertyName("management_capabilities")]
+    [JsonConverter(typeof(StringOrStringArrayJsonConverter))]
+    public string? ManagementCapabilities { get; set; }
+
+    [JsonPropertyName("boot_id")]
+    public string? BootId { get; set; }
+
+    [JsonPropertyName("supports_commands")]
+    public bool? SupportsCommands { get; set; }
 }
 
 public sealed class NodeHeartbeatResponse
@@ -234,7 +245,7 @@ public sealed class RevocationListResponse
 public sealed class VersionResponse
 {
     [JsonPropertyName("control_plane_version")]
-    public string ControlPlaneVersion { get; set; } = "1.1.2";
+    public string ControlPlaneVersion { get; set; } = "1.3.0";
 
     [JsonPropertyName("min_protocol_version")]
     public ushort MinProtocolVersion { get; set; } = 1;
@@ -245,3 +256,47 @@ public sealed class VersionResponse
     [JsonPropertyName("recommended_client_version")]
     public string RecommendedClient { get; set; } = "1.0.0";
 }
+
+public sealed class NodeCommandDto
+{
+    [JsonPropertyName("id")]
+    public Guid Id { get; set; }
+
+    [JsonPropertyName("node_id")]
+    public string NodeId { get; set; } = string.Empty;
+
+    [JsonPropertyName("type")]
+    public string Type { get; set; } = string.Empty;
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = string.Empty;
+
+    [JsonPropertyName("issued_at")]
+    public DateTime IssuedAt { get; set; }
+
+    [JsonPropertyName("expires_at")]
+    public DateTime ExpiresAt { get; set; }
+
+    [JsonPropertyName("correlation_id")]
+    public Guid CorrelationId { get; set; }
+
+    [JsonPropertyName("payload_json")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PayloadJson { get; set; }
+}
+
+public sealed class NodeCommandResultRequest
+{
+    [JsonPropertyName("success")]
+    public bool Success { get; set; }
+
+    [JsonPropertyName("result_code")]
+    public string? ResultCode { get; set; }
+
+    [JsonPropertyName("result_message")]
+    public string? ResultMessage { get; set; }
+
+    [JsonPropertyName("boot_id")]
+    public string? BootId { get; set; }
+}
+

@@ -31,6 +31,9 @@
                 <th>Память</th>
                 <th>Сеансы</th>
                 <th>Версия</th>
+                <th>Актуальная</th>
+                <th>Статус версии</th>
+                <th>TLS</th>
                 <th>Сертификат</th>
                 <th>Протокол</th>
                 <th>Последняя связь (UTC)</th>
@@ -47,7 +50,10 @@
                 <td>@(n.Health?.CpuPercent.ToString("0.0", UiText.Culture) ?? "—")%</td>
                 <td>@(n.Health?.MemoryPercent.ToString("0.0", UiText.Culture) ?? "—")%</td>
                 <td>@n.Node.CurrentSessions / @n.Node.Capacity</td>
-                <td>@(n.Node.ServerVersion ?? "—")</td>
+                <td>@InstalledVersion(n.Node)</td>
+                <td>@(_latest ?? "—")</td>
+                <td>@VersionStatusLabel(n.Node)</td>
+                <td>@TlsBadge(n)</td>
                 <td>@CertDays(n.Node)</td>
                 <td>@n.Node.ProtocolVersion</td>
                 <td>@(n.Node.LastSeenAt?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? "—")</td>
@@ -70,6 +76,8 @@
     private bool _showTest = true;
     private bool _showDeleted;
     private string _lifecycleFilter = "";
+    private string? _latest;
+    private string? _minSupported;
 
     protected override async Task OnInitializedAsync()
     {
@@ -79,6 +87,10 @@
             var nodes = await db.Nodes.OrderBy(n => n.LocationId).ThenBy(n => n.DisplayName).ToListAsync();
             var health = await db.NodeHealth.ToDictionaryAsync(h => h.NodeId);
             _rows = nodes.Select(n => new Row(n, health.GetValueOrDefault(n.NodeId))).ToList();
+            var release = await sp.GetRequiredService<IServerReleaseService>().GetLatestAsync();
+            _latest = release.LatestVersion;
+            _minSupported = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<Nyxveil.ControlPlane.Application.Options.ServerReleasePolicyOptions>>()
+                .Value.MinimumSupportedVersion;
         });
     }
 
@@ -101,9 +113,37 @@
         return q;
     }
 
+    private static string InstalledVersion(Node node) =>
+        NodeVersionEvaluator.EffectiveInstalledVersion(node.ReportedServerVersion, node.ServerVersion) ?? "—";
+
+    private string VersionStatusLabel(Node node)
+    {
+        var installed = NodeVersionEvaluator.EffectiveInstalledVersion(node.ReportedServerVersion, node.ServerVersion);
+        var status = NodeVersionEvaluator.Evaluate(installed, _latest, _minSupported);
+        return NodeVersionEvaluator.DisplayRu(status);
+    }
+
     private static string CertDays(Node node)
     {
+        var health = CertificateExpiry.Evaluate(node.CertNotAfter, DateTime.UtcNow);
         var days = CertificateExpiry.DaysRemaining(node.CertNotAfter, DateTime.UtcNow);
-        return days is null ? "—" : $"{days} дн.";
+        if (health == CertificateHealthStatus.Expired) return "Истёк";
+        if (days is null) return "—";
+        return $"{days} дн.";
+    }
+
+    private static string TlsBadge(Row n)
+    {
+        if (n.Health?.TlsOk == true) return "OK";
+        if (n.Health?.TlsOk == false) return "FAIL";
+        var health = CertificateExpiry.Evaluate(n.Node.CertNotAfter, DateTime.UtcNow);
+        return health switch
+        {
+            CertificateHealthStatus.Healthy => "OK",
+            CertificateHealthStatus.ExpiringSoon => "Warn",
+            CertificateHealthStatus.Critical => "Crit",
+            CertificateHealthStatus.Expired => "Expired",
+            _ => "—"
+        };
     }
 }

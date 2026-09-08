@@ -19,5 +19,10 @@ public class SigningKeyMetadata
 
     public DateTime CreatedAt { get; set; }
 
+    public DateTime? PromotedAt { get; set; }
+
+    /// <summary>When Retiring key leaves the verification ring.</summary>
+    public DateTime? RetireAfter { get; set; }
+
     public DateTime? RetiredAt { get; set; }
 }

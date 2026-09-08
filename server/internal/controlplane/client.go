@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -146,7 +147,33 @@ type HeartbeatRequest struct {
 	TicketKeysLoaded      *bool    `json:"ticket_keys_loaded,omitempty"`
 	RevocationStale       *bool    `json:"revocation_stale,omitempty"`
 	CPConnected           *bool    `json:"cp_connected,omitempty"`
+	ManagementCapabilities string  `json:"management_capabilities,omitempty"`
+	BootID                string   `json:"boot_id,omitempty"`
+	SupportsCommands      *bool    `json:"supports_commands,omitempty"`
 }
+
+// NodeCommand is GET /api/v1/node/commands/next (snake_case matches Control Plane DTO).
+type NodeCommand struct {
+	ID            string  `json:"id"`
+	NodeID        string  `json:"node_id"`
+	Type          string  `json:"type"`
+	Status        string  `json:"status"`
+	IssuedAt      APITime `json:"issued_at"`
+	ExpiresAt     APITime `json:"expires_at"`
+	CorrelationID string  `json:"correlation_id"`
+	PayloadJSON   *string `json:"payload_json,omitempty"`
+}
+
+// NodeCommandResultRequest is POST /api/v1/node/commands/{id}/result body.
+type NodeCommandResultRequest struct {
+	Success       bool   `json:"success"`
+	ResultCode    string `json:"result_code,omitempty"`
+	ResultMessage string `json:"result_message,omitempty"`
+	BootID        string `json:"boot_id,omitempty"`
+}
+
+// ErrNoCommand indicates GET /commands/next returned 204 No Content.
+var ErrNoCommand = errors.New("controlplane: no command available")
 
 type HeartbeatResponse struct {
 	Accepted      bool   `json:"accepted"`
@@ -249,55 +276,50 @@ func (c *Client) GetSignedSelf(ctx context.Context) ([]byte, error) {
 	return []byte(out), nil
 }
 
+// ClaimNextCommand claims the next pending remote command for this node (or ErrNoCommand).
+func (c *Client) ClaimNextCommand(ctx context.Context) (*NodeCommand, error) {
+	status, respBody, err := c.doRequest(ctx, http.MethodGet, "/api/v1/node/commands/next", nil, true)
+	if err != nil {
+		return nil, err
+	}
+	if status == http.StatusNoContent {
+		return nil, ErrNoCommand
+	}
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("controlplane: GET /api/v1/node/commands/next -> %d: %s", status, truncate(string(respBody), 512))
+	}
+	var cmd NodeCommand
+	if err := json.Unmarshal(respBody, &cmd); err != nil {
+		return nil, &AcceptedLocalError{
+			Method: http.MethodGet,
+			Path:   "/api/v1/node/commands/next",
+			Status: status,
+			Body:   append([]byte(nil), respBody...),
+			Err:    err,
+		}
+	}
+	return &cmd, nil
+}
+
+// MarkCommandStarted reports that execution has begun for a claimed command.
+func (c *Client) MarkCommandStarted(ctx context.Context, commandID string) error {
+	path := "/api/v1/node/commands/" + url.PathEscape(commandID) + "/started"
+	return c.doJSON(ctx, http.MethodPost, path, nil, true, nil)
+}
+
+// ReportCommandResult posts the final (or intermediate reboot-accepted) outcome.
+func (c *Client) ReportCommandResult(ctx context.Context, commandID string, req NodeCommandResultRequest) error {
+	path := "/api/v1/node/commands/" + url.PathEscape(commandID) + "/result"
+	return c.doJSON(ctx, http.MethodPost, path, req, true, nil)
+}
+
 func (c *Client) doJSON(ctx context.Context, method, path string, body any, sign bool, out any) error {
-	var raw []byte
-	var err error
-	if body != nil {
-		raw, err = json.Marshal(body)
-		if err != nil {
-			return err
-		}
-	}
-	u := c.BaseURL + path
-	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(raw))
+	status, respBody, err := c.doRequest(ctx, method, path, body, sign)
 	if err != nil {
 		return err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("Accept", "application/json")
-	if sign {
-		if c.NodeID == "" || len(c.PrivateKey) == 0 {
-			return fmt.Errorf("controlplane: signed request requires NodeID and private key")
-		}
-		pq := nodeauth.CanonicalPathQuery(req)
-		if err := nodeauth.SignRequestV2(req, c.NodeID, c.PrivateKey, pq, raw); err != nil {
-			return err
-		}
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		if isTLSError(err) {
-			if c.TLS != nil {
-				LogTLSFailure(c.TLS, err)
-			}
-			// A rotated Control Plane leaf can invalidate pooled TLS state.
-			// Drop idle connections so the next backoff-controlled request
-			// performs a fresh handshake and observes the new certificate.
-			if c.HTTP != nil {
-				c.HTTP.CloseIdleConnections()
-			}
-		}
-		return err
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("controlplane: %s %s -> %d: %s", method, path, resp.StatusCode, truncate(string(respBody), 512))
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("controlplane: %s %s -> %d: %s", method, path, status, truncate(string(respBody), 512))
 	}
 	if out == nil || len(respBody) == 0 {
 		return nil
@@ -306,12 +328,59 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, sign
 		return &AcceptedLocalError{
 			Method: method,
 			Path:   path,
-			Status: resp.StatusCode,
+			Status: status,
 			Body:   append([]byte(nil), respBody...),
 			Err:    err,
 		}
 	}
 	return nil
+}
+
+func (c *Client) doRequest(ctx context.Context, method, path string, body any, sign bool) (int, []byte, error) {
+	var raw []byte
+	var err error
+	if body != nil {
+		raw, err = json.Marshal(body)
+		if err != nil {
+			return 0, nil, err
+		}
+	}
+	u := c.BaseURL + path
+	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(raw))
+	if err != nil {
+		return 0, nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Accept", "application/json")
+	if sign {
+		if c.NodeID == "" || len(c.PrivateKey) == 0 {
+			return 0, nil, fmt.Errorf("controlplane: signed request requires NodeID and private key")
+		}
+		pq := nodeauth.CanonicalPathQuery(req)
+		if err := nodeauth.SignRequestV2(req, c.NodeID, c.PrivateKey, pq, raw); err != nil {
+			return 0, nil, err
+		}
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		if isTLSError(err) {
+			if c.TLS != nil {
+				LogTLSFailure(c.TLS, err)
+			}
+			if c.HTTP != nil {
+				c.HTTP.CloseIdleConnections()
+			}
+		}
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, respBody, nil
 }
 
 func truncate(s string, n int) string {

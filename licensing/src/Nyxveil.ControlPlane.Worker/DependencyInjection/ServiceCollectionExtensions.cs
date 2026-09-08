@@ -11,6 +11,7 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<LicenseExpirationWorker>();
         services.AddHostedService<MetricsRetentionWorker>();
         services.AddHostedService<RevocationSnapshotWorker>();
+        services.AddHostedService<SigningKeyRetirementWorker>();
         return services;
     }
 }

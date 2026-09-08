@@ -21,14 +21,16 @@ function Record([string]$name, [string]$status, [string]$detail) {
 
 try {
     $version = (Get-Content (Join-Path $root 'VERSION') -Raw).Trim()
-    Record 'baseline' $(if ($version -eq '1.1.2') {'PASS'} else {'FAIL'}) "version=$version mode=$GateMode"
+    Record 'baseline' $(if ($version -eq '1.3.0') {'PASS'} else {'FAIL'}) "version=$version mode=$GateMode"
 
     $required = @(
         'VERSION',
         'scripts\update-windows.ps1',
         'database\migrations\002_node_lifecycle_cert_metadata.sql',
+        'database\migrations\003_node_commands_cert_renewal.sql',
         'database\migrations\validate_schema_v2.sql',
-        'docs\RELEASE-1.1.2.md'
+        'database\migrations\validate_schema_v3.sql',
+        'docs\RELEASE-1.3.0.md'
     )
     if ($PackageDir) {
         $required += 'Nyxveil.ControlPlane.Web.dll'
@@ -92,10 +94,10 @@ try {
                 -DatabaseAuth ([string]$db.Auth) `
                 -DatabaseUser ([string]$db.User) `
                 -DatabasePassword $dbPassword `
-                -InputFile (Join-Path $root 'database\migrations\validate_schema_v2.sql') `
+                -InputFile (Join-Path $root 'database\migrations\validate_schema_v3.sql') `
                 -TrustSqlServerCertificate ([bool]$db.TrustSqlServerCertificate) `
                 -Encrypt ([bool]$db.Encrypt)
-            Record 'schema_version' 'PASS' "database=$($db.Database) schema_version=2"
+            Record 'schema_version' 'PASS' "database=$($db.Database) schema_version=4"
             Record 'database_connectivity' 'PASS' "server=$($db.Server)"
         }
         catch {
@@ -106,7 +108,7 @@ try {
             }
             else {
                 Record 'schema_version' 'FAIL' $detail
-                Record 'database_connectivity' 'FAIL' 'schema v2 validation could not complete'
+                Record 'database_connectivity' 'FAIL' 'schema v3 validation could not complete'
             }
         }
     }

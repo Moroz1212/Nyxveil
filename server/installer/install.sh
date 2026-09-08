@@ -1026,9 +1026,61 @@ EOF
   chmod 0644 "${SERVICE_UNIT}"
 }
 
+write_polkit_management_rules() {
+  local dest
+  dest="$(dirname "${ETC_DIR}")/polkit-1/rules.d/50-nyxveil-management.rules"
+  mkdir -p "$(dirname "${dest}")"
+  cat > "${dest}" <<'EOF'
+/* Nyxveil: allow node service user to restart its unit and reboot the host
+ * via authenticated Control Plane remote commands (no SSH/shell). */
+polkit.addRule(function (action, subject) {
+    if (subject.user !== "nyxveil") {
+        return undefined;
+    }
+    if (action.id === "org.freedesktop.systemd1.manage-units" ||
+        action.id === "org.freedesktop.systemd1.manage-unit-files") {
+        var unit = action.lookup("unit");
+        if (unit === "nyxveil-server.service") {
+            return polkit.Result.YES;
+        }
+        if (unit === "nyxveil-update.service") {
+            return polkit.Result.YES;
+        }
+    }
+    if (action.id === "org.freedesktop.login1.reboot" ||
+        action.id === "org.freedesktop.login1.reboot-multiple-sessions") {
+        return polkit.Result.YES;
+    }
+    return undefined;
+});
+EOF
+  chmod 0644 "${dest}"
+  log "installed ${dest}"
+}
+
+write_update_unit() {
+  local dest
+  dest="$(dirname "${SERVICE_UNIT}")/nyxveil-update.service"
+  cat > "${dest}" <<'EOF'
+[Unit]
+Description=Nyxveil signed update (oneshot)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/nyxveilctl update
+TimeoutStartSec=900
+EOF
+  chmod 0644 "${dest}"
+  log "installed ${dest}"
+}
+
 install_systemd_units() {
   write_firewall_unit
   write_server_unit
+  write_update_unit || warn "update unit not installed"
+  write_polkit_management_rules || warn "polkit rules not installed (restart/reboot/update from CP may fail until granted)"
   systemctl_cmd daemon-reload
   systemctl_cmd enable nyxveil-firewall.service
   # Apply firewall now and mark active (oneshot RemainAfterExit).

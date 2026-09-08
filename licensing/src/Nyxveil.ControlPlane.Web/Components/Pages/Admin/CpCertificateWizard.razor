@@ -1,0 +1,276 @@
+@page "/admin/infrastructure/cp-certificate"
+@attribute [Authorize(Policy = AuthPolicies.SuperAdminOnly)]
+@rendermode InteractiveServer
+@inject IServiceScopeFactory Scopes
+@inject AuthenticationStateProvider AuthState
+@using Nyxveil.ControlPlane.Application.Abstractions
+@using Nyxveil.ControlPlane.Domain.Entities
+@using Nyxveil.ControlPlane.Domain.Enums
+
+<div class="page-header">
+    <div>
+        <h1>Сертификат Control Plane</h1>
+        <div class="sub">DNS-01 wizard · TXT запись создаётся вручную у регистратора</div>
+    </div>
+    <div class="actions">
+        <a class="btn btn-ghost" href="/admin/infrastructure">Назад</a>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_error))
+{
+    <div class="alert alert-error">@_error</div>
+}
+@if (!string.IsNullOrEmpty(_info))
+{
+    <div class="alert">@_info</div>
+}
+
+@if (_status is not null)
+{
+    <div class="panel">
+        <h3>Шаг 1 — Текущий сертификат</h3>
+        <p>Домен: <strong>@_status.Hostname</strong></p>
+        <p class="muted">Действителен до: @(_status.NotAfter?.ToString("dd.MM.yyyy HH:mm 'UTC'") ?? "—") · Осталось: @(_status.DaysRemaining?.ToString() ?? "—") дн.</p>
+        <p class="muted">Issuer: @(_status.Issuer ?? "—") · Thumbprint: @(_status.Thumbprint ?? "—")</p>
+        @if (_op is null || _op.Status is CertificateRenewalStatus.Completed or CertificateRenewalStatus.Failed or CertificateRenewalStatus.Cancelled or CertificateRenewalStatus.Expired)
+        {
+            <button class="btn" disabled="@_busy" @onclick="StartAsync">Начать обновление</button>
+        }
+    </div>
+}
+
+@if (_op is not null)
+{
+    <div class="panel">
+        <h3>Состояние запроса: @StatusLabel(_op.Status)</h3>
+        <p class="muted">Id: @_op.Id · Создан: @_op.CreatedAt.ToString("dd.MM.yyyy HH:mm 'UTC'") · @_op.CreatedBy</p>
+        @if (!string.IsNullOrWhiteSpace(_op.ErrorMessage))
+        {
+            <div class="alert alert-error">@_op.ErrorMessage</div>
+        }
+        @if (_op.Status == CertificateRenewalStatus.Switching)
+        {
+            <p>Control Plane перезапускается или только что перезапущена. Проверяем новый сертификат…</p>
+            <button class="btn btn-ghost" disabled="@_busy" @onclick="LoadAsync">Проверить снова</button>
+        }
+    </div>
+
+    @if (_op.Status is CertificateRenewalStatus.PendingDns or CertificateRenewalStatus.DnsReady)
+    {
+        <div class="panel">
+            <h3>Шаг 2 — TXT запись у регистратора</h3>
+            <p>Добавьте TXT запись в DNS-зоне домена.</p>
+            <div class="form-grid">
+                <label>Тип
+                    <input readonly value="TXT" />
+                </label>
+                <label>Имя
+                    <input readonly value="@_op.ChallengeName" id="challenge-name" />
+                </label>
+                <label>Значение
+                    <input readonly value="@_op.ChallengeValue" id="challenge-value" />
+                </label>
+                <label>TTL
+                    <input readonly value="минимальный доступный у регистратора" />
+                </label>
+            </div>
+            <ol class="muted" style="margin-top:1rem; line-height:1.6">
+                <li>Войдите в панель регистратора домена.</li>
+                <li>Откройте DNS-зону для <strong>@_op.Domain</strong>.</li>
+                <li>Создайте TXT запись.</li>
+                <li>В поле имени укажите: <strong>@_op.ChallengeName</strong></li>
+                <li>В поле значения укажите значение challenge без кавычек.</li>
+                <li>Сохраните запись.</li>
+                <li>Подождите распространения DNS (обычно 15–60 секунд).</li>
+                <li>Вернитесь сюда и нажмите «Проверить TXT».</li>
+            </ol>
+            <div class="actions" style="margin-top:.75rem">
+                <button class="btn" disabled="@_busy" @onclick="VerifyDnsAsync">Проверить TXT запись</button>
+                @if (_dnsFound || _op.Status == CertificateRenewalStatus.DnsReady)
+                {
+                    <button class="btn" disabled="@_busy" @onclick="FinalizeAsync">Продолжить выпуск</button>
+                }
+            </div>
+            @if (_dnsMessage is not null)
+            {
+                <p class="muted" style="margin-top:.5rem">@_dnsMessage</p>
+            }
+        </div>
+    }
+
+    @if (_op.Status is CertificateRenewalStatus.Validating or CertificateRenewalStatus.Issuing)
+    {
+        <div class="panel">
+            <h3>Выпуск сертификата…</h3>
+            <p class="muted">ACME validation / finalize. Не закрывайте страницу.</p>
+        </div>
+    }
+
+    @if (_op.Status == CertificateRenewalStatus.ReadyToImport)
+    {
+        <div class="panel">
+            <h3>Шаг 3 — Активация</h3>
+            <p class="muted">Новый thumbprint: @(_op.NewThumbprint ?? "—") · Старый: @(_op.OldThumbprint ?? "—")</p>
+            <p>После проверки сертификат будет импортирован в Windows Store (LocalMachine\My). Старый сертификат не удаляется. Control Plane перезапустится через существующий <code>tls configure</code>.</p>
+            <button class="btn" disabled="@_busy" @onclick="ImportAsync">Импортировать и переключить</button>
+        </div>
+    }
+
+    @if (_op.Status == CertificateRenewalStatus.Completed)
+    {
+        <div class="panel">
+            <h3>Готово</h3>
+            <p>Сертификат успешно обновлён.</p>
+            <p class="muted">Можно удалить временную TXT запись <strong>@_op.ChallengeName</strong> у регистратора (значение: @_op.ChallengeValue).</p>
+            <a class="btn" href="/admin/infrastructure">Завершить</a>
+        </div>
+    }
+}
+
+@code {
+    private ControlPlaneCertificateStatusDto? _status;
+    private CertificateRenewalOperation? _op;
+    private bool _busy;
+    private string? _error;
+    private string? _info;
+    private bool _dnsFound;
+    private string? _dnsMessage;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _error = null;
+        await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            _status = await sp.GetRequiredService<IControlPlaneCertificateStatusService>().GetStatusAsync();
+            _op = await sp.GetRequiredService<IControlPlaneAcmeWizardService>().GetActiveAsync();
+        });
+        if (_op?.Status == CertificateRenewalStatus.Switching)
+            _info = "Control Plane перезапущена. Проверяем новый сертификат…";
+        if (_op?.Status == CertificateRenewalStatus.DnsReady)
+            _dnsFound = true;
+    }
+
+    private async Task StartAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            var state = await AuthState.GetAuthenticationStateAsync();
+            var actor = state.User.Identity?.Name ?? "admin";
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                _op = await sp.GetRequiredService<IControlPlaneAcmeWizardService>().StartAsync(actor);
+            });
+            _info = "ACME order создан. Добавьте TXT запись.";
+            _dnsFound = false;
+        }
+        catch (Exception ex)
+        {
+            _error = UiText.Error(ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task VerifyDnsAsync()
+    {
+        if (_busy || _op is null) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var wizard = sp.GetRequiredService<IControlPlaneAcmeWizardService>();
+                var result = await wizard.VerifyDnsTxtAsync(_op.Id);
+                _dnsFound = result.Found;
+                _dnsMessage = result.Found
+                    ? "TXT найден, значение совпадает."
+                    : (result.Message.Contains("no TXT", StringComparison.OrdinalIgnoreCase)
+                        ? "TXT ещё не найден. Повторите через 15–30 секунд."
+                        : "Запись ещё не распространилась или значение не совпадает.");
+                _op = await wizard.GetStatusAsync(_op.Id);
+            });
+        }
+        catch (Exception ex)
+        {
+            _error = UiText.Error(ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task FinalizeAsync()
+    {
+        if (_busy || _op is null) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                _op = await sp.GetRequiredService<IControlPlaneAcmeWizardService>()
+                    .ContinueFinalizeAsync(_op.Id);
+            });
+            _info = "Сертификат выпущен. Можно импортировать.";
+        }
+        catch (Exception ex)
+        {
+            _error = UiText.Error(ex.Message);
+            await LoadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ImportAsync()
+    {
+        if (_busy || _op is null) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                _op = await sp.GetRequiredService<IControlPlaneAcmeWizardService>()
+                    .ImportAndSwitchAsync(_op.Id);
+            });
+            _info = "Переключение запущено. При перезапуске Control Plane обновите страницу.";
+        }
+        catch (Exception ex)
+        {
+            _error = UiText.Error(ex.Message);
+            await LoadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string StatusLabel(CertificateRenewalStatus s) => s switch
+    {
+        CertificateRenewalStatus.PendingDns => "Ожидание TXT",
+        CertificateRenewalStatus.DnsReady => "TXT подтверждён",
+        CertificateRenewalStatus.Validating => "ACME validation",
+        CertificateRenewalStatus.Issuing => "Выпуск",
+        CertificateRenewalStatus.ReadyToImport => "Готов к импорту",
+        CertificateRenewalStatus.Switching => "Переключение TLS",
+        CertificateRenewalStatus.Completed => "Успех",
+        CertificateRenewalStatus.Failed => "Ошибка",
+        CertificateRenewalStatus.Expired => "Истёк",
+        CertificateRenewalStatus.Cancelled => "Отменён",
+        _ => s.ToString()
+    };
+}

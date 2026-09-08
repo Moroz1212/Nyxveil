@@ -23,6 +23,7 @@ public sealed class SchemaAlignmentTests
         "NodeCredentials", "NodeConfigs", "BootstrapTokens", "TicketAudits",
         "Revocations", "CatalogVersions", "SigningKeysMetadata", "AuditLog",
         "SystemSettings", "PaymentEvents", "LicenseAllowedLocations",
+        "NodeCommands", "CertificateRenewalOperations",
         "AspNetRoles", "AspNetUsers", "AspNetUserRoles", "__EFMigrationsHistory"
     ];
 

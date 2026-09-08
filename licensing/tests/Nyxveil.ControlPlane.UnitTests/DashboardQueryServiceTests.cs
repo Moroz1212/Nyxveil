@@ -9,18 +9,22 @@ namespace Nyxveil.ControlPlane.UnitTests;
 
 public sealed class DashboardQueryServiceTests
 {
-    [Fact]
-    public async Task GetSummaryAsync_UsesIsolatedFactoryContext_AndCompletes()
+    private static ServiceCollection CreateServices(string dbName)
     {
-        var dbName = "dash-" + Guid.NewGuid().ToString("N");
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<IClock>(new FakeClock(DateTime.UtcNow));
+        services.AddSingleton<IServerReleaseService>(new FakeServerReleaseService());
         services.AddDbContextFactory<ControlPlaneDbContext>(o =>
             o.UseInMemoryDatabase(dbName));
         services.AddScoped<IDashboardQueryService, DashboardQueryService>();
+        return services;
+    }
 
-        await using var provider = services.BuildServiceProvider();
+    [Fact]
+    public async Task GetSummaryAsync_UsesIsolatedFactoryContext_AndCompletes()
+    {
+        await using var provider = CreateServices("dash-" + Guid.NewGuid().ToString("N")).BuildServiceProvider();
         await using (var seed = await provider.GetRequiredService<IDbContextFactory<ControlPlaneDbContext>>()
                          .CreateDbContextAsync())
         {
@@ -31,20 +35,13 @@ public sealed class DashboardQueryServiceTests
         var summary = await dash.GetSummaryAsync();
         Assert.NotNull(summary);
         Assert.Equal(0, summary.TotalNodes);
+        Assert.Equal("1.1.9", summary.LatestServerVersion);
     }
 
     [Fact]
     public async Task ConcurrentGetSummaryAsync_DoesNotThrowConcurrencyDetector()
     {
-        var dbName = "dash-parallel-" + Guid.NewGuid().ToString("N");
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddSingleton<IClock>(new FakeClock(DateTime.UtcNow));
-        services.AddDbContextFactory<ControlPlaneDbContext>(o =>
-            o.UseInMemoryDatabase(dbName));
-        services.AddScoped<IDashboardQueryService, DashboardQueryService>();
-
-        await using var provider = services.BuildServiceProvider();
+        await using var provider = CreateServices("dash-parallel-" + Guid.NewGuid().ToString("N")).BuildServiceProvider();
         await using (var seed = await provider.GetRequiredService<IDbContextFactory<ControlPlaneDbContext>>()
                          .CreateDbContextAsync())
         {

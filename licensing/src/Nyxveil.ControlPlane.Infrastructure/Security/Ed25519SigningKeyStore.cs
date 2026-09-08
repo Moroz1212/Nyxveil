@@ -1,21 +1,24 @@
-using System.Runtime.InteropServices;
-using System.Security.Cryptography;
-using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
-using NSec.Cryptography;
+using Microsoft.Extensions.Options;
 using Nyxveil.ControlPlane.Application.Abstractions;
 using Nyxveil.ControlPlane.Application.Contracts.V1;
+using Nyxveil.ControlPlane.Application.Exceptions;
+using Nyxveil.ControlPlane.Application.Options;
 using Nyxveil.ControlPlane.Domain.Entities;
 using Nyxveil.ControlPlane.Domain.Enums;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
+using NSec.Cryptography;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.DependencyInjection;
 using ProtectedData = System.Security.Cryptography.ProtectedData;
 
 namespace Nyxveil.ControlPlane.Infrastructure.Security;
 
 /// <summary>
-/// Ed25519 signing keys: generate via NSec, protect with Windows DPAPI (LocalMachine) or ASP.NET DataProtection,
-/// persist metadata in SigningKeysMetadata. Supports Current + Next.
+/// Ed25519 signing keys with Current / Next / Retiring / Retired lifecycle.
+/// Verification ring includes Retiring until RetireAfter.
 /// </summary>
 public sealed class Ed25519SigningKeyStore : ISigningKeyService
 {
@@ -23,11 +26,22 @@ public sealed class Ed25519SigningKeyStore : ISigningKeyService
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IDataProtector _protector;
+    private readonly IClock _clock;
+    private readonly SigningKeyRotationOptions _rotation;
+    private readonly TicketOptions _tickets;
 
-    public Ed25519SigningKeyStore(IServiceScopeFactory scopeFactory, IDataProtectionProvider dataProtection)
+    public Ed25519SigningKeyStore(
+        IServiceScopeFactory scopeFactory,
+        IDataProtectionProvider dataProtection,
+        IClock clock,
+        IOptions<SigningKeyRotationOptions>? rotation = null,
+        IOptions<TicketOptions>? tickets = null)
     {
         _scopeFactory = scopeFactory;
         _protector = dataProtection.CreateProtector(DataProtectionPurpose);
+        _clock = clock;
+        _rotation = rotation?.Value ?? new SigningKeyRotationOptions();
+        _tickets = tickets?.Value ?? new TicketOptions();
     }
 
     public async Task<SigningMaterialDto> GetCurrentSigningMaterialAsync(CancellationToken cancellationToken = default)
@@ -59,10 +73,21 @@ public sealed class Ed25519SigningKeyStore : ISigningKeyService
 
     public async Task<RotateSigningKeyResult> RotateAsync(CancellationToken cancellationToken = default)
     {
+        _rotation.EnsureGraceSafe(TimeSpan.FromMinutes(Math.Max(1, _tickets.TtlMinutes)));
+
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ControlPlaneDbContext>();
-
         await using var tx = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+        await FinalizeExpiredRetiringCoreAsync(db, cancellationToken).ConfigureAwait(false);
+
+        var now = _clock.UtcNow;
+        var retiring = await db.SigningKeysMetadata
+            .FirstOrDefaultAsync(k => k.Status == SigningKeyStatus.Retiring, cancellationToken)
+            .ConfigureAwait(false);
+        if (retiring is not null)
+            throw new ConflictException("rotation blocked: an active Retiring key exists until " +
+                                        (retiring.RetireAfter?.ToString("O") ?? "unknown"));
 
         var current = await db.SigningKeysMetadata
             .FirstOrDefaultAsync(k => k.Status == SigningKeyStatus.Current, cancellationToken)
@@ -71,28 +96,36 @@ public sealed class Ed25519SigningKeyStore : ISigningKeyService
             .FirstOrDefaultAsync(k => k.Status == SigningKeyStatus.Next, cancellationToken)
             .ConfigureAwait(false);
 
+        if (next is null)
+        {
+            db.SigningKeysMetadata.Add(CreateKeyEntity(SigningKeyStatus.Next, now));
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+            throw new ValidationException(
+                "Следующий ключ только что подготовлен. Ротация станет доступна после периода предварительного распространения.");
+        }
+
+        if (next.CreatedAt.Add(_rotation.NextPrepublishPeriod) > now)
+        {
+            var readyAt = next.CreatedAt.Add(_rotation.NextPrepublishPeriod);
+            throw new ValidationException(
+                $"Следующий ключ ещё не готов к ротации. Повторите после {readyAt:dd.MM.yyyy HH:mm:ss} UTC.");
+        }
+
         var previousKeyId = current?.KeyId ?? string.Empty;
 
         if (current is not null)
         {
-            current.Status = SigningKeyStatus.Retired;
-            current.RetiredAt = DateTime.UtcNow;
+            current.Status = SigningKeyStatus.Retiring;
+            current.RetireAfter = now.Add(_rotation.RetiringGracePeriod);
+            current.RetiredAt = null;
         }
 
-        string newKeyId;
-        if (next is not null)
-        {
-            next.Status = SigningKeyStatus.Current;
-            newKeyId = next.KeyId;
-        }
-        else
-        {
-            var created = CreateKeyEntity(SigningKeyStatus.Current);
-            db.SigningKeysMetadata.Add(created);
-            newKeyId = created.KeyId;
-        }
+        next.Status = SigningKeyStatus.Current;
+        next.PromotedAt = now;
+        var newKeyId = next.KeyId;
 
-        db.SigningKeysMetadata.Add(CreateKeyEntity(SigningKeyStatus.Next));
+        db.SigningKeysMetadata.Add(CreateKeyEntity(SigningKeyStatus.Next, now));
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -103,16 +136,23 @@ public sealed class Ed25519SigningKeyStore : ISigningKeyService
         };
     }
 
-    public async Task<IReadOnlyList<VerificationKeyDto>> GetVerificationKeysAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<VerificationKeyDto>> GetVerificationKeysAsync(
+        CancellationToken cancellationToken = default)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ControlPlaneDbContext>();
 
         await EnsureKeysAsync(db, cancellationToken).ConfigureAwait(false);
+        await FinalizeExpiredRetiringCoreAsync(db, cancellationToken).ConfigureAwait(false);
 
+        var now = _clock.UtcNow;
         var keys = await db.SigningKeysMetadata
             .AsNoTracking()
-            .Where(k => k.Status == SigningKeyStatus.Current || k.Status == SigningKeyStatus.Next)
+            .Where(k =>
+                k.Status == SigningKeyStatus.Current ||
+                k.Status == SigningKeyStatus.Next ||
+                (k.Status == SigningKeyStatus.Retiring &&
+                 (k.RetireAfter == null || k.RetireAfter > now)))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -122,6 +162,63 @@ public sealed class Ed25519SigningKeyStore : ISigningKeyService
             PublicKey = k.PublicKey,
             Status = k.Status.ToString()
         }).ToList();
+    }
+
+    public async Task<IReadOnlyList<SigningKeyAdminDto>> ListAllKeysForAdminAsync(
+        CancellationToken cancellationToken = default)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ControlPlaneDbContext>();
+        await FinalizeExpiredRetiringCoreAsync(db, cancellationToken).ConfigureAwait(false);
+
+        var keys = await db.SigningKeysMetadata.AsNoTracking()
+            .OrderBy(k => k.Status)
+            .ThenByDescending(k => k.CreatedAt)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return keys.Select(k => new SigningKeyAdminDto
+        {
+            KeyId = k.KeyId,
+            PublicKey = k.PublicKey,
+            Status = k.Status.ToString(),
+            CreatedAt = k.CreatedAt,
+            PromotedAt = k.PromotedAt,
+            RetireAfter = k.RetireAfter,
+            RetiredAt = k.RetiredAt
+        }).ToList();
+    }
+
+    public async Task<int> FinalizeExpiredRetiringAsync(CancellationToken cancellationToken = default)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ControlPlaneDbContext>();
+        return await FinalizeExpiredRetiringCoreAsync(db, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<int> FinalizeExpiredRetiringCoreAsync(
+        ControlPlaneDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var now = _clock.UtcNow;
+        var expired = await db.SigningKeysMetadata
+            .Where(k => k.Status == SigningKeyStatus.Retiring &&
+                        k.RetireAfter != null &&
+                        k.RetireAfter <= now)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (expired.Count == 0)
+            return 0;
+
+        foreach (var k in expired)
+        {
+            k.Status = SigningKeyStatus.Retired;
+            k.RetiredAt = now;
+        }
+
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return expired.Count;
     }
 
     public static Key ImportSigningKey(byte[] seedOrPkcs8)
@@ -161,15 +258,18 @@ public sealed class Ed25519SigningKeyStore : ISigningKeyService
             .ConfigureAwait(false);
         if (!hasCurrent)
         {
-            db.SigningKeysMetadata.Add(CreateKeyEntity(SigningKeyStatus.Current));
-            db.SigningKeysMetadata.Add(CreateKeyEntity(SigningKeyStatus.Next));
+            var now = _clock.UtcNow;
+            var current = CreateKeyEntity(SigningKeyStatus.Current, now);
+            current.PromotedAt = now;
+            db.SigningKeysMetadata.Add(current);
+            db.SigningKeysMetadata.Add(CreateKeyEntity(SigningKeyStatus.Next, now));
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
 
         await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private SigningKeyMetadata CreateKeyEntity(SigningKeyStatus status)
+    private SigningKeyMetadata CreateKeyEntity(SigningKeyStatus status, DateTime createdAt)
     {
         using var key = Key.Create(
             SignatureAlgorithm.Ed25519,
@@ -185,14 +285,11 @@ public sealed class Ed25519SigningKeyStore : ISigningKeyService
             PublicKey = pub,
             ProtectedPrivateKey = Protect(seed),
             Status = status,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = createdAt
         };
     }
 
-    /// <summary>Protect raw Ed25519 seed for this machine (DPAPI LocalMachine or DataProtection).</summary>
     public byte[] ProtectKeyMaterial(byte[] plaintext) => Protect(plaintext);
-
-    /// <summary>Unprotect stored signing key material for portable export / signing.</summary>
     public byte[] UnprotectKeyMaterial(byte[] protectedBytes) => Unprotect(protectedBytes);
 
     private byte[] Protect(byte[] plaintext)

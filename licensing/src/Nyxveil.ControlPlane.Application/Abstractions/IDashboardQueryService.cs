@@ -7,7 +7,7 @@ public interface IDashboardQueryService
 
 public sealed class DashboardSummary
 {
-    public string ControlPlaneVersion { get; set; } = "1.1.2";
+    public string ControlPlaneVersion { get; set; } = "1.3.0";
     public string Hostname { get; set; } = string.Empty;
     public string PublicUrl { get; set; } = string.Empty;
     public int LocalPort { get; set; } = 8443;
@@ -42,6 +42,11 @@ public sealed class DashboardSummary
     public int CertificatesExpired { get; set; }
     public int StaleHeartbeatNodes { get; set; }
     public int OutdatedVersionNodes { get; set; }
+    public int UpdateAvailableNodes { get; set; }
+    public int UnsupportedVersionNodes { get; set; }
+    public int CurrentVersionNodes { get; set; }
+    public int UnknownVersionNodes { get; set; }
+    public string? LatestServerVersion { get; set; }
     public int ActiveSessions { get; set; }
     public int PendingBootstrapTokens { get; set; }
     public string? CurrentSigningKeyId { get; set; }

@@ -21,6 +21,7 @@ func NodeKey() string        { return path.Join(StateDir, "node.key") }
 func TLSCert() string        { return path.Join(StateDir, "tls.crt") }
 func TLSKey() string         { return path.Join(StateDir, "tls.key") }
 func AppliedConfig() string  { return path.Join(StateDir, "applied-config.json") }
+func CommandsState() string  { return path.Join(StateDir, "commands-state.json") }
 func ControlSocket() string  { return path.Join(RunDir, "control.sock") }
 func BinaryPath() string     { return path.Join(BinDir, "nyxveil-server") }
 func PreviousBinary() string { return path.Join(StateDir, "nyxveil-server.prev") }

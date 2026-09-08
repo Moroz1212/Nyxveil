@@ -106,6 +106,26 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IBootstrapTokenService, BootstrapTokenService>();
         services.AddScoped<IAuditService, AuditService>();
         services.AddScoped<IDashboardQueryService, DashboardQueryService>();
+        services.AddScoped<INodeCommandService, NodeCommandService>();
+        services.AddScoped<IControlPlaneCertificateStatusService, ControlPlaneCertificateStatusService>();
+        services.AddScoped<IInfrastructureOverviewService, InfrastructureOverviewService>();
+        services.AddScoped<IControlPlaneAcmeWizardService, ControlPlaneAcmeWizardService>();
+        services.AddSingleton<IDnsTxtLookup, SystemDnsTxtLookup>();
+
+        services.Configure<AcmeOptions>(configuration.GetSection(AcmeOptions.SectionName));
+        services.Configure<ServerReleasePolicyOptions>(configuration.GetSection(ServerReleasePolicyOptions.SectionName));
+        services.Configure<SigningKeyRotationOptions>(configuration.GetSection(SigningKeyRotationOptions.SectionName));
+        services.AddHttpClient("GitHubReleases", c =>
+        {
+            c.Timeout = TimeSpan.FromSeconds(30);
+            c.DefaultRequestHeaders.UserAgent.ParseAdd("Nyxveil-ControlPlane");
+        });
+        services.AddSingleton<IServerReleaseService, ServerReleaseService>();
+        var acme = configuration.GetSection(AcmeOptions.SectionName).Get<AcmeOptions>() ?? new AcmeOptions();
+        if (acme.UseFakeProvider)
+            services.AddSingleton<IAcmeDns01Provider, FakeAcmeDns01Provider>();
+        else
+            services.AddSingleton<IAcmeDns01Provider, CertesAcmeDns01Provider>();
 
         return services;
     }

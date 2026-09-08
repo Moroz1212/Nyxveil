@@ -7,65 +7,111 @@
 <div class="page-header">
     <div>
         <h1>Ключи подписи</h1>
-        <div class="sub">Ключи Ed25519 для подписи каталога и билетов доступа. Только для главного администратора.</div>
+        <div class="sub">
+            Ed25519 ключи используются для подписи каталога серверов и билетов доступа. Это НЕ TLS-сертификаты.
+            TLS находится в разделе Инфраструктура.
+        </div>
     </div>
-    <button class="btn btn-danger" @onclick="() => _confirm = true" disabled="@_busy">Сменить ключ</button>
+    <button class="btn" disabled="@(_busy || !_canRotate)" @onclick="() => _confirm = true">
+        Безопасно сменить ключ
+    </button>
 </div>
 
-@if (_current is not null)
+@if (!string.IsNullOrEmpty(_info))
+{
+    <div class="alert">@_info</div>
+}
+@if (!string.IsNullOrEmpty(_error))
+{
+    <div class="alert alert-error">@_error</div>
+}
+
+@foreach (var k in _keys.Where(x => x.Status is "Current" or "Next" or "Retiring"))
 {
     <div class="panel">
-        <p><strong>Идентификатор текущего ключа:</strong> <span class="mono">@_current.KeyId</span></p>
-        <p class="muted">Открытый ключ (HEX)</p>
-        <div class="mono">@Convert.ToHexString(_current.PublicKey)</div>
+        <h3>@StatusTitle(k.Status)</h3>
+        <p class="mono">@k.KeyId</p>
+        <p class="muted">Создан: @k.CreatedAt.ToString("dd.MM.yyyy HH:mm 'UTC'")</p>
+        @if (k.PromotedAt is not null)
+        {
+            <p class="muted">Продвинут: @k.PromotedAt?.ToString("dd.MM.yyyy HH:mm 'UTC'")</p>
+        }
+        @if (k.Status == "Current")
+        {
+            <p>Используется для подписи: да</p>
+        }
+        @if (k.Status == "Next")
+        {
+            <p class="muted">Статус: подготовлен · опубликован для проверки</p>
+        }
+        @if (k.Status == "Retiring" && k.RetireAfter is not null)
+        {
+            <p>Используется только для проверки</p>
+            <p class="muted">Будет выведен: @k.RetireAfter?.ToString("dd.MM.yyyy HH:mm 'UTC'")</p>
+        }
+        <p class="muted mono">@Convert.ToHexString(k.PublicKey)</p>
     </div>
 }
 
-<div class="table-wrap">
-    <table class="data">
-        <thead><tr><th>Идентификатор ключа</th><th>Статус</th><th>Открытый ключ</th></tr></thead>
-        <tbody>
-        @foreach (var k in _keys)
-        {
-            <tr>
-                <td class="mono">@k.KeyId</td>
-                <td><StatusBadge Status="@k.Status" /></td>
-                <td class="mono">@Convert.ToHexString(k.PublicKey)</td>
-            </tr>
-        }
-        </tbody>
-    </table>
-</div>
+@if (_keys.Any(x => x.Status == "Retired"))
+{
+    <div class="panel">
+        <h3>Выведенные из обращения</h3>
+        <div class="table-wrap">
+            <table class="data">
+                <thead><tr><th>Ключ</th><th>Выведен</th></tr></thead>
+                <tbody>
+                @foreach (var k in _keys.Where(x => x.Status == "Retired").Take(20))
+                {
+                    <tr>
+                        <td class="mono">@k.KeyId</td>
+                        <td>@(k.RetiredAt?.ToString("dd.MM.yyyy HH:mm 'UTC'") ?? "—")</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
 
 <ConfirmDialog @bind-Visible="_confirm"
-               Title="Сменить ключ подписи"
-               Message="Сменить текущий ключ подписи Ed25519? Предыдущий ключ останется доступен для проверки до вывода из обращения."
+               Title="Безопасная смена ключа"
+               Message="@_confirmMessage"
                ConfirmText="Сменить"
                OnConfirm="RotateAsync" />
 
 @code {
-    private SigningMaterialDto? _current;
-    private List<VerificationKeyDto> _keys = new();
+    private List<SigningKeyAdminDto> _keys = new();
     private bool _confirm;
     private bool _busy;
+    private bool _canRotate;
+    private string _confirmMessage = "";
+    private string? _error;
+    private string? _info;
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
     private async Task LoadAsync()
     {
+        _error = null;
         await BlazorWork.RunAsync(Scopes, async sp =>
         {
-            var signingKeyService = sp.GetRequiredService<ISigningKeyService>();
-            try
-            {
-                _current = await signingKeyService.GetCurrentSigningMaterialAsync();
-            }
-            catch
-            {
-                _current = null;
-            }
-
-            _keys = (await signingKeyService.GetVerificationKeysAsync()).ToList();
+            var svc = sp.GetRequiredService<ISigningKeyService>();
+            _keys = (await svc.ListAllKeysForAdminAsync()).ToList();
+            var retiring = _keys.FirstOrDefault(k => k.Status == "Retiring");
+            var next = _keys.FirstOrDefault(k => k.Status == "Next");
+            var current = _keys.FirstOrDefault(k => k.Status == "Current");
+            _canRotate = retiring is null && next is not null;
+            _confirmMessage =
+                $"Сейчас: Current {(current?.KeyId ?? "—")}, Next {(next?.KeyId ?? "—")}. " +
+                "После: текущий → Retiring (проверка до конца grace), Next → Current, будет создан новый Next. " +
+                "Действующие каталоги и билеты, подписанные предыдущим ключом, продолжат проверяться до окончания grace period.";
+            if (!_canRotate && retiring is not null)
+                _info = "Ротация недоступна, пока активен ключ в статусе Retiring.";
+            else if (!_canRotate)
+                _info = "Следующий ключ ещё не готов.";
+            else
+                _info = null;
         });
     }
 
@@ -73,11 +119,11 @@
     {
         if (_busy) return;
         _busy = true;
+        _error = null;
         try
         {
             var state = await AuthState.GetAuthenticationStateAsync();
             var actor = state.User.Identity?.Name ?? "admin";
-
             await BlazorWork.RunAsync(Scopes, async sp =>
             {
                 var signingKeyService = sp.GetRequiredService<ISigningKeyService>();
@@ -94,9 +140,21 @@
             });
             await LoadAsync();
         }
+        catch (Exception ex)
+        {
+            _error = UiText.Error(ex.Message);
+        }
         finally
         {
             _busy = false;
         }
     }
+
+    private static string StatusTitle(string status) => status switch
+    {
+        "Current" => "Текущий ключ",
+        "Next" => "Следующий ключ",
+        "Retiring" => "Предыдущий ключ (завершает работу)",
+        _ => status
+    };
 }

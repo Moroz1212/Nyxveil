@@ -47,8 +47,8 @@ func TestProductVersionConstantMatchesVERSIONFile(t *testing.T) {
 	if got != version.ServerVersion {
 		t.Fatalf("VERSION=%q const=%q", got, version.ServerVersion)
 	}
-	if got != "1.1.7" {
-		t.Fatalf("expected release candidate 1.1.7, got %s", got)
+	if got != "1.1.9" {
+		t.Fatalf("expected release candidate 1.1.9, got %s", got)
 	}
 }
 

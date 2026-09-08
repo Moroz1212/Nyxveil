@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Nyxveil.ControlPlane.Application.Abstractions;
 using Nyxveil.ControlPlane.Application.Common;
+using Nyxveil.ControlPlane.Application.Options;
 using Nyxveil.ControlPlane.Domain.Enums;
 using Nyxveil.ControlPlane.Infrastructure.Hosting.TlsConfigure;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
@@ -15,17 +16,23 @@ public sealed class DashboardQueryService : IDashboardQueryService
     private readonly IClock _clock;
     private readonly IConfiguration? _configuration;
     private readonly CertificateExpiryOptions _expiry;
+    private readonly ServerReleasePolicyOptions _releasePolicy;
+    private readonly IServerReleaseService _releases;
 
     public DashboardQueryService(
         IDbContextFactory<ControlPlaneDbContext> dbFactory,
         IClock clock,
+        IServerReleaseService releases,
         IConfiguration? configuration = null,
-        IOptions<CertificateExpiryOptions>? expiry = null)
+        IOptions<CertificateExpiryOptions>? expiry = null,
+        IOptions<ServerReleasePolicyOptions>? releasePolicy = null)
     {
         _dbFactory = dbFactory;
         _clock = clock;
+        _releases = releases;
         _configuration = configuration;
         _expiry = expiry?.Value ?? new CertificateExpiryOptions();
+        _releasePolicy = releasePolicy?.Value ?? new ServerReleasePolicyOptions();
     }
 
     public async Task<DashboardSummary> GetSummaryAsync(CancellationToken cancellationToken = default)
@@ -33,13 +40,29 @@ public sealed class DashboardQueryService : IDashboardQueryService
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var now = _clock.UtcNow;
         var expiringUntil = now.AddDays(14);
-        // Track current Server product line (not Control Plane version).
-        const string currentServerRelease = "1.1.0";
+        var release = await _releases.GetLatestAsync(cancellationToken).ConfigureAwait(false);
+        var latest = release.LatestVersion;
+        var minSupported = _releasePolicy.MinimumSupportedVersion;
 
         var nodes = await db.Nodes.AsNoTracking().ToListAsync(cancellationToken).ConfigureAwait(false);
         var configs = await db.NodeConfigs.AsNoTracking().ToListAsync(cancellationToken).ConfigureAwait(false);
+
+        var active = nodes.Where(n => n.LifecycleState == NodeLifecycleState.Active).ToList();
+        var versionStatuses = active.Select(n =>
+        {
+            var installed = NodeVersionEvaluator.EffectiveInstalledVersion(n.ReportedServerVersion, n.ServerVersion);
+            return NodeVersionEvaluator.Evaluate(installed, latest, minSupported);
+        }).ToList();
+
+        var updateAvailable = versionStatuses.Count(s => s == NodeVersionStatus.UpdateAvailable);
+        var unsupported = versionStatuses.Count(s => s == NodeVersionStatus.Unsupported);
+        var current = versionStatuses.Count(s => s == NodeVersionStatus.Current);
+        var unknown = versionStatuses.Count(s =>
+            s is NodeVersionStatus.Unknown or NodeVersionStatus.Invalid);
+
         var summary = new DashboardSummary
         {
+            ControlPlaneVersion = ReadControlPlaneVersion(),
             Hostname = _configuration?["Hosting:PublicHostname"] ?? Environment.MachineName,
             PublicUrl = _configuration?["Hosting:PublicBaseUrl"] ?? string.Empty,
             LocalPort = int.TryParse(_configuration?["Hosting:Port"], out var port) ? port : 8443,
@@ -73,11 +96,13 @@ public sealed class DashboardQueryService : IDashboardQueryService
                 CertificateExpiry.Evaluate(n.CertNotAfter, now, _expiry) == CertificateHealthStatus.Expired),
             StaleHeartbeatNodes = nodes.Count(n =>
                 n.LifecycleState == NodeLifecycleState.Active && (n.LastSeenAt == null || n.LastSeenAt < now.AddMinutes(-5))),
-            OutdatedVersionNodes = nodes.Count(n =>
-                n.LifecycleState == NodeLifecycleState.Active &&
-                !string.IsNullOrWhiteSpace(n.ServerVersion) &&
-                !string.Equals(n.ServerVersion, currentServerRelease, StringComparison.OrdinalIgnoreCase)),
-            ActiveSessions = nodes.Where(n => n.LifecycleState == NodeLifecycleState.Active).Sum(n => n.CurrentSessions),
+            OutdatedVersionNodes = updateAvailable + unsupported,
+            UpdateAvailableNodes = updateAvailable,
+            UnsupportedVersionNodes = unsupported,
+            CurrentVersionNodes = current,
+            UnknownVersionNodes = unknown,
+            LatestServerVersion = latest,
+            ActiveSessions = active.Sum(n => n.CurrentSessions),
             PendingBootstrapTokens = await db.BootstrapTokens.CountAsync(
                     t => t.Status == BootstrapTokenStatus.Active,
                     cancellationToken)
@@ -92,15 +117,47 @@ public sealed class DashboardQueryService : IDashboardQueryService
 
         TryPopulateControlPlaneCertificate(summary, now);
 
-        if (summary.CertificatesExpired > 0) summary.Warnings.Add($"{summary.CertificatesExpired} node certificate(s) expired");
-        if (summary.CertificatesExpiring > 0) summary.Warnings.Add($"{summary.CertificatesExpiring} node certificate(s) expiring");
-        if (summary.StaleHeartbeatNodes > 0) summary.Warnings.Add($"{summary.StaleHeartbeatNodes} node heartbeat(s) stale");
-        if (summary.OutdatedVersionNodes > 0) summary.Warnings.Add($"{summary.OutdatedVersionNodes} node version(s) outdated");
+        if (summary.CertificatesExpired > 0)
+            summary.Warnings.Add($"Истёкших сертификатов серверов: {summary.CertificatesExpired}");
+        if (summary.CertificatesExpiring > 0)
+            summary.Warnings.Add($"Сертификаты серверов истекают: {summary.CertificatesExpiring}");
+        if (summary.StaleHeartbeatNodes > 0)
+            summary.Warnings.Add($"Нет связи с серверами: {summary.StaleHeartbeatNodes}");
+        if (unsupported > 0)
+            summary.Warnings.Add(unsupported == 1
+                ? "1 сервер использует неподдерживаемую версию"
+                : $"Для {unsupported} серверов требуется обновление (неподдерживаемая версия)");
+        else if (updateAvailable > 0)
+            summary.Warnings.Add(updateAvailable == 1
+                ? "Для 1 сервера доступно обновление"
+                : $"Для {updateAvailable} серверов доступно обновление");
         if (summary.CertificateHealth is "Expired" or "Critical" or "Invalid")
-            summary.Warnings.Add($"Control Plane certificate: {summary.CertificateHealth}");
+            summary.Warnings.Add($"Сертификат Control Plane: {summary.CertificateHealth}");
         else if (summary.CertificateHealth == "ExpiringSoon")
-            summary.Warnings.Add("Control Plane certificate expiring soon");
+            summary.Warnings.Add("Сертификат Control Plane скоро истечёт");
         return summary;
+    }
+
+    private string ReadControlPlaneVersion()
+    {
+        try
+        {
+            var dir = AppContext.BaseDirectory;
+            for (var i = 0; i < 8 && !string.IsNullOrEmpty(dir); i++)
+            {
+                var candidate = Path.Combine(dir, "VERSION");
+                if (File.Exists(candidate))
+                    return File.ReadAllText(candidate).Trim();
+                var parent = Directory.GetParent(dir)?.FullName;
+                if (parent is null || parent == dir) break;
+                dir = parent;
+            }
+        }
+        catch
+        {
+        }
+
+        return "1.3.0";
     }
 
     private void TryPopulateControlPlaneCertificate(DashboardSummary summary, DateTime now)

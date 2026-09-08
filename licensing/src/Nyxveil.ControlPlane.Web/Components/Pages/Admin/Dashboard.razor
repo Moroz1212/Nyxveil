@@ -37,6 +37,39 @@ else
             @foreach (var warning in _summary.Warnings) { <div class="alert alert-error">@warning</div> }
         </div>
     }
+
+    @if (_infra is not null)
+    {
+        <div class="panel">
+            <h3>Certificates</h3>
+            @if (_infraCritical)
+            {
+                <div class="alert alert-error">Есть сертификаты в критическом состоянии или истёкшие.</div>
+            }
+            <div class="table-wrap">
+                <table class="data">
+                    <thead><tr><th>Объект</th><th>Состояние</th><th>Осталось</th></tr></thead>
+                    <tbody>
+                    <tr>
+                        <td>Control Plane</td>
+                        <td>@_infra.ControlPlaneCertificate.Health</td>
+                        <td>@(_infra.ControlPlaneCertificate.DaysRemaining?.ToString() ?? "—") дн.</td>
+                    </tr>
+                    @foreach (var n in _infra.Nodes)
+                    {
+                        <tr>
+                            <td>@n.DisplayName</td>
+                            <td>@n.Health</td>
+                            <td>@(n.DaysRemaining?.ToString() ?? "—") дн.</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+            <p style="margin-top:.75rem"><a href="/admin/infrastructure">Инфраструктура</a></p>
+        </div>
+    }
+
     <div class="stats-grid">
         <div class="stat"><div class="label">Всего серверов</div><div class="value">@_summary.TotalNodes</div></div>
         <div class="stat"><div class="label">Работают штатно</div><div class="value">@_summary.HealthyNodes</div></div>
@@ -61,6 +94,8 @@ else
 
 @code {
     private DashboardSummary? _summary;
+    private InfrastructureOverviewDto? _infra;
+    private bool _infraCritical;
     private bool _needsSetup;
     private string _setupMessage = "Переход к первоначальной настройке…";
 
@@ -90,7 +125,14 @@ else
         }
 
         // DashboardQueryService uses IDbContextFactory (isolated context); still sequential.
-        _summary = await BlazorWork.RunAsync(Scopes, sp =>
-            sp.GetRequiredService<IDashboardQueryService>().GetSummaryAsync());
+        await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            _summary = await sp.GetRequiredService<IDashboardQueryService>().GetSummaryAsync();
+            _infra = await sp.GetRequiredService<IInfrastructureOverviewService>().GetOverviewAsync();
+            _infraCritical = _infra.ControlPlaneCertificate.Health is
+                                 nameof(CertificateHealthStatus.Critical) or nameof(CertificateHealthStatus.Expired)
+                             || _infra.Nodes.Any(n =>
+                                 n.Health is nameof(CertificateHealthStatus.Critical) or nameof(CertificateHealthStatus.Expired));
+        });
     }
 }
