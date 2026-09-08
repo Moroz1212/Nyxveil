@@ -101,6 +101,16 @@ if [[ -x "${MOCK_ROOT}/usr/local/sbin/nyxveil-catalog-verify" ]]; then
 else
   fail "nyxveil-catalog-verify missing after mock install"
 fi
+if [[ -f "${MOCK_ROOT}/etc/systemd/system/nyxveil-update.service" ]]; then
+  pass "embedded/fallback update service present after binary-dir install"
+else
+  fail "nyxveil-update.service missing after binary-dir install"
+fi
+if [[ -f "${MOCK_ROOT}/etc/polkit-1/rules.d/50-nyxveil-management.rules" ]]; then
+  pass "embedded/fallback polkit rule present after binary-dir install"
+else
+  fail "50-nyxveil-management.rules missing after binary-dir install"
+fi
 
 echo "== TestCurlInstallerCreatesAllServCommands =="
 SERV_CMDS=(status health start stop restart logs version config update uninstall)

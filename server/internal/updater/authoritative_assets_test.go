@@ -38,6 +38,14 @@ func testRequiredUpdate(t *testing.T) (*Updater, *Manifest, map[string]string) {
 	t.Cleanup(server.Close)
 
 	root := t.TempDir()
+	t.Cleanup(func() {
+		_ = filepath.Walk(root, func(path string, _ os.FileInfo, err error) error {
+			if err == nil {
+				_ = os.Chmod(path, 0o700)
+			}
+			return nil
+		})
+	})
 	destinations := map[string]string{}
 	u := New(filepath.Join(root, "sbin", "nyxveil-server"), filepath.Join(root, "prev", "server"), filepath.Join(root, "marker"))
 	u.StateDir = filepath.Join(root, "state")

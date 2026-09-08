@@ -44,14 +44,28 @@ CREATED_USER=0
 INSTALLED_BINARIES=0
 INSTALLED_UNIT=0
 INSTALLED_FIREWALL_UNIT=0
+INSTALLED_UPDATE_SERVICE=0
+INSTALLED_MANAGEMENT_POLKIT=0
 INSTALLED_SYSCTL=0
 INSTALLED_NFT=0
+MANIFEST_UPDATE_SERVICE=0
+MANIFEST_MANAGEMENT_POLKIT=0
 WROTE_CONFIG=0
 STARTED_SERVICE=0
 BACKUP_DIR=""
 PRESERVE_NODE_ID=""
 PRESERVE_HAD_KEY=0
 REPAIR_MODE=0
+
+# Canonical release-manifest destinations (always Unix production paths).
+readonly WANT_SERVER_DEST="/usr/local/sbin/nyxveil-server"
+readonly WANT_CTL_DEST="/usr/local/sbin/nyxveilctl"
+readonly WANT_CATALOG_DEST="/usr/local/sbin/nyxveil-catalog-verify"
+readonly WANT_GATE_DEST="/usr/local/share/nyxveil/scripts/production-gate.sh"
+readonly WANT_VERSION_DEST="/usr/local/share/nyxveil/VERSION"
+readonly WANT_THIRD_PARTY_DEST="/usr/local/share/nyxveil/THIRD_PARTY_CORE.md"
+readonly WANT_UPDATE_SERVICE_DEST="/etc/systemd/system/nyxveil-update.service"
+readonly WANT_POLKIT_DEST="/etc/polkit-1/rules.d/50-nyxveil-management.rules"
 
 CONTROL_PLANE=""
 LOCATION_ID=""
@@ -450,6 +464,15 @@ backup_existing() {
   if [[ -f "${FIREWALL_UNIT}" ]]; then
     cp -a "${FIREWALL_UNIT}" "${BACKUP_DIR}/nyxveil-firewall.service"
   fi
+  local update_unit polkit_rule
+  update_unit="$(dirname "${SERVICE_UNIT}")/nyxveil-update.service"
+  polkit_rule="$(dirname "${ETC_DIR}")/polkit-1/rules.d/50-nyxveil-management.rules"
+  if [[ -f "${update_unit}" ]]; then
+    cp -a "${update_unit}" "${BACKUP_DIR}/nyxveil-update.service"
+  fi
+  if [[ -f "${polkit_rule}" ]]; then
+    cp -a "${polkit_rule}" "${BACKUP_DIR}/50-nyxveil-management.rules"
+  fi
   if [[ -f "${SYSCTL_FILE}" ]]; then
     cp -a "${SYSCTL_FILE}" "${BACKUP_DIR}/99-nyxveil.conf"
   fi
@@ -504,6 +527,27 @@ rollback() {
     else
       rm -f "${FIREWALL_UNIT}"
       systemctl_cmd daemon-reload || true
+    fi
+  fi
+  if [[ "${INSTALLED_UPDATE_SERVICE}" -eq 1 ]]; then
+    local update_unit
+    update_unit="$(dirname "${SERVICE_UNIT}")/nyxveil-update.service"
+    if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/nyxveil-update.service" ]]; then
+      cp -a "${BACKUP_DIR}/nyxveil-update.service" "${update_unit}"
+      systemctl_cmd daemon-reload || true
+    else
+      rm -f "${update_unit}"
+      systemctl_cmd daemon-reload || true
+    fi
+  fi
+  if [[ "${INSTALLED_MANAGEMENT_POLKIT}" -eq 1 ]]; then
+    local polkit_rule
+    polkit_rule="$(dirname "${ETC_DIR}")/polkit-1/rules.d/50-nyxveil-management.rules"
+    if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/50-nyxveil-management.rules" ]]; then
+      mkdir -p "$(dirname "${polkit_rule}")"
+      cp -a "${BACKUP_DIR}/50-nyxveil-management.rules" "${polkit_rule}"
+    else
+      rm -f "${polkit_rule}"
     fi
   fi
   if [[ "${INSTALLED_SYSCTL}" -eq 1 ]]; then
@@ -581,7 +625,9 @@ ensure_user() {
 ensure_dirs() {
   if [[ "${MOCK}" -eq 1 ]]; then
     mkdir -p "${ETC_DIR}" "${STATE_DIR}" "${RUN_DIR}" "$(dirname "${NFT_FILE}")" \
-      "${BIN_DIR}" "$(dirname "${SERVICE_UNIT}")" "$(dirname "${SYSCTL_FILE}")"
+      "${BIN_DIR}" "$(dirname "${SERVICE_UNIT}")" "$(dirname "${SYSCTL_FILE}")" \
+      "${SCRIPTS_DIR}" "${SHARE_DIR}" \
+      "$(dirname "${ETC_DIR}")/polkit-1/rules.d"
     chmod 0755 "${ETC_DIR}" "${RUN_DIR}" "${BIN_DIR}" 2>/dev/null || true
     chmod 0700 "${STATE_DIR}" 2>/dev/null || true
     return 0
@@ -593,25 +639,94 @@ ensure_dirs() {
   install -d -m 0755 -o root -g root "${BIN_DIR}"
   install -d -m 0755 -o root -g root "$(dirname "${SERVICE_UNIT}")"
   install -d -m 0755 -o root -g root "$(dirname "${SYSCTL_FILE}")"
+  install -d -m 0755 -o root -g root "${SCRIPTS_DIR}"
+  install -d -m 0755 -o root -g root /etc/polkit-1/rules.d
 }
 
 # --- Unsigned release manifest parse (GitHub Release trust + SHA-256) ---------
 
+json_query() {
+  # json_query FILE EXPR  — EXPR is a jq-style path used by this installer only.
+  local file="$1"
+  local expr="$2"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r "${expr}" "${file}"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; then
+    local py=python3
+    command -v python3 >/dev/null 2>&1 || py=python
+    "${py}" - "${file}" "${expr}" <<'PY'
+import json, sys
+from pathlib import Path
+m = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+expr = sys.argv[2]
+def walk(obj, parts):
+    if not parts:
+        return obj
+    p = parts[0]
+    if p.endswith("]") and "[" in p:
+        name, idx = p[:-1].split("[", 1)
+        if name:
+            obj = obj[name]
+        obj = obj[int(idx)]
+        return walk(obj, parts[1:])
+    if isinstance(obj, dict):
+        return walk(obj.get(p), parts[1:])
+    raise KeyError(p)
+# Support the small expr set used by install.sh.
+if expr in (".version // empty", ".version"):
+    print(m.get("version") or "")
+elif expr in (".arch // empty", ".arch"):
+    print(m.get("arch") or "")
+elif expr == "(.assets // []) | length":
+    print(len(m.get("assets") or []))
+elif expr == ".assets | length":
+    print(len(m.get("assets") or []))
+elif expr == ".sha256 // empty":
+    print(m.get("sha256") or "")
+elif expr == ".url // empty":
+    print(m.get("url") or "")
+elif expr.startswith(".assets[") and "].name" in expr:
+    i = int(expr.split("[",1)[1].split("]",1)[0])
+    print((m.get("assets") or [])[i].get("name") or "")
+elif expr.startswith(".assets[") and "].sha256" in expr:
+    i = int(expr.split("[",1)[1].split("]",1)[0])
+    print((m.get("assets") or [])[i].get("sha256") or "")
+elif expr.startswith(".assets[") and "].url" in expr:
+    i = int(expr.split("[",1)[1].split("]",1)[0])
+    print((m.get("assets") or [])[i].get("url") or "")
+elif expr.startswith(".assets[") and "destination // empty" in expr:
+    i = int(expr.split("[",1)[1].split("]",1)[0])
+    print((m.get("assets") or [])[i].get("destination") or "")
+elif expr.startswith(".assets[") and "mode // empty" in expr:
+    i = int(expr.split("[",1)[1].split("]",1)[0])
+    print((m.get("assets") or [])[i].get("mode") or "")
+elif expr.startswith(".assets[") and "required // false" in expr:
+    i = int(expr.split("[",1)[1].split("]",1)[0])
+    v = (m.get("assets") or [])[i].get("required", False)
+    print("true" if v is True else ("false" if v is False else str(v).lower()))
+else:
+    raise SystemExit(f"unsupported json expr: {expr}")
+PY
+    return 0
+  fi
+  die "jq or python3 required to parse release manifest"
+}
+
 verify_release_manifest() {
   local manifest="$1"
 
-  command -v jq >/dev/null 2>&1 || die "jq required to parse release manifest"
-
   local version arch
-  version="$(jq -r '.version // empty' "${manifest}")"
-  arch="$(jq -r '.arch // empty' "${manifest}")"
+  version="$(json_query "${manifest}" '.version // empty')"
+  arch="$(json_query "${manifest}" '.arch // empty')"
   [[ -n "${version}" ]] || die "release manifest missing version"
   [[ -n "${arch}" ]] || die "release manifest missing arch"
 
   local assets_n
-  assets_n="$(jq -r '(.assets // []) | length' "${manifest}")"
+  assets_n="$(json_query "${manifest}" '(.assets // []) | length')"
   local legacy_ok=0
-  if [[ "$(jq -r '.sha256 // empty' "${manifest}")" != "" && "$(jq -r '.url // empty' "${manifest}")" != "" ]]; then
+  if [[ "$(json_query "${manifest}" '.sha256 // empty')" != "" && "$(json_query "${manifest}" '.url // empty')" != "" ]]; then
     legacy_ok=1
   fi
   if [[ "${assets_n}" -eq 0 && "${legacy_ok}" -eq 0 ]]; then
@@ -678,6 +793,35 @@ download_or_copy_binaries() {
     done
     [[ -n "${tp_src}" ]] || die "missing THIRD_PARTY_CORE.md beside binary dir"
     install -m 0644 "${tp_src}" "${SHARE_DIR}/THIRD_PARTY_CORE.md"
+    local update_unit_dest polkit_dest
+    update_unit_dest="$(dirname "${SERVICE_UNIT}")/nyxveil-update.service"
+    polkit_dest="$(dirname "${ETC_DIR}")/polkit-1/rules.d/50-nyxveil-management.rules"
+    local unit_src=""
+    for cand in \
+      "${BINARY_DIR}/nyxveil-update.service" \
+      "${BINARY_DIR}/../nyxveil-update.service" \
+      "${BINARY_DIR}/systemd/nyxveil-update.service"; do
+      if [[ -f "${cand}" ]]; then unit_src="${cand}"; break; fi
+    done
+    if [[ -n "${unit_src}" ]]; then
+      mkdir -p "$(dirname "${update_unit_dest}")"
+      install -m 0644 "${unit_src}" "${update_unit_dest}"
+      MANIFEST_UPDATE_SERVICE=1
+      INSTALLED_UPDATE_SERVICE=1
+    fi
+    local polkit_src=""
+    for cand in \
+      "${BINARY_DIR}/50-nyxveil-management.rules" \
+      "${BINARY_DIR}/../50-nyxveil-management.rules" \
+      "${BINARY_DIR}/systemd/50-nyxveil-management.rules"; do
+      if [[ -f "${cand}" ]]; then polkit_src="${cand}"; break; fi
+    done
+    if [[ -n "${polkit_src}" ]]; then
+      mkdir -p "$(dirname "${polkit_dest}")"
+      install -m 0644 "${polkit_src}" "${polkit_dest}"
+      MANIFEST_MANAGEMENT_POLKIT=1
+      INSTALLED_MANAGEMENT_POLKIT=1
+    fi
     INSTALLED_BINARIES=1
     log "installed binaries + production-gate from ${BINARY_DIR} (no remote verify)"
     return 0
@@ -701,20 +845,24 @@ download_or_copy_binaries() {
 
   local want_arch="linux/${arch}"
   local got_arch
-  got_arch="$(jq -r '.arch' "${tmp}/manifest.json")"
+  got_arch="$(json_query "${tmp}/manifest.json" '.arch')"
   [[ "${got_arch}" == "${want_arch}" ]] || die "manifest arch mismatch: have ${got_arch} want ${want_arch}"
 
   local n i name sha url dest manifest_dest manifest_mode manifest_required
   local have_server=0 have_ctl=0 have_catalog=0 have_gate=0 have_ver=0 have_tp=0
-  n="$(jq -r '.assets | length' "${tmp}/manifest.json")"
+  local have_update_service=0 have_management_polkit=0
+  local update_unit_dest polkit_dest
+  update_unit_dest="$(dirname "${SERVICE_UNIT}")/nyxveil-update.service"
+  polkit_dest="$(dirname "${ETC_DIR}")/polkit-1/rules.d/50-nyxveil-management.rules"
+  n="$(json_query "${tmp}/manifest.json" '.assets | length')"
   [[ "${n}" -gt 0 ]] || die "manifest has no assets"
   for ((i = 0; i < n; i++)); do
-    name="$(jq -r ".assets[${i}].name" "${tmp}/manifest.json")"
-    sha="$(jq -r ".assets[${i}].sha256" "${tmp}/manifest.json")"
-    url="$(jq -r ".assets[${i}].url" "${tmp}/manifest.json")"
-    manifest_dest="$(jq -r ".assets[${i}].destination // empty" "${tmp}/manifest.json")"
-    manifest_mode="$(jq -r ".assets[${i}].mode // empty" "${tmp}/manifest.json")"
-    manifest_required="$(jq -r ".assets[${i}].required // false" "${tmp}/manifest.json")"
+    name="$(json_query "${tmp}/manifest.json" ".assets[${i}].name")"
+    sha="$(json_query "${tmp}/manifest.json" ".assets[${i}].sha256")"
+    url="$(json_query "${tmp}/manifest.json" ".assets[${i}].url")"
+    manifest_dest="$(json_query "${tmp}/manifest.json" ".assets[${i}].destination // empty")"
+    manifest_mode="$(json_query "${tmp}/manifest.json" ".assets[${i}].mode // empty")"
+    manifest_required="$(json_query "${tmp}/manifest.json" ".assets[${i}].required // false")"
     [[ -n "${name}" && -n "${sha}" && -n "${url}" && -n "${manifest_dest}" && -n "${manifest_mode}" ]] ||
       die "manifest asset[${i}] missing fields"
     [[ "${manifest_required}" == "true" ]] || die "manifest asset ${name} is not required"
@@ -725,40 +873,58 @@ download_or_copy_binaries() {
     echo "${sha}  ${dest}" | sha256sum -c - >/dev/null || die "SHA256 mismatch for ${name}"
     case "${name}" in
       nyxveil-server|server)
-        [[ "${manifest_dest}" == "${BIN_DIR}/nyxveil-server" && "${manifest_mode}" == "0755" ]] ||
+        [[ "${manifest_dest}" == "${WANT_SERVER_DEST}" && "${manifest_mode}" == "0755" ]] ||
           die "manifest contract mismatch for ${name}"
         install -m 0755 "${dest}" "${BIN_DIR}/nyxveil-server"
         have_server=1
         ;;
       nyxveilctl|ctl)
-        [[ "${manifest_dest}" == "${BIN_DIR}/nyxveilctl" && "${manifest_mode}" == "0755" ]] ||
+        [[ "${manifest_dest}" == "${WANT_CTL_DEST}" && "${manifest_mode}" == "0755" ]] ||
           die "manifest contract mismatch for ${name}"
         install -m 0755 "${dest}" "${BIN_DIR}/nyxveilctl"
         have_ctl=1
         ;;
       nyxveil-catalog-verify)
-        [[ "${manifest_dest}" == "${BIN_DIR}/nyxveil-catalog-verify" && "${manifest_mode}" == "0755" ]] ||
+        [[ "${manifest_dest}" == "${WANT_CATALOG_DEST}" && "${manifest_mode}" == "0755" ]] ||
           die "manifest contract mismatch for ${name}"
         install -m 0755 "${dest}" "${BIN_DIR}/nyxveil-catalog-verify"
         have_catalog=1
         ;;
       production-gate)
-        [[ "${manifest_dest}" == "${SCRIPTS_DIR}/production-gate.sh" && "${manifest_mode}" == "0755" ]] ||
+        [[ "${manifest_dest}" == "${WANT_GATE_DEST}" && "${manifest_mode}" == "0755" ]] ||
           die "manifest contract mismatch for ${name}"
         install -m 0755 "${dest}" "${SCRIPTS_DIR}/production-gate.sh"
         have_gate=1
         ;;
       share-version)
-        [[ "${manifest_dest}" == "${SHARE_DIR}/VERSION" && "${manifest_mode}" == "0644" ]] ||
+        [[ "${manifest_dest}" == "${WANT_VERSION_DEST}" && "${manifest_mode}" == "0644" ]] ||
           die "manifest contract mismatch for ${name}"
         install -m 0644 "${dest}" "${SHARE_DIR}/VERSION"
         have_ver=1
         ;;
       share-third-party-core)
-        [[ "${manifest_dest}" == "${SHARE_DIR}/THIRD_PARTY_CORE.md" && "${manifest_mode}" == "0644" ]] ||
+        [[ "${manifest_dest}" == "${WANT_THIRD_PARTY_DEST}" && "${manifest_mode}" == "0644" ]] ||
           die "manifest contract mismatch for ${name}"
         install -m 0644 "${dest}" "${SHARE_DIR}/THIRD_PARTY_CORE.md"
         have_tp=1
+        ;;
+      nyxveil-update-service)
+        [[ "${manifest_dest}" == "${WANT_UPDATE_SERVICE_DEST}" && "${manifest_mode}" == "0644" ]] ||
+          die "manifest contract mismatch for ${name}"
+        mkdir -p "$(dirname "${update_unit_dest}")"
+        install -m 0644 "${dest}" "${update_unit_dest}"
+        have_update_service=1
+        MANIFEST_UPDATE_SERVICE=1
+        INSTALLED_UPDATE_SERVICE=1
+        ;;
+      nyxveil-management-polkit)
+        [[ "${manifest_dest}" == "${WANT_POLKIT_DEST}" && "${manifest_mode}" == "0644" ]] ||
+          die "manifest contract mismatch for ${name}"
+        mkdir -p "$(dirname "${polkit_dest}")"
+        install -m 0644 "${dest}" "${polkit_dest}"
+        have_management_polkit=1
+        MANIFEST_MANAGEMENT_POLKIT=1
+        INSTALLED_MANAGEMENT_POLKIT=1
         ;;
       *)
         die "unknown required asset ${name}"
@@ -771,13 +937,17 @@ download_or_copy_binaries() {
   [[ "${have_gate}" -eq 1 ]] || die "production-gate.sh not installed from manifest"
   [[ "${have_ver}" -eq 1 ]] || die "share VERSION not installed from manifest"
   [[ "${have_tp}" -eq 1 ]] || die "THIRD_PARTY_CORE.md not installed from manifest"
+  [[ "${have_update_service}" -eq 1 ]] || die "nyxveil-update.service not installed from manifest"
+  [[ "${have_management_polkit}" -eq 1 ]] || die "50-nyxveil-management.rules not installed from manifest"
   [[ -x "${BIN_DIR}/nyxveil-server" ]] || die "nyxveil-server not executable"
   [[ -x "${BIN_DIR}/nyxveilctl" ]] || die "nyxveilctl not executable"
   [[ -x "${BIN_DIR}/nyxveil-catalog-verify" ]] || die "nyxveil-catalog-verify not executable"
   [[ -x "${SCRIPTS_DIR}/production-gate.sh" ]] || die "production-gate.sh not executable"
+  [[ -f "${update_unit_dest}" ]] || die "nyxveil-update.service missing after install"
+  [[ -f "${polkit_dest}" ]] || die "50-nyxveil-management.rules missing after install"
   rm -rf "${tmp}"
   INSTALLED_BINARIES=1
-  log "installed binaries + gate scripts to ${BIN_DIR} and ${SCRIPTS_DIR} (manifest verified)"
+  log "installed binaries + gate + management assets (manifest verified)"
 }
 
 install_sysctl() {
@@ -896,6 +1066,27 @@ EOF
   chmod 0644 "${SERVICE_UNIT}"
 }
 
+write_update_unit() {
+  local dest
+  dest="$(dirname "${SERVICE_UNIT}")/nyxveil-update.service"
+  cat > "${dest}" <<'EOF'
+[Unit]
+Description=Nyxveil signed update (oneshot)
+Documentation=https://github.com/Moroz1212/Nyxveil/tree/main/server/docs
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/nyxveilctl update
+Nice=5
+TimeoutStartSec=900
+EOF
+  chmod 0644 "${dest}"
+  INSTALLED_UPDATE_SERVICE=1
+  log "installed ${dest} (embedded fallback)"
+}
+
 write_polkit_management_rules() {
   local dest
   dest="$(dirname "${ETC_DIR}")/polkit-1/rules.d/50-nyxveil-management.rules"
@@ -925,34 +1116,25 @@ polkit.addRule(function (action, subject) {
 });
 EOF
   chmod 0644 "${dest}"
-  log "installed ${dest}"
-}
-
-write_update_unit() {
-  local dest
-  dest="$(dirname "${SERVICE_UNIT}")/nyxveil-update.service"
-  cat > "${dest}" <<'EOF'
-[Unit]
-Description=Nyxveil signed update (oneshot)
-Documentation=https://github.com/Moroz1212/Nyxveil/tree/main/server/docs
-After=network-online.target
-
-[Service]
-Type=oneshot
-User=root
-ExecStart=/usr/local/sbin/nyxveilctl update
-Nice=5
-TimeoutStartSec=900
-EOF
-  chmod 0644 "${dest}"
-  log "installed ${dest}"
+  INSTALLED_MANAGEMENT_POLKIT=1
+  log "installed ${dest} (embedded fallback)"
 }
 
 install_systemd_units() {
   write_firewall_unit
   write_server_unit
-  write_update_unit || warn "update unit not installed"
-  write_polkit_management_rules || warn "polkit rules not installed (restart/reboot/update from CP may fail until granted)"
+  # SHA256-verified release assets are authoritative. Embedded writers are
+  # fallback only when canonical management assets were not supplied.
+  if [[ "${MANIFEST_UPDATE_SERVICE}" -eq 1 ]]; then
+    log "keeping release-verified nyxveil-update.service (skip embedded overwrite)"
+  else
+    write_update_unit || warn "update unit not installed"
+  fi
+  if [[ "${MANIFEST_MANAGEMENT_POLKIT}" -eq 1 ]]; then
+    log "keeping release-verified 50-nyxveil-management.rules (skip embedded overwrite)"
+  else
+    write_polkit_management_rules || warn "polkit rules not installed (restart/reboot/update from CP may fail until granted)"
+  fi
   systemctl_cmd daemon-reload
   systemctl_cmd enable nyxveil-firewall.service
   # Apply firewall now and mark active (oneshot RemainAfterExit).

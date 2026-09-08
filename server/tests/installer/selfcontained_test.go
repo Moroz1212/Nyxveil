@@ -11,30 +11,40 @@ import (
 
 // TestCurlInstallerSelfContained runs scripts/test-curl-installer.sh via bash (Linux/WSL/Git Bash).
 func TestCurlInstallerSelfContained(t *testing.T) {
+	runInstallerBashScript(t, "scripts/test-curl-installer.sh")
+}
+
+// TestInstallerManagementAssetsContract covers the Ubuntu 24.04 regression where
+// download_or_copy_binaries rejected nyxveil-update-service / nyxveil-management-polkit.
+func TestInstallerManagementAssetsContract(t *testing.T) {
+	runInstallerBashScript(t, "scripts/test-installer-management-assets.sh")
+}
+
+func runInstallerBashScript(t *testing.T, rel string) {
+	t.Helper()
 	root := findServerRoot(t)
-	script := filepath.Join(root, "scripts", "test-curl-installer.sh")
+	script := filepath.Join(root, filepath.FromSlash(rel))
 
 	if runtime.GOOS == "windows" {
 		if wslOK() {
 			wslRoot := windowsToWSLPath(root)
-			cmd := exec.Command("wsl", "-e", "bash", "-lc", "cd '"+wslRoot+"' && bash scripts/test-curl-installer.sh")
+			cmd := exec.Command("wsl", "-e", "bash", "-lc", "cd '"+wslRoot+"' && bash "+rel)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
-				t.Fatalf("wsl test-curl-installer: %v\n%s", err, out)
+				t.Fatalf("wsl %s: %v\n%s", rel, err, out)
 			}
 			t.Log(string(out))
 			return
 		}
-		// Git Bash fallback when WSL optional component is not installed.
 		bash, err := exec.LookPath("bash")
 		if err != nil {
-			t.Skip("windows without working WSL/bash: run scripts/test-curl-installer.sh on Linux")
+			t.Skip("windows without working WSL/bash: run " + rel + " on Linux")
 		}
 		cmd := exec.Command(bash, script)
 		cmd.Dir = root
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			t.Fatalf("git-bash test-curl-installer: %v\n%s", err, out)
+			t.Fatalf("git-bash %s: %v\n%s", rel, err, out)
 		}
 		t.Log(string(out))
 		return
@@ -44,7 +54,7 @@ func TestCurlInstallerSelfContained(t *testing.T) {
 	cmd.Dir = root
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("test-curl-installer: %v\n%s", err, out)
+		t.Fatalf("%s: %v\n%s", rel, err, out)
 	}
 	t.Log(string(out))
 }

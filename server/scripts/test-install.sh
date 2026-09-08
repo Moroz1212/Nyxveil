@@ -36,6 +36,7 @@ required=(
   scripts/make-release-manifest.go
   scripts/test-install.sh
   scripts/test-curl-installer.sh
+  scripts/test-installer-management-assets.sh
   scripts/serv_wrappers.sh
   README.md
   THIRD_PARTY_CORE.md
