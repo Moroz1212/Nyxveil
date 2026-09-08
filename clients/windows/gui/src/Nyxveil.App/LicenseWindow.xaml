@@ -1,44 +1,100 @@
 <Window x:Class="Nyxveil.App.LicenseWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        xmlns:controls="clr-namespace:Nyxveil.App.Controls"
         Title="Nyxveil — Активация"
-        Height="420" Width="420"
+        Width="420" Height="720"
+        MinWidth="400" MinHeight="640"
         WindowStartupLocation="CenterScreen"
-        Background="{StaticResource Bg}"
-        Foreground="{StaticResource Fg}"
+        WindowStyle="None"
+        ResizeMode="CanMinimize"
+        Background="{StaticResource BgDeep}"
+        Foreground="{StaticResource FgPrimary}"
         FontFamily="Segoe UI Variable, Segoe UI"
-        ResizeMode="NoResize">
-  <Grid Margin="28">
-    <Grid.RowDefinitions>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="*"/>
-      <RowDefinition Height="Auto"/>
-    </Grid.RowDefinitions>
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Display"
+        TextOptions.TextRenderingMode="ClearType">
+  <shell:WindowChrome.WindowChrome>
+    <shell:WindowChrome CaptionHeight="0"
+                        ResizeBorderThickness="0"
+                        GlassFrameThickness="0"
+                        CornerRadius="0"
+                        UseAeroCaptionButtons="False"/>
+  </shell:WindowChrome.WindowChrome>
 
-    <TextBlock Grid.Row="0" Text="Nyxveil" FontSize="28" FontWeight="SemiBold" Margin="0,0,0,8"/>
-    <TextBlock Grid.Row="1" Text="Первый запуск — введите лицензию"
-               Opacity="0.75" Margin="0,0,0,24" TextWrapping="Wrap"/>
+  <Border BorderBrush="{StaticResource BorderGlass}" BorderThickness="1"
+          Background="{StaticResource BgDeep}">
+    <Grid>
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+      </Grid.RowDefinitions>
 
-    <TextBlock Grid.Row="2" Text="Адрес Control Plane" Margin="0,0,0,6" Opacity="0.85"/>
-    <TextBox x:Name="CpUrlBox" Grid.Row="3" Height="36" Margin="0,0,0,16"
-             Padding="8,6" FontSize="14" Background="#1A222C" Foreground="{StaticResource Fg}"
-             BorderBrush="#2A3542" CaretBrush="{StaticResource Fg}"/>
+      <controls:TitleBarChrome x:Name="TitleBar"
+                               Grid.Row="0"
+                               MinimizeRequested="TitleBar_OnMinimize"
+                               MaximizeRequested="TitleBar_OnMaximize"
+                               CloseRequested="TitleBar_OnClose"
+                               DragRequested="TitleBar_OnDrag"/>
 
-    <TextBlock Grid.Row="4" Text="Лицензионный ключ" Margin="0,0,0,6" Opacity="0.85"/>
-    <TextBox x:Name="LicenseBox" Grid.Row="5" Height="36" Margin="0,0,0,12"
-             Padding="8,6" FontSize="14" Background="#1A222C" Foreground="{StaticResource Fg}"
-             BorderBrush="#2A3542" CaretBrush="{StaticResource Fg}"/>
+      <Grid Grid.Row="1">
+        <Image Source="/Assets/Backgrounds/hero.png"
+               Stretch="UniformToFill" VerticalAlignment="Top" HorizontalAlignment="Center"
+               RenderOptions.BitmapScalingMode="HighQuality"/>
+        <Border>
+          <Border.Background>
+            <LinearGradientBrush StartPoint="0.5,0" EndPoint="0.5,1">
+              <GradientStop Color="#18050A10" Offset="0"/>
+              <GradientStop Color="#55061018" Offset="0.42"/>
+              <GradientStop Color="#D2061018" Offset="0.68"/>
+              <GradientStop Color="#FF061018" Offset="1"/>
+            </LinearGradientBrush>
+          </Border.Background>
+        </Border>
 
-    <TextBlock x:Name="ErrorText" Grid.Row="6" Foreground="#E57373"
-               TextWrapping="Wrap" VerticalAlignment="Top" FontSize="12"/>
+        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="18,16,18,20">
+          <StackPanel>
+            <TextBlock Text="Nyxveil" Style="{StaticResource BrandWordmark}" FontSize="40"/>
+            <TextBlock Text="С  В  О  Б  О  Д  А     З  А     П  Р  Е  Д  Е  Л  А  М  И"
+                       Style="{StaticResource BrandTagline}" Margin="1,4,0,18"/>
 
-    <Button x:Name="ActivateButton" Grid.Row="7" Content="ПРОДОЛЖИТЬ" Height="44"
-            FontSize="15" FontWeight="SemiBold" Click="ActivateButton_OnClick"
-            Background="{StaticResource Accent}" Foreground="White" BorderThickness="0"/>
-  </Grid>
+            <Border Style="{StaticResource GlassCard}" Margin="0,8,0,0">
+              <StackPanel>
+                <TextBlock Text="Добро пожаловать в Nyxveil"
+                           FontSize="20" FontWeight="SemiBold"
+                           Foreground="{StaticResource FgPrimary}"
+                           TextWrapping="Wrap" Margin="0,0,0,8"/>
+                <TextBlock Text="Введите данные лицензии, чтобы активировать клиент."
+                           Foreground="{StaticResource FgMuted}"
+                           TextWrapping="Wrap" Margin="0,0,0,18" FontSize="13"/>
+
+                <TextBlock Text="Адрес Control Plane" Style="{StaticResource SectionLabel}" Margin="0,0,0,6"/>
+                <TextBox x:Name="CpUrlBox" Height="40" Margin="0,0,0,14"
+                         Padding="10,8" FontSize="14" VerticalContentAlignment="Center"/>
+
+                <TextBlock Text="Лицензионный ключ" Style="{StaticResource SectionLabel}" Margin="0,0,0,6"/>
+                <TextBox x:Name="LicenseBox" Height="40" Margin="0,0,0,14"
+                         Padding="10,8" FontSize="14" VerticalContentAlignment="Center"/>
+
+                <StackPanel x:Name="BusyPanel" Orientation="Horizontal" Margin="0,0,0,10" Visibility="Collapsed">
+                  <ProgressBar Width="22" Height="22" IsIndeterminate="True"
+                               VerticalAlignment="Center" Margin="0,0,10,0"/>
+                  <TextBlock Text="Проверка..." Foreground="{StaticResource AccentCyan}"
+                             VerticalAlignment="Center" FontSize="13"/>
+                </StackPanel>
+
+                <TextBlock x:Name="ErrorText" Foreground="#E57373"
+                           TextWrapping="Wrap" FontSize="13" Margin="0,0,0,12" MinHeight="20"/>
+
+                <Button x:Name="ActivateButton" Content="Продолжить"
+                        Style="{StaticResource CtaButton}" Click="ActivateButton_OnClick"/>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+        </ScrollViewer>
+      </Grid>
+    </Grid>
+  </Border>
 </Window>

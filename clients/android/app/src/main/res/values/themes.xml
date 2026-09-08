@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Nyxveil" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@color/nyxveil_navy</item>
+        <item name="android:navigationBarColor">@color/nyxveil_navy</item>
+        <item name="android:windowBackground">@color/nyxveil_navy</item>
+        <item name="android:colorPrimary">@color/nyxveil_teal</item>
+        <item name="android:colorAccent">@color/nyxveil_cyan</item>
+        <item name="android:textColorPrimary">@color/nyxveil_on_dark</item>
+        <item name="android:textColorSecondary">@color/nyxveil_muted</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <style name="Theme.Nyxveil.Splash" parent="Theme.Nyxveil">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+    </style>
+</resources>

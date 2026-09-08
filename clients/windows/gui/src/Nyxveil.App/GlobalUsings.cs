@@ -1,0 +1,19 @@
+// Prefer WPF types when WinForms/System.Drawing is referenced for NotifyIcon.
+global using Application = System.Windows.Application;
+global using UserControl = System.Windows.Controls.UserControl;
+global using Control = System.Windows.Controls.Control;
+global using Brush = System.Windows.Media.Brush;
+global using Brushes = System.Windows.Media.Brushes;
+global using Color = System.Windows.Media.Color;
+global using ColorConverter = System.Windows.Media.ColorConverter;
+global using Point = System.Windows.Point;
+global using Rectangle = System.Windows.Shapes.Rectangle;
+global using HorizontalAlignment = System.Windows.HorizontalAlignment;
+global using VerticalAlignment = System.Windows.VerticalAlignment;
+global using MessageBox = System.Windows.MessageBox;
+global using Clipboard = System.Windows.Clipboard;
+global using Button = System.Windows.Controls.Button;
+global using Label = System.Windows.Controls.Label;
+global using Panel = System.Windows.Controls.Panel;
+global using Image = System.Windows.Controls.Image;
+global using Size = System.Windows.Size;

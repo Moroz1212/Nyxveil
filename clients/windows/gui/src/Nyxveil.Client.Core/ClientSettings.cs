@@ -15,6 +15,8 @@ public sealed class ClientSettings
     public bool StartMinimized { get; set; }
     public bool ShowNotifications { get; set; } = true;
     public bool LogsAutoScroll { get; set; } = true;
+    /// <summary>One-time balloon: close X hides to tray.</summary>
+    public bool TrayHintShown { get; set; }
 
     public static string SettingsPath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),

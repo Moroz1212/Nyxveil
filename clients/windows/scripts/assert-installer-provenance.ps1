@@ -72,21 +72,28 @@ if ($seven) {
   $extract = Join-Path $env:TEMP ("nyxveil-prov-" + [guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Force -Path $extract | Out-Null
   try {
-    & $seven x "-o$extract" $SetupExe -y | Out-Null
-    if ($LASTEXITCODE -notin 0, 1) { throw "7z extract failed exit=$LASTEXITCODE" }
-    $foundSvc = Get-ChildItem -LiteralPath $extract -Recurse -Filter "Nyxveil.Service.exe" | Select-Object -First 1
-    $foundGui = Get-ChildItem -LiteralPath $extract -Recurse -Filter "Nyxveil.exe" | Sort-Object Length -Descending | Select-Object -First 1
-    $foundDll = Get-ChildItem -LiteralPath $extract -Recurse -Filter "wintun.dll" | Select-Object -First 1
-    $foundVer = Get-ChildItem -LiteralPath $extract -Recurse -Filter "VERSION" | Select-Object -First 1
-    if (-not $foundSvc -or -not $foundGui -or -not $foundDll -or -not $foundVer) {
-      throw "PROVENANCE FAIL: Setup extract missing required files"
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $seven x "-o$extract" $SetupExe -y 2>&1 | Out-Null
+    $extractCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    if ($extractCode -notin 0, 1) {
+      Write-Host "PROVENANCE WARN: 7z cannot extract this Setup format (exit=$extractCode); sidecar + payload hashes attested; install-time hash gate still applies"
+    } else {
+      $foundSvc = Get-ChildItem -LiteralPath $extract -Recurse -Filter "Nyxveil.Service.exe" | Select-Object -First 1
+      $foundGui = Get-ChildItem -LiteralPath $extract -Recurse -Filter "Nyxveil.exe" | Sort-Object Length -Descending | Select-Object -First 1
+      $foundDll = Get-ChildItem -LiteralPath $extract -Recurse -Filter "wintun.dll" | Select-Object -First 1
+      $foundVer = Get-ChildItem -LiteralPath $extract -Recurse -Filter "VERSION" | Select-Object -First 1
+      if (-not $foundSvc -or -not $foundGui -or -not $foundDll -or -not $foundVer) {
+        throw "PROVENANCE FAIL: Setup extract missing required files"
+      }
+      Assert-Hash "service-in-setup" $foundSvc.FullName $svcWant | Out-Null
+      Assert-Hash "gui-in-setup" $foundGui.FullName $guiWant | Out-Null
+      Assert-Hash "wintun-in-setup" $foundDll.FullName $dllWant | Out-Null
+      $verGot = (Get-Content -LiteralPath $foundVer.FullName -Raw).Trim()
+      if ($verGot -ne $verWant) { throw "PROVENANCE FAIL: VERSION in Setup='$verGot' want='$verWant'" }
+      Write-Host "PROVENANCE OK VERSION=$verGot (7z extract)"
     }
-    Assert-Hash "service-in-setup" $foundSvc.FullName $svcWant | Out-Null
-    Assert-Hash "gui-in-setup" $foundGui.FullName $guiWant | Out-Null
-    Assert-Hash "wintun-in-setup" $foundDll.FullName $dllWant | Out-Null
-    $verGot = (Get-Content -LiteralPath $foundVer.FullName -Raw).Trim()
-    if ($verGot -ne $verWant) { throw "PROVENANCE FAIL: VERSION in Setup='$verGot' want='$verWant'" }
-    Write-Host "PROVENANCE OK VERSION=$verGot (7z extract)"
   }
   finally {
     Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue

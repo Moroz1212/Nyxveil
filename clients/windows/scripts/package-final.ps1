@@ -17,7 +17,7 @@ $SetupOut = Join-Path $Dist "Nyxveil-Setup-v$Ver.exe"
 $ExpectedFrozen = "7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b"
 
 # Never overwrite previously shipped installers.
-foreach ($keep in @("1.0.1","1.0.2","1.0.3","1.0.4","1.0.5","1.0.6","1.0.7","1.0.8","1.0.9","1.0.10","1.0.11","1.1.0")) {
+foreach ($keep in @("1.0.1","1.0.2","1.0.3","1.0.4","1.0.5","1.0.6","1.0.7","1.0.8","1.0.9","1.0.10","1.0.11","1.1.0","1.1.1")) {
   $PrevSetup = Join-Path $Dist "Nyxveil-Setup-v$keep.exe"
   if ($Ver -ne $keep -and (Test-Path $PrevSetup)) {
     Write-Host "Keeping prior artifact: $PrevSetup"

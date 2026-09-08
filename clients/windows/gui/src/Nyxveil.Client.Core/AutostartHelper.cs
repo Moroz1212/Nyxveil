@@ -17,7 +17,7 @@ public static class AutostartHelper
             var exe = Environment.ProcessPath;
             if (string.IsNullOrEmpty(exe))
                 return;
-            key.SetValue(ValueName, "\"" + exe + "\"");
+            key.SetValue(ValueName, "\"" + exe + "\" --startup");
         }
         else
         {

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="nyxveil_navy">#FF0B1220</color>
+    <color name="nyxveil_navy_elevated">#FF121A2B</color>
+    <color name="nyxveil_teal">#FF2DD4BF</color>
+    <color name="nyxveil_cyan">#FF22D3EE</color>
+    <color name="nyxveil_on_dark">#FFE8EEF7</color>
+    <color name="nyxveil_muted">#FF94A3B8</color>
+    <color name="ic_launcher_background">#FF0B1220</color>
+    <color name="notification_icon_tint">#FF2DD4BF</color>
+</resources>

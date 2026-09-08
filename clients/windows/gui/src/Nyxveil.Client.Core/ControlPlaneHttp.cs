@@ -15,7 +15,7 @@ public static class ControlPlaneHttp
         http.BaseAddress = baseAddress;
         http.Timeout = TimeSpan.FromSeconds(60);
         http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("Nyxveil-Windows/1.1.1");
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("Nyxveil-Windows/1.1.2");
         return http;
     }
 

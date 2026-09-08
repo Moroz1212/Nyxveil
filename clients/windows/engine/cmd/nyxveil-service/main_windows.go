@@ -29,7 +29,7 @@ import (
 
 const (
 	serviceName     = "NyxveilClientService"
-	clientVer       = "1.1.1"
+	clientVer       = "1.1.2"
 	coreVer         = "1.0.0"
 	ticketWaitLimit = 2 * time.Minute
 )

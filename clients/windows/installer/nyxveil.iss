@@ -1,10 +1,10 @@
-; Nyxveil Windows Client 1.1.1 — Inno Setup (fail-closed)
-; Output: Nyxveil-Setup-v1.1.1.exe
+; Nyxveil Windows Client 1.1.2 — Inno Setup (fail-closed)
+; Output: Nyxveil-Setup-v1.1.2.exe
 ; Do not overwrite older Setup artifacts.
 ; Authenticode: NOT SIGNED (expected SmartScreen warning)
 
 #define MyAppName "Nyxveil"
-#define MyAppVersion "1.1.1"
+#define MyAppVersion "1.1.2"
 #define MyAppPublisher "Nyxveil"
 #define MyAppExeName "Nyxveil.exe"
 #define ServiceExeName "Nyxveil.Service.exe"
@@ -26,7 +26,12 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
+SetupIconFile=..\..\..\Assets\Branding\Windows\nyxveil.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayName={#MyAppName}
+VersionInfoVersion={#MyAppVersion}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoProductName={#MyAppName}
 CloseApplications=force
 RestartApplications=no
 
@@ -35,7 +40,7 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
 Source: "..\dist\payload\gui\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -47,8 +52,8 @@ Source: "..\VERSION"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "Nyxveil VPN"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "Nyxveil VPN"; Tasks: desktopicon
 
 [Run]
 ; Post-install GUI must run as ORIGINAL interactive user (not elevated Setup token).
@@ -214,8 +219,16 @@ function InitializeUninstall(): Boolean;
 var
   ResultCode: Integer;
   BinPath: String;
+  GuiPath: String;
 begin
   GUninstallCleanupOK := False;
+  { Ask running GUI/tray to disconnect via IPC and exit before service stop. }
+  GuiPath := ExpandConstant('{app}\{#MyAppExeName}');
+  if FileExists(GuiPath) then
+  begin
+    Exec(GuiPath, '--quit', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Sleep(1500);
+  end;
   Exec('sc.exe', 'stop {#ServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if not WaitServiceStopped('{#ServiceName}', 30000) then
   begin

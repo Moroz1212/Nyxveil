@@ -40,7 +40,7 @@ public sealed class ClientSessionController : IAsyncDisposable
         _shell.Logs.AutoScroll = settings.LogsAutoScroll;
 
         var ver = typeof(ClientSessionController).Assembly.GetName().Version;
-        _shell.FooterVersion = ver is null ? "Nyxveil 1.1.1" : $"Nyxveil {ver.Major}.{ver.Minor}.{ver.Build}";
+        _shell.FooterVersion = ver is null ? "Nyxveil 1.1.2" : $"Nyxveil {ver.Major}.{ver.Minor}.{ver.Build}";
         _shell.More.About =
             $"{_shell.FooterVersion}\nПротокол: Nyxveil NVP/1\nCore: 1.0.0 (Frozen)\n" +
             $"CP: {settings.GetControlPlaneHost()}\n" +
@@ -321,6 +321,51 @@ public sealed class ClientSessionController : IAsyncDisposable
             _busy = false;
             _shell.Connection.CtaEnabled = true;
         }
+    }
+
+    /// <summary>
+    /// Cancel/connect teardown via existing Disconnect IPC, then wait until idle or timeout.
+    /// Does not touch routes/DNS/Wintun — service owns teardown.
+    /// </summary>
+    public async Task<bool> DisconnectAndWaitAsync(TimeSpan timeout)
+    {
+        var st = _shell.Connection.EngineState;
+        if (!ConnectionStateMapper.IsConnected(st) && !ConnectionStateMapper.IsBusy(st))
+            return true;
+
+        try
+        {
+            if (ConnectionStateMapper.IsBusy(st) && !ConnectionStateMapper.IsConnected(st))
+            {
+                try
+                {
+                    if (_pipe?.IsConnected == true)
+                        await _pipe.SendCancelAsync();
+                }
+                catch { /* ignore */ }
+            }
+
+            await DisconnectAsync();
+        }
+        catch
+        {
+            return false;
+        }
+
+        var sw = Stopwatch.StartNew();
+        while (sw.Elapsed < timeout)
+        {
+            var now = ConnectionStateMapper.Normalize(_shell.Connection.EngineState);
+            if (now is "Disconnected" or "Error")
+                return now == "Disconnected" || now == "Error";
+            if (!ConnectionStateMapper.IsConnected(now) && !ConnectionStateMapper.IsBusy(now))
+                return true;
+            await Task.Delay(200).ConfigureAwait(true);
+        }
+
+        var final = ConnectionStateMapper.Normalize(_shell.Connection.EngineState);
+        return final is "Disconnected" or "Error"
+               || (!ConnectionStateMapper.IsConnected(final) && !ConnectionStateMapper.IsBusy(final));
     }
 
     public string BuildDiagnosticsClipboard() =>

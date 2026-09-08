@@ -33,7 +33,7 @@ public sealed class AppShellViewModel : ObservableObject
     public SettingsViewModel Settings { get; } = new();
     public MoreViewModel More { get; } = new();
 
-    private string _footerVersion = "Nyxveil 1.1.1";
+    private string _footerVersion = "Nyxveil 1.1.2";
     public string FooterVersion { get => _footerVersion; set => Set(ref _footerVersion, value); }
 
     private string _healthText = "Служба недоступна";

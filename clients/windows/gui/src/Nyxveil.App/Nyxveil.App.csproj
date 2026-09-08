@@ -7,12 +7,22 @@
     <UseWPF>true</UseWPF>
     <RootNamespace>Nyxveil.App</RootNamespace>
     <AssemblyName>Nyxveil</AssemblyName>
-    <Version>1.1.1</Version>
-    <ApplicationIcon />
+    <Version>1.1.2</Version>
+    <!-- Repo-root approved Windows multi-size icon (do not regenerate). -->
+    <ApplicationIcon>..\..\..\..\..\Assets\Branding\Windows\nyxveil.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <UseWindowsForms>true</UseWindowsForms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- Keep ico available as Content for NotifyIcon / window Icon pack URI fallback. -->
+    <Content Include="..\..\..\..\..\Assets\Branding\Windows\nyxveil.ico"
+             Link="Assets\Branding\Windows\nyxveil.ico"
+             CopyToOutputDirectory="PreserveNewest"
+             ExcludeFromSingleFile="false" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Nyxveil.Client.Core\Nyxveil.Client.Core.csproj" />
     <ProjectReference Include="..\Nyxveil.Client.Ipc\Nyxveil.Client.Ipc.csproj" />
