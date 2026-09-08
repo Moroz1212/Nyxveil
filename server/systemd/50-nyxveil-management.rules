@@ -7,14 +7,15 @@ polkit.addRule(function (action, subject) {
     if (action.id === "org.freedesktop.systemd1.manage-units" ||
         action.id === "org.freedesktop.systemd1.manage-unit-files") {
         var unit = action.lookup("unit");
-        if (unit === "nyxveil-server.service" || unit === "nyxveil-update.service") {
+        if (unit === "nyxveil-server.service") {
+            return polkit.Result.YES;
+        }
+        if (unit === "nyxveil-update.service") {
             return polkit.Result.YES;
         }
     }
     if (action.id === "org.freedesktop.login1.reboot" ||
-        action.id === "org.freedesktop.login1.reboot-multiple-sessions" ||
-        action.id === "org.freedesktop.login1.power-off" ||
-        action.id === "org.freedesktop.login1.power-off-multiple-sessions") {
+        action.id === "org.freedesktop.login1.reboot-multiple-sessions") {
         return polkit.Result.YES;
     }
     return undefined;

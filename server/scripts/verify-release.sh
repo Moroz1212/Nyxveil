@@ -30,6 +30,8 @@ REQUIRED=(
   nyxveilctl-linux-arm64
   nyxveil-catalog-verify-linux-arm64
   production-gate.sh
+  nyxveil-update.service
+  50-nyxveil-management.rules
   VERSION
   THIRD_PARTY_CORE.md
   release-manifest-linux-amd64.json
@@ -48,6 +50,8 @@ HASHED=(
   nyxveilctl-linux-arm64
   nyxveil-catalog-verify-linux-arm64
   production-gate.sh
+  nyxveil-update.service
+  50-nyxveil-management.rules
   VERSION
   THIRD_PARTY_CORE.md
   release-manifest-linux-amd64.json
@@ -95,10 +99,14 @@ bash "${ROOT}/scripts/assert-no-crlf.sh" \
   "${DIST}/bootstrap-cli-update.sh" \
   "${DIST}/live-final-update.sh" \
   "${DIST}/production-gate.sh" \
+  "${DIST}/nyxveil-update.service" \
+  "${DIST}/50-nyxveil-management.rules" \
   "${DIST}/linux-amd64/scripts" \
   "${DIST}/linux-arm64/scripts" \
   "${DIST}/linux-amd64/installer" \
-  "${DIST}/linux-arm64/installer"
+  "${DIST}/linux-arm64/installer" \
+  "${DIST}/linux-amd64/systemd" \
+  "${DIST}/linux-arm64/systemd"
 
 
 echo "==> production-gate.sh parses under bash and is executable"

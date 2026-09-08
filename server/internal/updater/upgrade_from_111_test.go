@@ -42,12 +42,14 @@ func TestUpgradeFromReal111OldCtlTo112CompleteRelease(t *testing.T) {
 	}
 
 	payloads := map[string][]byte{
-		"nyxveil-server":         []byte("nyxveil-server-1.1.2"),
-		"nyxveilctl":             []byte("nyxveilctl-1.1.2-full-updater"),
-		"nyxveil-catalog-verify": []byte("nyxveil-catalog-verify-1.1.2"),
-		"production-gate":        []byte("#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n"),
-		"share-version":          []byte("1.1.2\n"),
-		"share-third-party-core": []byte("frozen-core-sha\n"),
+		"nyxveil-server":            []byte("nyxveil-server-1.1.2"),
+		"nyxveilctl":                []byte("nyxveilctl-1.1.2-full-updater"),
+		"nyxveil-catalog-verify":    []byte("nyxveil-catalog-verify-1.1.2"),
+		"production-gate":           []byte("#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n"),
+		"share-version":             []byte("1.1.2\n"),
+		"share-third-party-core":    []byte("frozen-core-sha\n"),
+		"nyxveil-update-service":    []byte("[Unit]\nDescription=Nyxveil signed update (oneshot)\n[Service]\nType=oneshot\nUser=root\nExecStart=/usr/local/sbin/nyxveilctl update\n"),
+		"nyxveil-management-polkit": []byte("polkit.addRule(function(action, subject){ if (subject.user !== \"nyxveil\") return undefined; });\n"),
 	}
 	mux := http.NewServeMux()
 	for name, body := range payloads {
@@ -70,7 +72,8 @@ func TestUpgradeFromReal111OldCtlTo112CompleteRelease(t *testing.T) {
 	}
 	for _, name := range updater.RequiredAssetNames {
 		mode := "0755"
-		if name == "share-version" || name == "share-third-party-core" {
+		switch name {
+		case "share-version", "share-third-party-core", "nyxveil-update-service", "nyxveil-management-polkit":
 			mode = "0644"
 		}
 		manifest.Assets = append(manifest.Assets, updater.Asset{
@@ -115,6 +118,7 @@ func TestUpgradeFromReal111OldCtlTo112CompleteRelease(t *testing.T) {
 	full.ExtraPrev = extraPrev
 	full.StateDir = remap(paths.StateDir)
 	full.EnforceOwnership = func(string) error { return nil }
+	full.DaemonReload = func() error { return nil }
 	if err := full.Apply(manifest, func() bool { return true }); err != nil {
 		t.Fatal(err)
 	}

@@ -15,6 +15,7 @@
 //	  -amd64-server path -amd64-ctl path -amd64-catalog path \
 //	  -arm64-server path -arm64-ctl path -arm64-catalog path \
 //	  -production-gate path -share-version path -share-third-party path \
+//	  -update-service path -management-polkit path \
 //	  [-base-url https://github.com/org/repo/releases/download/server-v1.1.2]
 package main
 
@@ -49,6 +50,8 @@ func main() {
 	productionGate := flag.String("production-gate", "", "path to production-gate.sh")
 	shareVersion := flag.String("share-version", "", "path to VERSION share file")
 	shareThirdParty := flag.String("share-third-party", "", "path to THIRD_PARTY_CORE.md")
+	updateService := flag.String("update-service", "", "path to nyxveil-update.service")
+	managementPolkit := flag.String("management-polkit", "", "path to 50-nyxveil-management.rules")
 	flag.Parse()
 
 	if strings.TrimSpace(*version) == "" {
@@ -84,18 +87,21 @@ func main() {
 			fmt.Fprintf(os.Stderr, "sign-release: skip linux/%s (binary paths not set)\n", s.goArch)
 			continue
 		}
-		if *productionGate == "" || *shareVersion == "" || *shareThirdParty == "" {
-			fatal("production-gate, share-version, and share-third-party are required")
+		if *productionGate == "" || *shareVersion == "" || *shareThirdParty == "" ||
+			*updateService == "" || *managementPolkit == "" {
+			fatal("production-gate, share-version, share-third-party, update-service, and management-polkit are required")
 		}
 		if err := writeManifest(*outDir, *version, s.goArch, *baseURL, *minCore, uint16(*minProto),
-			s.server, s.ctl, s.catalog, *productionGate, *shareVersion, *shareThirdParty, priv); err != nil {
+			s.server, s.ctl, s.catalog, *productionGate, *shareVersion, *shareThirdParty,
+			*updateService, *managementPolkit, priv); err != nil {
 			fatal("linux/%s: %v", s.goArch, err)
 		}
 	}
 }
 
 func writeManifest(outDir, version, goArch, baseURL, minCore string, minProto uint16,
-	serverPath, ctlPath, catalogPath, gatePath, versionPath, thirdPartyPath string, priv ed25519.PrivateKey) error {
+	serverPath, ctlPath, catalogPath, gatePath, versionPath, thirdPartyPath, updateServicePath, polkitPath string,
+	priv ed25519.PrivateKey) error {
 	type namedPath struct {
 		name        string
 		path        string
@@ -110,6 +116,8 @@ func writeManifest(outDir, version, goArch, baseURL, minCore string, minProto ui
 		{"production-gate", gatePath, baseURL + "/production-gate.sh", paths.ProductionGate(), "0755"},
 		{"share-version", versionPath, baseURL + "/VERSION", paths.ShareVersion(), "0644"},
 		{"share-third-party-core", thirdPartyPath, baseURL + "/THIRD_PARTY_CORE.md", paths.ShareThirdParty(), "0644"},
+		{"nyxveil-update-service", updateServicePath, baseURL + "/nyxveil-update.service", paths.UpdateServiceUnit(), "0644"},
+		{"nyxveil-management-polkit", polkitPath, baseURL + "/50-nyxveil-management.rules", paths.ManagementPolkitRule(), "0644"},
 	}
 
 	m := &updater.Manifest{

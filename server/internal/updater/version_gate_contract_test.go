@@ -73,20 +73,33 @@ func TestVersionReportJSONShape(t *testing.T) {
 }
 
 func TestBashNProductionAndLiveScripts(t *testing.T) {
+	root := repoRootFromUpdaterTest(t)
+	scripts := []string{
+		"scripts/production-gate.sh",
+		"scripts/live-final-update.sh",
+		"scripts/bootstrap-cli-update.sh",
+	}
+	if runtime.GOOS == "windows" {
+		if !wslAvailable() {
+			t.Skip("WSL required for bash -n on Windows")
+		}
+		for _, rel := range scripts {
+			path := toWSLPath(filepath.Join(root, rel))
+			cmd := exec.Command("wsl", "-e", "bash", "-n", path)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("%s: %v\n%s", rel, err, out)
+			}
+		}
+		return
+	}
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("bash required")
 	}
-	root := repoRootFromUpdaterTest(t)
-	for _, rel := range []string{
-		"scripts/production-gate.sh",
-		"scripts/live-final-update.sh",
-		"scripts/bootstrap-cli-update.sh",
-	} {
+	for _, rel := range scripts {
 		cmd := exec.Command(bash, "-n", filepath.Join(root, rel))
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%s: %v\n%s", rel, err, out)
 		}
 	}
-	_ = runtime.GOOS
 }

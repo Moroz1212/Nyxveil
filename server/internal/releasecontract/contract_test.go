@@ -3,11 +3,13 @@ package releasecontract_test
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/nyxveil/server/internal/updater"
+	"github.com/nyxveil/server/internal/version"
 )
 
 func repoRoot(t *testing.T) string {
@@ -34,6 +36,8 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 		"nyxveilctl-linux-arm64",
 		"nyxveil-catalog-verify-linux-arm64",
 		"production-gate.sh",
+		"nyxveil-update.service",
+		"50-nyxveil-management.rules",
 		"VERSION",
 		"THIRD_PARTY_CORE.md",
 		"release-manifest-linux-amd64.json",
@@ -54,6 +58,9 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 	if !strings.Contains(sign, "production-gate") || !strings.Contains(sign, "share-version") {
 		t.Error("sign-release must include production-gate and share-version assets")
 	}
+	if !strings.Contains(sign, "nyxveil-update-service") || !strings.Contains(sign, "nyxveil-management-polkit") {
+		t.Error("sign-release must include management update unit and polkit assets")
+	}
 	for _, field := range []string{"Destination:", "Mode:", "Required: true"} {
 		if !strings.Contains(sign, field) {
 			t.Errorf("sign-release missing authoritative asset field %s", field)
@@ -61,6 +68,9 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 	}
 	if !strings.Contains(inst, "production-gate") || !strings.Contains(inst, "/usr/local/share/nyxveil") {
 		t.Error("installer must install production-gate under /usr/local/share/nyxveil")
+	}
+	if !strings.Contains(inst, "nyxveil-update.service") || !strings.Contains(inst, "50-nyxveil-management.rules") {
+		t.Error("installer must install management update unit and polkit rule")
 	}
 	if !strings.Contains(inst, "release-manifest-linux-") {
 		t.Error("installer must download release-manifest-linux-${arch}.json")
@@ -81,16 +91,33 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 	}
 }
 
-func TestProductVersionIs118(t *testing.T) {
+func TestProductVersionConsistency(t *testing.T) {
 	root := repoRoot(t)
-	if got := strings.TrimSpace(readFile(t, filepath.Join(root, "VERSION"))); got != "1.1.9" {
-		t.Fatalf("VERSION=%q want 1.1.9", got)
+	want := strings.TrimSpace(readFile(t, filepath.Join(root, "VERSION")))
+	if want != "1.1.9" {
+		t.Fatalf("VERSION=%q want 1.1.9", want)
 	}
-	for _, file := range []string{
-		filepath.Join(root, "internal", "version", "version.go"),
-	} {
-		if !strings.Contains(readFile(t, file), "1.1.9") {
-			t.Errorf("%s does not contain product version 1.1.9", file)
+	if version.ServerVersion != want || version.CLIVersion != want {
+		t.Fatalf("version.go Server=%q CLI=%q want %q", version.ServerVersion, version.CLIVersion, want)
+	}
+
+	checks := []struct {
+		rel   string
+		regex string
+	}{
+		{"internal/version/version.go", `ServerVersion\s*=\s*"` + regexp.QuoteMeta(want) + `"`},
+		{"internal/version/version.go", `CLIVersion\s*=\s*"` + regexp.QuoteMeta(want) + `"`},
+		{"installer/install.sh", `NYXVEIL_VERSION:-` + regexp.QuoteMeta(want) + `}`},
+		{"scripts/live-final-update.sh", `DEFAULT_VERSION="` + regexp.QuoteMeta(want) + `"`},
+		{"scripts/bootstrap-cli-update.sh", `NYXVEIL_BOOTSTRAP_VERSION:-` + regexp.QuoteMeta(want) + `}`},
+		{"scripts/serv_wrappers.sh", `NYXVEIL_BOOTSTRAP_VERSION:-` + regexp.QuoteMeta(want) + `}`},
+		{"scripts/production-gate.sh", `NYXVEIL_EXPECTED_VERSION:-` + regexp.QuoteMeta(want) + `}`},
+	}
+	for _, c := range checks {
+		body := readFile(t, filepath.Join(root, filepath.FromSlash(c.rel)))
+		re := regexp.MustCompile(c.regex)
+		if !re.MatchString(body) {
+			t.Errorf("%s missing product-version pattern %s", c.rel, c.regex)
 		}
 	}
 }
@@ -123,6 +150,31 @@ func TestUpdaterManifestNamesMatchGitHubWorkflow(t *testing.T) {
 		if !strings.Contains(pkg, "rm -f") {
 			t.Fatal("package-release must not emit legacy release-manifest.json")
 		}
+	}
+}
+
+func TestManagementAssetsHaveFixedAllowlist(t *testing.T) {
+	root := repoRoot(t)
+	sign := readFile(t, filepath.Join(root, "scripts", "sign-release.go"))
+	if !strings.Contains(sign, `paths.UpdateServiceUnit()`) || !strings.Contains(sign, `paths.ManagementPolkitRule()`) {
+		t.Fatal("sign-release must use fixed path helpers for management assets")
+	}
+	if !strings.Contains(sign, `"0644"`) {
+		t.Fatal("management assets must be mode 0644")
+	}
+	unit := readFile(t, filepath.Join(root, "systemd", "nyxveil-update.service"))
+	if !strings.Contains(unit, "Type=oneshot") || !strings.Contains(unit, "User=root") {
+		t.Fatal("update unit contract broken")
+	}
+	if !strings.Contains(unit, "ExecStart=/usr/local/sbin/nyxveilctl update") {
+		t.Fatal("update unit ExecStart must be fixed nyxveilctl update")
+	}
+	rule := readFile(t, filepath.Join(root, "systemd", "50-nyxveil-management.rules"))
+	if strings.Contains(rule, "power-off") {
+		t.Fatal("polkit rule must not authorize power-off")
+	}
+	if !strings.Contains(rule, `subject.user !== "nyxveil"`) {
+		t.Fatal("polkit rule must bind nyxveil user")
 	}
 }
 

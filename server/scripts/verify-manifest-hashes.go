@@ -84,6 +84,10 @@ func assetContract(name string) (string, string, error) {
 		return paths.ShareVersion(), "0644", nil
 	case "share-third-party-core":
 		return paths.ShareThirdParty(), "0644", nil
+	case "nyxveil-update-service":
+		return paths.UpdateServiceUnit(), "0644", nil
+	case "nyxveil-management-polkit":
+		return paths.ManagementPolkitRule(), "0644", nil
 	default:
 		return "", "", fmt.Errorf("unknown asset %q", name)
 	}
@@ -103,6 +107,10 @@ func resolveAssetPath(dist, arch, name string) (string, error) {
 		return filepath.Join(dist, "VERSION"), nil
 	case "share-third-party-core":
 		return filepath.Join(dist, "THIRD_PARTY_CORE.md"), nil
+	case "nyxveil-update-service":
+		return filepath.Join(dist, "nyxveil-update.service"), nil
+	case "nyxveil-management-polkit":
+		return filepath.Join(dist, "50-nyxveil-management.rules"), nil
 	default:
 		return "", fmt.Errorf("unknown asset %q", name)
 	}

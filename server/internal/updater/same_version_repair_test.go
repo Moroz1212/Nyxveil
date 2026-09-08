@@ -25,20 +25,24 @@ func newSameVersionFixture(t *testing.T) *sameVersionFixture {
 	t.Helper()
 	root := tempRoot(t)
 	payloads := map[string][]byte{
-		"nyxveil-server":         []byte("server-1.1.2"),
-		"nyxveilctl":             []byte("ctl-1.1.2"),
-		"nyxveil-catalog-verify": []byte("catalog-1.1.2"),
-		"production-gate":        []byte("#!/usr/bin/env bash\nexit 0\n"),
-		"share-version":          []byte("1.1.2\n"),
-		"share-third-party-core": []byte("frozen-core\n"),
+		"nyxveil-server":            []byte("server-1.1.2"),
+		"nyxveilctl":                []byte("ctl-1.1.2"),
+		"nyxveil-catalog-verify":    []byte("catalog-1.1.2"),
+		"production-gate":           []byte("#!/usr/bin/env bash\nexit 0\n"),
+		"share-version":             []byte("1.1.2\n"),
+		"share-third-party-core":    []byte("frozen-core\n"),
+		"nyxveil-update-service":    []byte("[Unit]\nDescription=Nyxveil signed update (oneshot)\n[Service]\nType=oneshot\nUser=root\nExecStart=/usr/local/sbin/nyxveilctl update\n"),
+		"nyxveil-management-polkit": []byte("polkit.addRule(function(action, subject){ if (subject.user !== \"nyxveil\") return undefined; });\n"),
 	}
 	paths := map[string]string{
-		"nyxveil-server":         filepath.Join(root, "usr", "local", "sbin", "nyxveil-server"),
-		"nyxveilctl":             filepath.Join(root, "usr", "local", "sbin", "nyxveilctl"),
-		"nyxveil-catalog-verify": filepath.Join(root, "usr", "local", "sbin", "nyxveil-catalog-verify"),
-		"production-gate":        filepath.Join(root, "usr", "local", "share", "nyxveil", "scripts", "production-gate.sh"),
-		"share-version":          filepath.Join(root, "usr", "local", "share", "nyxveil", "VERSION"),
-		"share-third-party-core": filepath.Join(root, "usr", "local", "share", "nyxveil", "THIRD_PARTY_CORE.md"),
+		"nyxveil-server":            filepath.Join(root, "usr", "local", "sbin", "nyxveil-server"),
+		"nyxveilctl":                filepath.Join(root, "usr", "local", "sbin", "nyxveilctl"),
+		"nyxveil-catalog-verify":    filepath.Join(root, "usr", "local", "sbin", "nyxveil-catalog-verify"),
+		"production-gate":           filepath.Join(root, "usr", "local", "share", "nyxveil", "scripts", "production-gate.sh"),
+		"share-version":             filepath.Join(root, "usr", "local", "share", "nyxveil", "VERSION"),
+		"share-third-party-core":    filepath.Join(root, "usr", "local", "share", "nyxveil", "THIRD_PARTY_CORE.md"),
+		"nyxveil-update-service":    filepath.Join(root, "etc", "systemd", "system", "nyxveil-update.service"),
+		"nyxveil-management-polkit": filepath.Join(root, "etc", "polkit-1", "rules.d", "50-nyxveil-management.rules"),
 	}
 	mux := http.NewServeMux()
 	for name, body := range payloads {
@@ -58,16 +62,19 @@ func newSameVersionFixture(t *testing.T) *sameVersionFixture {
 		Version: "1.1.2", Arch: updater.ArchString(), MinCore: "1.0.0", MinProtocol: 1,
 	}
 	signedDestinations := map[string]string{
-		"nyxveil-server":         "/usr/local/sbin/nyxveil-server",
-		"nyxveilctl":             "/usr/local/sbin/nyxveilctl",
-		"nyxveil-catalog-verify": "/usr/local/sbin/nyxveil-catalog-verify",
-		"production-gate":        "/usr/local/share/nyxveil/scripts/production-gate.sh",
-		"share-version":          "/usr/local/share/nyxveil/VERSION",
-		"share-third-party-core": "/usr/local/share/nyxveil/THIRD_PARTY_CORE.md",
+		"nyxveil-server":            "/usr/local/sbin/nyxveil-server",
+		"nyxveilctl":                "/usr/local/sbin/nyxveilctl",
+		"nyxveil-catalog-verify":    "/usr/local/sbin/nyxveil-catalog-verify",
+		"production-gate":           "/usr/local/share/nyxveil/scripts/production-gate.sh",
+		"share-version":             "/usr/local/share/nyxveil/VERSION",
+		"share-third-party-core":    "/usr/local/share/nyxveil/THIRD_PARTY_CORE.md",
+		"nyxveil-update-service":    "/etc/systemd/system/nyxveil-update.service",
+		"nyxveil-management-polkit": "/etc/polkit-1/rules.d/50-nyxveil-management.rules",
 	}
 	for _, name := range updater.RequiredAssetNames {
 		mode := "0755"
-		if name == "share-version" || name == "share-third-party-core" {
+		switch name {
+		case "share-version", "share-third-party-core", "nyxveil-update-service", "nyxveil-management-polkit":
 			mode = "0644"
 		}
 		m.Assets = append(m.Assets, updater.Asset{
@@ -81,6 +88,7 @@ func newSameVersionFixture(t *testing.T) *sameVersionFixture {
 	u.HTTP = server.Client()
 	u.StateDir = filepath.Join(root, "state")
 	u.EnforceOwnership = func(string) error { return nil }
+	u.DaemonReload = func() error { return nil }
 	u.ExtraBinaries = map[string]string{}
 	u.ExtraPrev = map[string]string{}
 	for _, name := range updater.RequiredAssetNames {
@@ -101,7 +109,8 @@ func (f *sameVersionFixture) installAll(t *testing.T) {
 			t.Fatal(err)
 		}
 		mode := os.FileMode(0o755)
-		if name == "share-version" || name == "share-third-party-core" {
+		switch name {
+		case "share-version", "share-third-party-core", "nyxveil-update-service", "nyxveil-management-polkit":
 			mode = 0o644
 		}
 		if err := os.WriteFile(path, body, mode); err != nil {
@@ -169,6 +178,30 @@ func TestSameVersionRepairFixesMode(t *testing.T) {
 	}
 	if st.Mode().Perm() != 0o755 {
 		t.Fatalf("mode=%04o want 0755", st.Mode().Perm())
+	}
+}
+
+func TestSameVersionRepairInstallsMissingUpdateUnit(t *testing.T) {
+	f := newSameVersionFixture(t)
+	f.installAll(t)
+	if err := os.Remove(f.paths["nyxveil-update-service"]); err != nil {
+		t.Fatal(err)
+	}
+	f.apply(t)
+	if got := string(mustRead(t, f.paths["nyxveil-update-service"])); got != string(f.payloads["nyxveil-update-service"]) {
+		t.Fatalf("update unit=%q", got)
+	}
+}
+
+func TestSameVersionRepairInstallsMissingPolkit(t *testing.T) {
+	f := newSameVersionFixture(t)
+	f.installAll(t)
+	if err := os.Remove(f.paths["nyxveil-management-polkit"]); err != nil {
+		t.Fatal(err)
+	}
+	f.apply(t)
+	if got := string(mustRead(t, f.paths["nyxveil-management-polkit"])); got != string(f.payloads["nyxveil-management-polkit"]) {
+		t.Fatalf("polkit=%q", got)
 	}
 }
 

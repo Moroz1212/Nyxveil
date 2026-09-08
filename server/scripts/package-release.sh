@@ -25,6 +25,8 @@ REQUIRED_UPLOADS=(
   nyxveilctl-linux-arm64
   nyxveil-catalog-verify-linux-arm64
   production-gate.sh
+  nyxveil-update.service
+  50-nyxveil-management.rules
   VERSION
   THIRD_PARTY_CORE.md
   release-manifest-linux-amd64.json
@@ -42,6 +44,8 @@ HASHED_UPLOADS=(
   nyxveilctl-linux-arm64
   nyxveil-catalog-verify-linux-arm64
   production-gate.sh
+  nyxveil-update.service
+  50-nyxveil-management.rules
   VERSION
   THIRD_PARTY_CORE.md
   release-manifest-linux-amd64.json
@@ -71,6 +75,8 @@ package_arch() {
   cp -a "${ROOT}/installer/"*.sh "${dest}/installer/"
   cp -a "${ROOT}/systemd/nyxveil-server.service" "${dest}/systemd/"
   cp -a "${ROOT}/systemd/nyxveil-firewall.service" "${dest}/systemd/"
+  cp -a "${ROOT}/systemd/nyxveil-update.service" "${dest}/systemd/"
+  cp -a "${ROOT}/systemd/50-nyxveil-management.rules" "${dest}/systemd/"
   cp -a "${ROOT}/firewall/nftables-nyxveil.conf" "${dest}/firewall/"
   cp -a "${ROOT}/scripts/"*.sh "${dest}/scripts/"
   # Do not ship sign-release private-key tooling secrets; Go helper is fine to include for rebuilds.
@@ -111,9 +117,18 @@ bash "${ROOT}/scripts/normalize-shell-lf.sh" "${ROOT}/scripts/production-gate.sh
 cp -a "${ROOT}/scripts/production-gate.sh" "${DIST}/production-gate.sh"
 chmod 0755 "${DIST}/production-gate.sh"
 bash "${ROOT}/scripts/normalize-shell-lf.sh" "${DIST}/production-gate.sh"
+cp -a "${ROOT}/systemd/nyxveil-update.service" "${DIST}/nyxveil-update.service"
+cp -a "${ROOT}/systemd/50-nyxveil-management.rules" "${DIST}/50-nyxveil-management.rules"
+chmod 0644 "${DIST}/nyxveil-update.service" "${DIST}/50-nyxveil-management.rules"
+bash "${ROOT}/scripts/normalize-shell-lf.sh" \
+  "${DIST}/nyxveil-update.service" \
+  "${DIST}/50-nyxveil-management.rules"
 cp -a "${ROOT}/VERSION" "${DIST}/VERSION"
 cp -a "${ROOT}/THIRD_PARTY_CORE.md" "${DIST}/THIRD_PARTY_CORE.md"
 chmod 0644 "${DIST}/VERSION" "${DIST}/THIRD_PARTY_CORE.md"
+bash "${ROOT}/scripts/normalize-shell-lf.sh" \
+  "${DIST}/VERSION" \
+  "${DIST}/THIRD_PARTY_CORE.md"
 
 # CLI-first bootstrap and operator final-update wrapper.
 bash "${ROOT}/scripts/normalize-shell-lf.sh" \
@@ -134,6 +149,39 @@ bash "${ROOT}/scripts/assert-no-crlf.sh" \
 # Sign manifests (fail-closed unless SKIP_SIGN=1 for local unsigned experiments).
 if [[ "${SKIP_SIGN:-0}" == "1" ]]; then
   echo "SKIP_SIGN=1 — not writing signed manifests" >&2
+  # Unsigned local packages cannot claim production upload completeness.
+  REQUIRED_UPLOADS=(
+    nyxveil-server-linux-amd64
+    nyxveilctl-linux-amd64
+    nyxveil-catalog-verify-linux-amd64
+    nyxveil-server-linux-arm64
+    nyxveilctl-linux-arm64
+    nyxveil-catalog-verify-linux-arm64
+    production-gate.sh
+    nyxveil-update.service
+    50-nyxveil-management.rules
+    VERSION
+    THIRD_PARTY_CORE.md
+    bootstrap-cli-update.sh
+    live-final-update.sh
+    SHA256SUMS
+    "UPLOAD-LIST-server-v${VERSION}.txt"
+  )
+  HASHED_UPLOADS=(
+    nyxveil-server-linux-amd64
+    nyxveilctl-linux-amd64
+    nyxveil-catalog-verify-linux-amd64
+    nyxveil-server-linux-arm64
+    nyxveilctl-linux-arm64
+    nyxveil-catalog-verify-linux-arm64
+    production-gate.sh
+    nyxveil-update.service
+    50-nyxveil-management.rules
+    VERSION
+    THIRD_PARTY_CORE.md
+    bootstrap-cli-update.sh
+    live-final-update.sh
+  )
 else
   go run ./scripts/sign-release.go \
     -version "${VERSION}" \
@@ -147,7 +195,9 @@ else
     -arm64-catalog "${BIN_SRC}/nyxveil-catalog-verify-linux-arm64" \
     -production-gate "${DIST}/production-gate.sh" \
     -share-version "${DIST}/VERSION" \
-    -share-third-party "${DIST}/THIRD_PARTY_CORE.md"
+    -share-third-party "${DIST}/THIRD_PARTY_CORE.md" \
+    -update-service "${DIST}/nyxveil-update.service" \
+    -management-polkit "${DIST}/50-nyxveil-management.rules"
 fi
 
 # Exact flat files that must be uploaded for this server release. Keep this
@@ -169,7 +219,9 @@ bash "${ROOT}/scripts/normalize-shell-lf.sh" \
   "${UPLOAD_LIST}" \
   "${DIST}/bootstrap-cli-update.sh" \
   "${DIST}/live-final-update.sh" \
-  "${DIST}/production-gate.sh"
+  "${DIST}/production-gate.sh" \
+  "${DIST}/nyxveil-update.service" \
+  "${DIST}/50-nyxveil-management.rules"
 bash "${ROOT}/scripts/assert-no-crlf.sh" \
   "${DIST}/VERSION" \
   "${DIST}/SHA256SUMS" \
@@ -177,8 +229,11 @@ bash "${ROOT}/scripts/assert-no-crlf.sh" \
   "${DIST}/bootstrap-cli-update.sh" \
   "${DIST}/live-final-update.sh" \
   "${DIST}/production-gate.sh" \
+  "${DIST}/nyxveil-update.service" \
+  "${DIST}/50-nyxveil-management.rules" \
   "${DIST}/linux-amd64/scripts" "${DIST}/linux-arm64/scripts" \
-  "${DIST}/linux-amd64/installer" "${DIST}/linux-arm64/installer"
+  "${DIST}/linux-amd64/installer" "${DIST}/linux-arm64/installer" \
+  "${DIST}/linux-amd64/systemd" "${DIST}/linux-arm64/systemd"
 
 # Validate checksum list parses under Linux-style sha256sum -c after CRLF strip.
 (
@@ -201,6 +256,8 @@ Canonical release assets (exact names):
   nyxveilctl-linux-{amd64,arm64}
   nyxveil-catalog-verify-linux-{amd64,arm64}
   production-gate.sh
+  nyxveil-update.service
+  50-nyxveil-management.rules
   VERSION
   THIRD_PARTY_CORE.md
   release-manifest-linux-{amd64,arm64}.json
@@ -210,6 +267,10 @@ Canonical release assets (exact names):
 
 After update, production gate MUST exist at:
   /usr/local/share/nyxveil/scripts/production-gate.sh
+
+Management prerequisites (required for Control Plane UpdateNodeLatest):
+  /etc/systemd/system/nyxveil-update.service
+  /etc/polkit-1/rules.d/50-nyxveil-management.rules
 
 Trust model:
   Cryptographic authenticity = embedded Ed25519 UpdatePublicKey inside

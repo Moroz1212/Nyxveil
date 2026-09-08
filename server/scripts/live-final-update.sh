@@ -22,7 +22,7 @@ set -euo pipefail
 umask 077
 
 readonly PUB_HEX="${NYXVEIL_UPDATE_PUB_HEX:-caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af}"
-readonly DEFAULT_VERSION="1.1.7"
+readonly DEFAULT_VERSION="1.1.9"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 
 VERSION=""
@@ -42,7 +42,7 @@ usage() {
   cat <<'EOF'
 Usage: live-final-update.sh [options]
 
-  --version X.Y.Z   Target version (default: fetch VERSION from --base-url, else 1.1.7)
+  --version X.Y.Z   Target version (default: fetch VERSION from --base-url, else 1.1.9)
   --base-url URL    Release asset base URL (online mode)
   --local-dir DIR   Flat release directory (no network; still signature-verifies)
   --verify-chain    Download/verify trust chain only; do not modify the system

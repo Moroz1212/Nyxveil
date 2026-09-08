@@ -195,7 +195,7 @@ case "${MODE}" in
   *) fail "mode" "GATE_MODE must be source|local|live" ;;
 esac
 
-EXPECTED_VERSION="${NYXVEIL_EXPECTED_VERSION:-1.1.7}"
+EXPECTED_VERSION="${NYXVEIL_EXPECTED_VERSION:-1.1.9}"
 VERSION="$(tr -d '\r[:space:]' < "${ROOT}/VERSION" 2>/dev/null || true)"
 if [[ -z "${VERSION}" ]]; then
   # Installed layout: prefer share VERSION; fall back to binary --version output later.
@@ -226,6 +226,10 @@ if [[ "${MODE}" == "source" ]]; then
     fail "production_gate_asset" "production-gate.sh missing from release"
   [[ -x "${DIST}/production-gate.sh" ]] ||
     fail "production_gate_mode" "production-gate.sh must be executable"
+  [[ -f "${DIST}/nyxveil-update.service" ]] ||
+    fail "update_unit_asset" "nyxveil-update.service missing from release"
+  [[ -f "${DIST}/50-nyxveil-management.rules" ]] ||
+    fail "management_polkit_asset" "50-nyxveil-management.rules missing from release"
   chmod 0755 "${DIST}/nyxveil-catalog-verify-linux-amd64" "${DIST}/nyxveil-catalog-verify-linux-arm64" 2>/dev/null || true
   if command -v go >/dev/null 2>&1; then
     (cd "${ROOT}" && go test ./internal/catalogverify/ ./internal/runtime/ ./internal/controlplane/ -count=1 \
@@ -309,6 +313,36 @@ SERVER_VER_OUT="$("${SERVER}" --version 2>&1 || true)"
 printf '%s\n' "${SERVER_VER_OUT}" | sanitize >>"${WORK}/versions.txt"
 echo "${SERVER_VER_OUT}" | grep -Eq "nyxveil-server ${EXPECTED_VERSION}([[:space:]]|$)" ||
   fail "server_version" "nyxveil-server --version mismatch: ${SERVER_VER_OUT}"
+
+UPDATE_UNIT="${NYXVEIL_UPDATE_UNIT:-/etc/systemd/system/nyxveil-update.service}"
+POLKIT_RULE="${NYXVEIL_POLKIT_RULE:-/etc/polkit-1/rules.d/50-nyxveil-management.rules}"
+[[ -f "${UPDATE_UNIT}" ]] || fail "update_unit" "${UPDATE_UNIT} missing"
+[[ -f "${POLKIT_RULE}" ]] || fail "management_polkit" "${POLKIT_RULE} missing"
+UNIT_MODE="$(stat -c '%a' "${UPDATE_UNIT}" 2>/dev/null || true)"
+RULE_MODE="$(stat -c '%a' "${POLKIT_RULE}" 2>/dev/null || true)"
+[[ "${UNIT_MODE}" == "644" ]] || fail "update_unit_mode" "want 644 got '${UNIT_MODE}'"
+[[ "${RULE_MODE}" == "644" ]] || fail "management_polkit_mode" "want 644 got '${RULE_MODE}'"
+grep -q 'Type=oneshot' "${UPDATE_UNIT}" || fail "update_unit_type" "Type=oneshot required"
+grep -q 'User=root' "${UPDATE_UNIT}" || fail "update_unit_user" "User=root required"
+grep -Eq 'ExecStart=.*/nyxveilctl[[:space:]]+update([[:space:]]|$)' "${UPDATE_UNIT}" ||
+  fail "update_unit_exec" "ExecStart must be fixed nyxveilctl update"
+if grep -Eqi 'ANY|shell|sudo|ExecStart=.*(bash|sh|/bin/)' "${UPDATE_UNIT}"; then
+  fail "update_unit_scope" "update unit must not allow arbitrary exec"
+fi
+grep -q 'subject.user !== "nyxveil"' "${POLKIT_RULE}" || fail "polkit_subject" "rule must bind nyxveil user"
+grep -q 'nyxveil-server.service' "${POLKIT_RULE}" || fail "polkit_server_unit" "server restart grant missing"
+grep -q 'nyxveil-update.service' "${POLKIT_RULE}" || fail "polkit_update_unit" "update unit grant missing"
+if grep -Eqi 'org\.freedesktop\.systemd1\.manage-units.*\*|unit === "\*"' "${POLKIT_RULE}"; then
+  fail "polkit_broad" "polkit must not authorize arbitrary units"
+fi
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl cat nyxveil-update.service >/dev/null 2>&1 ||
+    fail "update_unit_systemd" "systemd does not see nyxveil-update.service (daemon-reload?)"
+fi
+SHARE_VER="$(tr -d '\r[:space:]' < /usr/local/share/nyxveil/VERSION 2>/dev/null || true)"
+[[ "${SHARE_VER}" == "${EXPECTED_VERSION}" ]] ||
+  fail "share_version" "share VERSION='${SHARE_VER}' want ${EXPECTED_VERSION}"
+record "management_prerequisites=update_unit+polkit_ok"
 
 [[ -s "${CONFIG}" ]] || fail "config" "${CONFIG} missing or empty"
 [[ -s "${STATE_DIR}/node.key" ]] || fail "identity" "node.key missing or empty"

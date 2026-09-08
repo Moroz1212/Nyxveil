@@ -27,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -88,6 +89,9 @@ type Updater struct {
 	StateDir string
 	// EnforceOwnership after commit/rollback (overridable in tests).
 	EnforceOwnership func(stateDir string) error
+	// DaemonReload runs after installing or rolling back systemd unit assets.
+	// When nil on Linux, systemctl daemon-reload is used; tests may stub this.
+	DaemonReload func() error
 }
 
 // New returns an updater with default HTTP client and embedded public key.
@@ -246,6 +250,8 @@ var RequiredAssetNames = []string{
 	"production-gate",
 	"share-version",
 	"share-third-party-core",
+	"nyxveil-update-service",
+	"nyxveil-management-polkit",
 }
 
 type assetContract struct {
@@ -254,12 +260,27 @@ type assetContract struct {
 }
 
 var productionAssets = map[string]assetContract{
-	"nyxveil-server":         {paths.BinaryPath(), 0o755},
-	"nyxveilctl":             {paths.BinDir + "/nyxveilctl", 0o755},
-	"nyxveil-catalog-verify": {paths.CatalogVerify(), 0o755},
-	"production-gate":        {paths.ProductionGate(), 0o755},
-	"share-version":          {paths.ShareVersion(), 0o644},
-	"share-third-party-core": {paths.ShareThirdParty(), 0o644},
+	"nyxveil-server":            {paths.BinaryPath(), 0o755},
+	"nyxveilctl":                {paths.BinDir + "/nyxveilctl", 0o755},
+	"nyxveil-catalog-verify":    {paths.CatalogVerify(), 0o755},
+	"production-gate":           {paths.ProductionGate(), 0o755},
+	"share-version":             {paths.ShareVersion(), 0o644},
+	"share-third-party-core":    {paths.ShareThirdParty(), 0o644},
+	"nyxveil-update-service":    {paths.UpdateServiceUnit(), 0o644},
+	"nyxveil-management-polkit": {paths.ManagementPolkitRule(), 0o644},
+}
+
+func requiresDaemonReload(name string) bool {
+	return name == "nyxveil-update-service"
+}
+
+func jobsNeedDaemonReload(jobs []replaceJob) bool {
+	for _, j := range jobs {
+		if requiresDaemonReload(j.name) {
+			return true
+		}
+	}
+	return false
 }
 
 func assetMode(name string) os.FileMode {
@@ -430,6 +451,20 @@ func (u *Updater) Apply(m *Manifest, health HealthCheck) error {
 		return fmt.Errorf("updater: committed file verification failed: %w; rolled back", err)
 	}
 
+	if jobsNeedDaemonReload(replaced) {
+		if err := u.runDaemonReload(); err != nil {
+			binErr := u.rollbackJobs(replaced)
+			tlsErr := restoreTLS()
+			if binErr != nil {
+				return fmt.Errorf("updater: daemon-reload failed: %w; rollback failed: %v (tls restore err: %v)", err, binErr, tlsErr)
+			}
+			if tlsErr != nil {
+				return fmt.Errorf("updater: daemon-reload failed: %w; binaries rolled back but TLS metadata restore failed: %v", err, tlsErr)
+			}
+			return fmt.Errorf("updater: daemon-reload failed: %w; rolled back", err)
+		}
+	}
+
 	if health != nil && !health() {
 		binErr := u.rollbackJobs(replaced)
 		tlsErr := restoreTLS()
@@ -483,14 +518,14 @@ func (u *Updater) planJobs(m *Manifest) ([]replaceJob, error) {
 		for _, name := range RequiredAssetNames {
 			a := assets[name]
 			contract := productionAssets[name]
+			if a.Destination != "" && a.Destination != contract.destination {
+				return nil, fmt.Errorf("updater: asset %q destination %q does not match allowlist %q", name, a.Destination, contract.destination)
+			}
 			dest := contract.destination
 			extraOverride := u.ExtraBinaries != nil && u.ExtraBinaries[name] != ""
 			if extraOverride {
 				dest = u.ExtraBinaries[name]
 			} else if a.Destination != "" {
-				if a.Destination != contract.destination {
-					return nil, fmt.Errorf("updater: asset %q destination %q does not match allowlist %q", name, a.Destination, contract.destination)
-				}
 				dest = a.Destination
 			}
 			if name == "nyxveil-server" && !extraOverride && u.BinaryPath != "" {
@@ -593,10 +628,34 @@ func (u *Updater) rollbackJobs(jobs []replaceJob) error {
 			first = err
 		}
 	}
+	if jobsNeedDaemonReload(jobs) {
+		if err := u.runDaemonReload(); err != nil && first == nil {
+			first = err
+		}
+	}
 	if u.MarkerPath != "" {
 		_ = os.Remove(u.MarkerPath)
 	}
 	return first
+}
+
+func (u *Updater) runDaemonReload() error {
+	if u.DaemonReload != nil {
+		return u.DaemonReload()
+	}
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	return systemdDaemonReload()
+}
+
+func systemdDaemonReload() error {
+	cmd := exec.Command("systemctl", "daemon-reload")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("systemctl daemon-reload: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // Rollback restores PrevPath over BinaryPath (and extras).

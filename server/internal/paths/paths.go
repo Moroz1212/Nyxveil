@@ -39,23 +39,33 @@ func ShareVersion() string   { return path.Join(ShareDir, "VERSION") }
 func ShareThirdParty() string {
 	return path.Join(ShareDir, "THIRD_PARTY_CORE.md")
 }
+func UpdateServiceUnit() string {
+	return "/etc/systemd/system/nyxveil-update.service"
+}
+func ManagementPolkitRule() string {
+	return "/etc/polkit-1/rules.d/50-nyxveil-management.rules"
+}
 
 // DefaultExtraInstallMaps returns asset-name → destination and backup paths for
 // every auxiliary file managed by nyxveilctl update.
 func DefaultExtraInstallMaps() (dest map[string]string, prev map[string]string) {
 	dest = map[string]string{
-		"nyxveilctl":             path.Join(BinDir, "nyxveilctl"),
-		"nyxveil-catalog-verify": CatalogVerify(),
-		"production-gate":        ProductionGate(),
-		"share-version":          ShareVersion(),
-		"share-third-party-core": ShareThirdParty(),
+		"nyxveilctl":                path.Join(BinDir, "nyxveilctl"),
+		"nyxveil-catalog-verify":    CatalogVerify(),
+		"production-gate":           ProductionGate(),
+		"share-version":             ShareVersion(),
+		"share-third-party-core":    ShareThirdParty(),
+		"nyxveil-update-service":    UpdateServiceUnit(),
+		"nyxveil-management-polkit": ManagementPolkitRule(),
 	}
 	prev = map[string]string{
-		"nyxveilctl":             path.Join(StateDir, "nyxveilctl.prev"),
-		"nyxveil-catalog-verify": path.Join(StateDir, "nyxveil-catalog-verify.prev"),
-		"production-gate":        path.Join(StateDir, "production-gate.sh.prev"),
-		"share-version":          path.Join(StateDir, "share-VERSION.prev"),
-		"share-third-party-core": path.Join(StateDir, "share-THIRD_PARTY_CORE.md.prev"),
+		"nyxveilctl":                path.Join(StateDir, "nyxveilctl.prev"),
+		"nyxveil-catalog-verify":    path.Join(StateDir, "nyxveil-catalog-verify.prev"),
+		"production-gate":           path.Join(StateDir, "production-gate.sh.prev"),
+		"share-version":             path.Join(StateDir, "share-VERSION.prev"),
+		"share-third-party-core":    path.Join(StateDir, "share-THIRD_PARTY_CORE.md.prev"),
+		"nyxveil-update-service":    path.Join(StateDir, "nyxveil-update.service.prev"),
+		"nyxveil-management-polkit": path.Join(StateDir, "50-nyxveil-management.rules.prev"),
 	}
 	return dest, prev
 }

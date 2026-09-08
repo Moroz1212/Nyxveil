@@ -264,7 +264,13 @@ func runLiveFinalProcessFixture(t *testing.T, opts fixtureOpts) {
 		if _, err := os.Stat(filepath.Join(share, "scripts", "production-gate.sh")); err != nil {
 			t.Fatalf("missing gate: %v\nout=%s", err, out)
 		}
-		if got := strings.TrimSpace(string(mustRead(t, filepath.Join(share, "VERSION")))); got != "1.1.7" {
+		if _, err := os.Stat(filepath.Join(prefix, "etc", "systemd", "system", "nyxveil-update.service")); err != nil {
+			t.Fatalf("missing update unit: %v\nout=%s", err, out)
+		}
+		if _, err := os.Stat(filepath.Join(prefix, "etc", "polkit-1", "rules.d", "50-nyxveil-management.rules")); err != nil {
+			t.Fatalf("missing polkit: %v\nout=%s", err, out)
+		}
+		if got := strings.TrimSpace(string(mustRead(t, filepath.Join(share, "VERSION")))); got != "1.1.9" {
 			t.Fatalf("share VERSION=%q", got)
 		}
 	}
@@ -281,12 +287,14 @@ func buildSignedReleaseFixture(t *testing.T, version string, crlf bool) signedFi
 	pubHex := hex.EncodeToString(pub)
 
 	payloads := map[string][]byte{
-		"nyxveil-server":         []byte("#!/usr/bin/env bash\necho server-" + version + "\n"),
-		"nyxveilctl":             buildStubCtl(t),
-		"nyxveil-catalog-verify": []byte("#!/usr/bin/env bash\necho catalog\n"),
-		"production-gate":        []byte("#!/usr/bin/env bash\necho RESULT=PASS\n"),
-		"share-version":          []byte(version + "\n"),
-		"share-third-party-core": []byte("frozen-core\n"),
+		"nyxveil-server":            []byte("#!/usr/bin/env bash\necho server-" + version + "\n"),
+		"nyxveilctl":                buildStubCtl(t),
+		"nyxveil-catalog-verify":    []byte("#!/usr/bin/env bash\necho catalog\n"),
+		"production-gate":           []byte("#!/usr/bin/env bash\necho RESULT=PASS\n"),
+		"share-version":             []byte(version + "\n"),
+		"share-third-party-core":    []byte("frozen-core\n"),
+		"nyxveil-update-service":    mustRead(t, filepath.Join(root, "systemd", "nyxveil-update.service")),
+		"nyxveil-management-polkit": mustRead(t, filepath.Join(root, "systemd", "50-nyxveil-management.rules")),
 	}
 	for _, arch := range []string{"amd64", "arm64"} {
 		writeExec(t, filepath.Join(dir, "nyxveil-server-linux-"+arch), payloads["nyxveil-server"])
@@ -298,6 +306,12 @@ func buildSignedReleaseFixture(t *testing.T, version string, crlf bool) signedFi
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "THIRD_PARTY_CORE.md"), payloads["share-third-party-core"], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nyxveil-update.service"), payloads["nyxveil-update-service"], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "50-nyxveil-management.rules"), payloads["nyxveil-management-polkit"], 0o644); err != nil {
 		t.Fatal(err)
 	}
 	copyFile(t, filepath.Join(root, "scripts", "bootstrap-cli-update.sh"), filepath.Join(dir, "bootstrap-cli-update.sh"))
@@ -351,6 +365,8 @@ func writeTestManifest(t *testing.T, dir, version, arch, base string, priv ed255
 		{"production-gate", "production-gate.sh", "/usr/local/share/nyxveil/scripts/production-gate.sh", "0755"},
 		{"share-version", "VERSION", "/usr/local/share/nyxveil/VERSION", "0644"},
 		{"share-third-party-core", "THIRD_PARTY_CORE.md", "/usr/local/share/nyxveil/THIRD_PARTY_CORE.md", "0644"},
+		{"nyxveil-update-service", "nyxveil-update.service", "/etc/systemd/system/nyxveil-update.service", "0644"},
+		{"nyxveil-management-polkit", "50-nyxveil-management.rules", "/etc/polkit-1/rules.d/50-nyxveil-management.rules", "0644"},
 	}
 	m := &updater.Manifest{
 		Version: version, Arch: "linux/" + arch, MinCore: "1.0.0", MinProtocol: 1,
@@ -426,6 +442,7 @@ func main() {
   if bin == "" { bin = "/usr/local/sbin" }
   share := os.Getenv("NYXVEIL_SHARE_DIR")
   if share == "" { share = "/usr/local/share/nyxveil" }
+  prefix := filepath.Clean(filepath.Join(bin, "..", "..", ".."))
   dest := map[string]string{
     "nyxveil-server": filepath.Join(bin, "nyxveil-server"),
     "nyxveilctl": filepath.Join(bin, "nyxveilctl"),
@@ -433,6 +450,8 @@ func main() {
     "production-gate": filepath.Join(share, "scripts", "production-gate.sh"),
     "share-version": filepath.Join(share, "VERSION"),
     "share-third-party-core": filepath.Join(share, "THIRD_PARTY_CORE.md"),
+    "nyxveil-update-service": filepath.Join(prefix, "etc", "systemd", "system", "nyxveil-update.service"),
+    "nyxveil-management-polkit": filepath.Join(prefix, "etc", "polkit-1", "rules.d", "50-nyxveil-management.rules"),
   }
   for _, a := range m.Assets {
     p, ok := dest[a.Name]
@@ -491,7 +510,8 @@ func writeReleaseSums(t *testing.T, dir string, crlf bool) {
 	names := []string{
 		"nyxveil-server-linux-amd64", "nyxveilctl-linux-amd64", "nyxveil-catalog-verify-linux-amd64",
 		"nyxveil-server-linux-arm64", "nyxveilctl-linux-arm64", "nyxveil-catalog-verify-linux-arm64",
-		"production-gate.sh", "VERSION", "THIRD_PARTY_CORE.md",
+		"production-gate.sh", "nyxveil-update.service", "50-nyxveil-management.rules",
+		"VERSION", "THIRD_PARTY_CORE.md",
 		"release-manifest-linux-amd64.json", "release-manifest-linux-arm64.json",
 		"bootstrap-cli-update.sh", "live-final-update.sh",
 	}

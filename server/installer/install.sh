@@ -14,7 +14,7 @@
 # Local --binary-dir / --skip-download skips remote verify.
 set -euo pipefail
 
-readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.7}"
+readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.9}"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 # Same Ed25519 public key as internal/updater.UpdatePublicKey
 readonly PUB_HEX="caf921521e213cb1bcdc2f9df4816c2ecd43222b23a47d6f869672e6ab0e79af"
@@ -1031,7 +1031,7 @@ write_polkit_management_rules() {
   dest="$(dirname "${ETC_DIR}")/polkit-1/rules.d/50-nyxveil-management.rules"
   mkdir -p "$(dirname "${dest}")"
   cat > "${dest}" <<'EOF'
-/* Nyxveil: allow node service user to restart its unit and reboot the host
+/* Nyxveil: allow node service user to restart its unit, start fixed update unit, and reboot the host
  * via authenticated Control Plane remote commands (no SSH/shell). */
 polkit.addRule(function (action, subject) {
     if (subject.user !== "nyxveil") {
@@ -1064,12 +1064,14 @@ write_update_unit() {
   cat > "${dest}" <<'EOF'
 [Unit]
 Description=Nyxveil signed update (oneshot)
+Documentation=https://github.com/Moroz1212/Nyxveil/tree/main/server/docs
 After=network-online.target
 
 [Service]
 Type=oneshot
 User=root
 ExecStart=/usr/local/sbin/nyxveilctl update
+Nice=5
 TimeoutStartSec=900
 EOF
   chmod 0644 "${dest}"
