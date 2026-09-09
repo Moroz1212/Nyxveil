@@ -19,7 +19,19 @@ if [[ "${NYXVEIL_VERSION+x}" == "x" ]]; then
   NYXVEIL_VERSION_ENV_OVERRIDE="${NYXVEIL_VERSION}"
 fi
 NYXVEIL_VERSION=""
-readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
+# Production authenticity source is fixed. Repository override is allowed ONLY in
+# explicit MOCK/TEST mode (NYXVEIL_INSTALL_MOCK=1 or NYXVEIL_TEST_MODE=1).
+readonly FIXED_GITHUB_REPO="Moroz1212/Nyxveil"
+GITHUB_REPO="${FIXED_GITHUB_REPO}"
+if [[ "${NYXVEIL_INSTALL_MOCK:-0}" == "1" || "${NYXVEIL_TEST_MODE:-0}" == "1" ]]; then
+  if [[ -n "${NYXVEIL_GITHUB_REPO:-}" ]]; then
+    GITHUB_REPO="${NYXVEIL_GITHUB_REPO}"
+  fi
+elif [[ -n "${NYXVEIL_GITHUB_REPO:-}" && "${NYXVEIL_GITHUB_REPO}" != "${FIXED_GITHUB_REPO}" ]]; then
+  echo "ERROR: NYXVEIL_GITHUB_REPO override is forbidden outside MOCK/TEST mode (fixed trust: ${FIXED_GITHUB_REPO})" >&2
+  exit 1
+fi
+readonly GITHUB_REPO
 readonly DEFAULT_VPN_SUBNET="10.66.0.0/24"
 readonly MIN_RAM_MB_WARN=700
 readonly MIN_DISK_MB=200
@@ -162,13 +174,19 @@ resolve_stable_server_version() {
 
   ver=""
   if command -v jq >/dev/null 2>&1; then
+    # MAX SemVer — never assume GitHub API order == semantic order.
     ver="$(printf '%s' "${raw}" | jq -r '
       [.[]
         | select(.draft == false and .prerelease == false)
         | .tag_name
         | select(test("^server-v[0-9]+\\.[0-9]+\\.[0-9]+$"))
         | sub("^server-v"; "")
-      ] | .[0] // empty')"
+        | capture("(?<maj>[0-9]+)\\.(?<min>[0-9]+)\\.(?<pat>[0-9]+)") as $c
+        | {v: "\($c.maj).\($c.min).\($c.pat)", maj: ($c.maj|tonumber), min: ($c.min|tonumber), pat: ($c.pat|tonumber)}
+      ]
+      | sort_by(.maj, .min, .pat)
+      | last
+      | .v // empty')"
   fi
 
   if [[ -z "${ver}" || "${ver}" == "null" ]]; then
@@ -182,30 +200,45 @@ resolve_stable_server_version() {
       ver="$(NYXVEIL_RELEASES_JSON="${raw}" "${py}" - <<'PY'
 import json, os, re
 data = json.loads(os.environ.get("NYXVEIL_RELEASES_JSON") or "[]")
-pat = re.compile(r"^server-v(\d+\.\d+\.\d+)$")
+pat = re.compile(r"^server-v(\d+)\.(\d+)\.(\d+)$")
+best = None  # (maj, min, pat, "x.y.z")
 for rel in data:
     if rel.get("draft") or rel.get("prerelease"):
         continue
     m = pat.match(str(rel.get("tag_name") or ""))
-    if m:
-        print(m.group(1))
-        break
+    if not m:
+        continue
+    tup = (int(m.group(1)), int(m.group(2)), int(m.group(3)), f"{m.group(1)}.{m.group(2)}.{m.group(3)}")
+    if best is None or tup[:3] > best[:3]:
+        best = tup
+if best:
+    print(best[3])
 PY
 )"
     fi
   fi
 
   if [[ -z "${ver}" || "${ver}" == "null" ]]; then
-    # Conservative text fallback (GitHub returns newest-first). Skip objects marked
-    # draft/prerelease true; accept only exact server-vX.Y.Z tags.
-    ver="$(printf '%s' "${raw}" | tr '}' '\n' | while IFS= read -r obj; do
-      printf '%s' "${obj}" | grep -Eq '"draft"[[:space:]]*:[[:space:]]*true' && continue
-      printf '%s' "${obj}" | grep -Eq '"prerelease"[[:space:]]*:[[:space:]]*true' && continue
-      tag="$(printf '%s' "${obj}" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"server-v[0-9]+\.[0-9]+\.[0-9]+"' | head -n1 || true)"
-      [[ -n "${tag}" ]] || continue
-      printf '%s\n' "${tag}" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1
-      break
-    done)"
+    # Text fallback: collect all eligible tags, pick MAX SemVer (not first hit).
+    ver="$(printf '%s' "${raw}" | tr '}' '\n' | {
+      best=""
+      best_key=""
+      while IFS= read -r obj; do
+        printf '%s' "${obj}" | grep -Eq '"draft"[[:space:]]*:[[:space:]]*true' && continue
+        printf '%s' "${obj}" | grep -Eq '"prerelease"[[:space:]]*:[[:space:]]*true' && continue
+        tag="$(printf '%s' "${obj}" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"server-v[0-9]+\.[0-9]+\.[0-9]+"' | head -n1 || true)"
+        [[ -n "${tag}" ]] || continue
+        v="$(printf '%s' "${tag}" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+        [[ -n "${v}" ]] || continue
+        maj="${v%%.*}"; rest="${v#*.}"; min="${rest%%.*}"; pat="${rest#*.}"
+        key="$(printf '%08d.%08d.%08d' "${maj}" "${min}" "${pat}")"
+        if [[ -z "${best_key}" || "${key}" > "${best_key}" ]]; then
+          best_key="${key}"
+          best="${v}"
+        fi
+      done
+      printf '%s\n' "${best}"
+    })"
   fi
 
   [[ -n "${ver}" && "${ver}" != "null" ]] || die "no stable server-vX.Y.Z release found for ${GITHUB_REPO}"
@@ -1430,13 +1463,10 @@ generate_identity_and_register() {
     reg_flags+=(--test-mode)
   fi
   local reg_rc=0
-  if command -v timeout >/dev/null 2>&1; then
-    # Bound ACME + register HTTP (600s). Token is piped via stdin; never logged.
-    printf '%s\n' "${BOOTSTRAP_TOKEN}" | timeout 600 run_as_nyxveil "${BIN_DIR}/nyxveil-server" "${reg_flags[@]}" || reg_rc=$?
-  else
-    log "timeout command not available; register runs without wall-clock bound (ACME+register may hang)"
-    printf '%s\n' "${BOOTSTRAP_TOKEN}" | run_as_nyxveil "${BIN_DIR}/nyxveil-server" "${reg_flags[@]}" || reg_rc=$?
-  fi
+  # GNU timeout cannot exec a shell function. Wrap an ACTUAL executable as nyxveil.
+  # Fail closed: unbounded registration is forbidden on production hosts.
+  printf '%s\n' "${BOOTSTRAP_TOKEN}" | run_as_nyxveil_bounded 600 15 \
+    "${BIN_DIR}/nyxveil-server" "${reg_flags[@]}" || reg_rc=$?
   if [[ "${reg_rc}" -ne 0 ]]; then
     # HTTP 200 + local decode/persist failure still leaves a CP-side node + consumed bootstrap.
     # Never delete the freshly written node.key on rollback — retry must keep the same identity.
@@ -1470,6 +1500,44 @@ run_as_nyxveil() {
   local cmd
   cmd="$(printf '%q ' "$@")"
   su -s /bin/bash nyxveil -c "${cmd}"
+}
+
+# run_as_nyxveil_bounded runs an EXTERNAL executable as nyxveil under GNU timeout.
+# timeout wraps the real binary (never a shell function). Stdin is preserved for
+# bootstrap token. TERM then KILL after kill_after_sec. Fail closed if timeout/user tools missing.
+# Usage: run_as_nyxveil_bounded <sec> <kill_after_sec> <executable> [args...]
+run_as_nyxveil_bounded() {
+  local sec="${1:?}"
+  local kill_after="${2:?}"
+  shift 2
+  local exe="${1:?}"
+  shift
+
+  command -v timeout >/dev/null 2>&1 || {
+    echo "ERROR: coreutils timeout required for bounded registration (fail closed)" >&2
+    return 97
+  }
+  [[ -x "${exe}" || -f "${exe}" ]] || {
+    echo "ERROR: bounded registration executable missing: ${exe}" >&2
+    return 98
+  }
+
+  # Prefer: runuser -u nyxveil -- timeout -k N SEC /path/to/binary args...
+  # so timeout's child is the real binary (process group / TERM+KILL apply correctly).
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u nyxveil -- timeout -k "${kill_after}" "${sec}" "${exe}" "$@"
+    return $?
+  fi
+  if command -v setpriv >/dev/null 2>&1; then
+    setpriv --reuid=nyxveil --regid=nyxveil --clear-groups -- \
+      timeout -k "${kill_after}" "${sec}" "${exe}" "$@"
+    return $?
+  fi
+  # Last resort: timeout wraps su (still an executable, not a bash function).
+  local cmd
+  cmd="$(printf '%q ' "${exe}" "$@")"
+  timeout -k "${kill_after}" "${sec}" su -s /bin/bash nyxveil -c "${cmd}"
+  return $?
 }
 
 # fix_state_ownership enforces service-user ownership on all private state.

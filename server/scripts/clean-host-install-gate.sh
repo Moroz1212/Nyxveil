@@ -272,6 +272,17 @@ else
   record_critical INSTALLER_PRESENT FAIL "installer not found: ${INSTALLER}"
 fi
 
+# Static guard: timeout must wrap a real binary, never the run_as_nyxveil shell function.
+if [[ -f "${INSTALLER}" ]]; then
+  if grep -E 'timeout[[:space:]].*run_as_nyxveil([^_]|$)' "${INSTALLER}" >/dev/null 2>&1; then
+    record_critical INSTALLER_TIMEOUT_WRAPPER FAIL "install.sh wraps run_as_nyxveil with timeout (broken pattern)"
+  elif ! grep -q 'run_as_nyxveil_bounded' "${INSTALLER}"; then
+    record_critical INSTALLER_TIMEOUT_WRAPPER FAIL "install.sh missing run_as_nyxveil_bounded"
+  else
+    record INSTALLER_TIMEOUT_WRAPPER PASS "run_as_nyxveil_bounded present; no timeout+function bug"
+  fi
+fi
+
 # Bootstrap token (never log)
 set +x
 { set +o xtrace; } 2>/dev/null || true
@@ -607,17 +618,41 @@ fi
 set +x
 { set +o xtrace; } 2>/dev/null || true
 LEAK=0
+TOKEN_HASH=""
 if [[ -n "${TOKEN_LEAK_PROBE}" ]]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    TOKEN_HASH="$(printf '%s' "${TOKEN_LEAK_PROBE}" | sha256sum | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    TOKEN_HASH="$(printf '%s' "${TOKEN_LEAK_PROBE}" | shasum -a 256 | awk '{print $1}')"
+  fi
   if grep -R --fixed-strings -- "${TOKEN_LEAK_PROBE}" /etc/nyxveil /var/lib/nyxveil /etc/systemd/system /usr/local/share/nyxveil 2>/dev/null >/dev/null; then
     LEAK=1
   fi
+  # journalctl scan: never echo the token; compare via fixed-string quiet match only.
+  if command -v journalctl >/dev/null 2>&1; then
+    for unit in nyxveil-server nyxveil-firewall nyxveil-update; do
+      if journalctl -u "${unit}" --no-pager -n 8000 2>/dev/null | grep -F -q -- "${TOKEN_LEAK_PROBE}"; then
+        LEAK=1
+        break
+      fi
+    done
+    # Also scan recent boots without unit filter for installer-time leaks (bounded).
+    if [[ "${LEAK}" -eq 0 ]]; then
+      if journalctl --no-pager -n 2000 -t nyxveilctl -t install 2>/dev/null | grep -F -q -- "${TOKEN_LEAK_PROBE}"; then
+        LEAK=1
+      fi
+    fi
+  fi
+  # Hash presence check: if something logged only the hash of the token, that is fine;
+  # we only fail when the raw probe matches. TOKEN_HASH kept for future compare tooling.
+  : "${TOKEN_HASH}"
 fi
 TOKEN_LEAK_PROBE=""
-unset TOKEN_LEAK_PROBE || true
+unset TOKEN_LEAK_PROBE TOKEN_HASH || true
 if [[ "${LEAK}" -eq 0 ]]; then
-  record TOKEN_LEAK PASS "no bootstrap token found in installed paths"
+  record TOKEN_LEAK PASS "no bootstrap token found in installed paths or unit journals"
 else
-  record TOKEN_LEAK FAIL "bootstrap token leaked into installed paths"
+  record TOKEN_LEAK FAIL "bootstrap token leaked into installed paths or journals"
 fi
 
 # Temp state clean

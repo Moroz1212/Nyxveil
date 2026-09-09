@@ -58,6 +58,7 @@ public sealed class NodeCommandUpdateDrainTests : IAsyncDisposable
         var stored = await _fx.Db.NodeCommands.AsNoTracking().SingleAsync(c => c.Id == claimed.Id);
         Assert.True(NodeCommandService.TryReadAdminSnapshot(
             stored.PayloadJson, out var snapEnabled, out var snapDraining, out var snapMaint));
+        Assert.True(NodeCommandService.TryReadDrainEntered(stored.PayloadJson));
         Assert.True(snapEnabled);
         Assert.True(snapDraining);
         Assert.False(snapMaint);
@@ -101,7 +102,29 @@ public sealed class NodeCommandUpdateDrainTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task UpdateFailure_AlsoRestoresAdminState()
+    public async Task UpdateComplete_RolledBackHealthy_RestoresAdminState()
+    {
+        var a = await RegisterHealthyAsync("rb-a");
+        var b = await RegisterHealthyAsync("rb-b");
+        MarkHealthy(a);
+        MarkHealthy(b);
+        await _fx.Db.SaveChangesAsync();
+
+        await _commands.EnqueueAsync(a, NodeCommandType.UpdateNodeLatest, "sa@test", [AdminRole.SuperAdmin]);
+        var claimed = await _commands.ClaimNextAsync(a);
+        Assert.NotNull(claimed);
+        await _commands.MarkStartedAsync(claimed!.Id, a);
+        await _commands.CompleteAsync(claimed.Id, a, success: false, "rolled_back_healthy", "rolled back");
+
+        var afterCfg = await _fx.Db.NodeConfigs.AsNoTracking().SingleAsync(c => c.NodeId == a);
+        var afterNode = await _fx.Db.Nodes.AsNoTracking().SingleAsync(n => n.NodeId == a);
+        Assert.False(afterCfg.Draining);
+        Assert.False(afterNode.Draining);
+        Assert.True(NodeCommandService.ShouldRestoreAdminState(false, "rolled_back_healthy"));
+    }
+
+    [Fact]
+    public async Task UpdateFailure_HealthFailed_StaysDrained()
     {
         var a = await RegisterHealthyAsync("fail-a");
         var b = await RegisterHealthyAsync("fail-b");
@@ -116,7 +139,72 @@ public sealed class NodeCommandUpdateDrainTests : IAsyncDisposable
         await _commands.CompleteAsync(claimed.Id, a, success: false, "health_failed", "bad");
 
         var afterCfg = await _fx.Db.NodeConfigs.AsNoTracking().SingleAsync(c => c.NodeId == a);
+        var afterNode = await _fx.Db.Nodes.AsNoTracking().SingleAsync(n => n.NodeId == a);
+        Assert.True(afterCfg.Draining);
+        Assert.True(afterNode.Draining);
+        Assert.False(NodeCommandService.ShouldRestoreAdminState(false, "health_failed"));
+    }
+
+    [Fact]
+    public async Task ExpireAfterDrain_StaysDrained_ExpiredOutcomeUnknown()
+    {
+        var a = await RegisterHealthyAsync("exp-drain-a");
+        var b = await RegisterHealthyAsync("exp-drain-b");
+        MarkHealthy(a);
+        MarkHealthy(b);
+        await _fx.Db.SaveChangesAsync();
+
+        await _commands.EnqueueAsync(a, NodeCommandType.UpdateNodeLatest, "sa@test", [AdminRole.SuperAdmin]);
+        var claimed = await _commands.ClaimNextAsync(a);
+        Assert.NotNull(claimed);
+        await _commands.MarkStartedAsync(claimed!.Id, a);
+
+        var mid = await _fx.Db.Nodes.AsNoTracking().SingleAsync(n => n.NodeId == a);
+        Assert.True(mid.Draining);
+
+        var row = await _fx.Db.NodeCommands.SingleAsync(c => c.Id == claimed.Id);
+        row.ExpiresAt = _fx.Clock.UtcNow.AddMinutes(-1);
+        await _fx.Db.SaveChangesAsync();
+
+        await _commands.ExpireStaleAsync();
+
+        var afterCmd = await _fx.Db.NodeCommands.AsNoTracking().SingleAsync(c => c.Id == claimed.Id);
+        Assert.Equal(NodeCommandStatus.Failed, afterCmd.Status);
+        Assert.Equal("expired_outcome_unknown", afterCmd.ResultCode);
+
+        var afterCfg = await _fx.Db.NodeConfigs.AsNoTracking().SingleAsync(c => c.NodeId == a);
+        var afterNode = await _fx.Db.Nodes.AsNoTracking().SingleAsync(n => n.NodeId == a);
+        Assert.True(afterCfg.Draining);
+        Assert.True(afterNode.Draining);
+    }
+
+    [Fact]
+    public async Task ExpireBeforeDrain_PendingOnly_LeavesOriginalState()
+    {
+        var a = await RegisterHealthyAsync("exp-pend-a");
+        var b = await RegisterHealthyAsync("exp-pend-b");
+        MarkHealthy(a);
+        MarkHealthy(b);
+        await _fx.Db.SaveChangesAsync();
+
+        var cmd = await _commands.EnqueueAsync(
+            a, NodeCommandType.UpdateNodeLatest, "sa@test", [AdminRole.SuperAdmin]);
+        Assert.Equal(NodeCommandStatus.Pending, cmd.Status);
+
+        var row = await _fx.Db.NodeCommands.SingleAsync(c => c.Id == cmd.Id);
+        row.ExpiresAt = _fx.Clock.UtcNow.AddMinutes(-1);
+        await _fx.Db.SaveChangesAsync();
+
+        await _commands.ExpireStaleAsync();
+
+        var afterCmd = await _fx.Db.NodeCommands.AsNoTracking().SingleAsync(c => c.Id == cmd.Id);
+        Assert.Equal(NodeCommandStatus.Expired, afterCmd.Status);
+        Assert.Equal("expired", afterCmd.ResultCode);
+
+        var afterCfg = await _fx.Db.NodeConfigs.AsNoTracking().SingleAsync(c => c.NodeId == a);
+        var afterNode = await _fx.Db.Nodes.AsNoTracking().SingleAsync(n => n.NodeId == a);
         Assert.False(afterCfg.Draining);
+        Assert.False(afterNode.Draining);
         Assert.True(afterCfg.Enabled);
     }
 

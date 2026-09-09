@@ -3,7 +3,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Nyxveil.ControlPlane.Application.Abstractions;
 using Nyxveil.ControlPlane.Application.Contracts.V1;
 using Nyxveil.ControlPlane.Application.Exceptions;
+using Nyxveil.ControlPlane.Domain.Entities;
 using Nyxveil.ControlPlane.Domain.Enums;
+using Nyxveil.ControlPlane.Infrastructure.Persistence;
 using Nyxveil.ControlPlane.Infrastructure.Services;
 using Nyxveil.ControlPlane.UnitTests.Helpers;
 using Xunit;
@@ -70,6 +72,86 @@ public sealed class NodeCommandLocationSafetyTests : IAsyncDisposable
         await _commands.EnqueueAsync(a, NodeCommandType.UpdateNodeLatest, "sa@test", [AdminRole.SuperAdmin]);
         await Assert.ThrowsAsync<ConflictException>(() => _commands.EnqueueAsync(
             b, NodeCommandType.UpdateNodeLatest, "sa2@test", [AdminRole.SuperAdmin]));
+    }
+
+    /// <summary>
+    /// Two separate DbContexts + barrier-synchronized enqueue on the same location.
+    /// Invariant: never two disruptive Pending commands for one location.
+    /// </summary>
+    [Fact]
+    public async Task ConcurrentEnqueue_SameLocation_OnlyOneSucceeds()
+    {
+        var a = await RegisterHealthyAsync("loc-race-a");
+        var b = await RegisterHealthyAsync("loc-race-b");
+        MarkHealthy(a);
+        MarkHealthy(b);
+        await _fx.Db.SaveChangesAsync();
+
+        var releases = new FakeServerReleaseService
+        {
+            Info = new ServerReleaseInfo
+            {
+                LatestVersion = "1.1.11",
+                ReleaseTag = "server-v1.1.11",
+                SourceStatus = "ok",
+                LastCheckedAt = DateTimeOffset.UtcNow
+            }
+        };
+        var audit = _fx.Scope.ServiceProvider.GetRequiredService<IAuditService>();
+
+        using var scope1 = _fx.CreateScope();
+        using var scope2 = _fx.CreateScope();
+        var db1 = scope1.ServiceProvider.GetRequiredService<ControlPlaneDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ControlPlaneDbContext>();
+        var commands1 = new NodeCommandService(db1, _fx.Clock, audit, releases);
+        var commands2 = new NodeCommandService(db2, _fx.Clock, audit, releases);
+
+        var barrier = new Barrier(2);
+        Exception? exA = null;
+        Exception? exB = null;
+        NodeCommand? cmdA = null;
+        NodeCommand? cmdB = null;
+
+        var t1 = Task.Run(async () =>
+        {
+            try
+            {
+                barrier.SignalAndWait();
+                cmdA = await commands1.EnqueueAsync(
+                    a, NodeCommandType.UpdateNodeLatest, "sa-a@test", [AdminRole.SuperAdmin]);
+            }
+            catch (Exception ex)
+            {
+                exA = ex;
+            }
+        });
+        var t2 = Task.Run(async () =>
+        {
+            try
+            {
+                barrier.SignalAndWait();
+                cmdB = await commands2.EnqueueAsync(
+                    b, NodeCommandType.UpdateNodeLatest, "sa-b@test", [AdminRole.SuperAdmin]);
+            }
+            catch (Exception ex)
+            {
+                exB = ex;
+            }
+        });
+
+        await Task.WhenAll(t1, t2);
+
+        var successes = (cmdA is not null ? 1 : 0) + (cmdB is not null ? 1 : 0);
+        var conflicts = (exA is ConflictException ? 1 : 0) + (exB is ConflictException ? 1 : 0);
+        Assert.Equal(1, successes);
+        Assert.Equal(1, conflicts);
+        Assert.True(exA is null or ConflictException, $"exA={exA}");
+        Assert.True(exB is null or ConflictException, $"exB={exB}");
+
+        var pending = await _fx.Db.NodeCommands.AsNoTracking()
+            .CountAsync(c => c.Status == NodeCommandStatus.Pending
+                             && (c.NodeId == a || c.NodeId == b));
+        Assert.Equal(1, pending);
     }
 
     [Fact]

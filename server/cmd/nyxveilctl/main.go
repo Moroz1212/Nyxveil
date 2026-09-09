@@ -335,7 +335,14 @@ func runUpdate(args []string) error {
 			return err
 		}
 	} else {
-		resp, err := http.Get(manifestURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, manifestURL, nil)
+		if err != nil {
+			return err
+		}
+		client := &http.Client{Timeout: 60 * time.Second}
+		resp, err := client.Do(req)
 		if err != nil {
 			return err
 		}

@@ -38,7 +38,11 @@ required=(
   scripts/test-curl-installer.sh
   scripts/test-installer-management-assets.sh
   scripts/test-installer-version-resolution.sh
+  scripts/test-bounded-runuser-timeout.sh
+  scripts/test-remote-update-gate-contract.sh
   scripts/test-post-registration-identity.sh
+  scripts/remote-update-location-gate.sh
+  scripts/clean-host-install-gate.sh
   scripts/serv_wrappers.sh
   README.md
   THIRD_PARTY_CORE.md

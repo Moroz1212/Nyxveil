@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 )
 
@@ -179,6 +180,7 @@ func Restore(s *Snapshot) error {
 
 // AtomicWrite writes data via temp+rename then applies uid/gid/mode.
 // If uid/gid are -1, preserves existing destination owner when present, else service user when resolvable.
+// Note: AtomicWrite does not fsync; use DurableWrite for crash-safe journals/markers.
 func AtomicWrite(path string, data []byte, mode os.FileMode, uid, gid int) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -207,6 +209,55 @@ func AtomicWrite(path string, data []byte, mode os.FileMode, uid, gid int) error
 		return err
 	}
 	return ApplyOwnerMode(path, uid, gid, mode)
+}
+
+// DurableWrite writes data with temp+fsync+rename+directory fsync (no chown).
+// Prefer this for update journals and other crash-sensitive small files.
+func DurableWrite(path string, data []byte, mode os.FileMode) error {
+	if mode == 0 {
+		mode = 0o600
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".durable.tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("filemeta: fsync temp %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = os.Chmod(tmp, mode)
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := syncDir(dir); err != nil && runtime.GOOS != "windows" {
+		return fmt.Errorf("filemeta: fsync dir %s: %w", dir, err)
+	}
+	return nil
+}
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 // ApplyOwnerMode sets uid/gid (when >=0) and permission bits.

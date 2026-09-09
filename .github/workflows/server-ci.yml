@@ -46,6 +46,12 @@ jobs:
         run: bash scripts/test-manifest-interop.sh
       - name: Linux permission / ownership regression
         run: bash scripts/test-linux-permissions.sh
+      - name: Installer version resolution (semver MAX)
+        run: bash scripts/test-installer-version-resolution.sh
+      - name: Bounded runuser/timeout wrapper
+        run: bash scripts/test-bounded-runuser-timeout.sh
+      - name: Remote update gate API contract
+        run: bash scripts/test-remote-update-gate-contract.sh
       - name: Race tests (Linux)
         run: go test -race -timeout 300s ./internal/runtime ./internal/updater ./internal/listeners ./internal/netcfg
 

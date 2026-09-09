@@ -231,13 +231,21 @@ func (n *Node) Register(ctx context.Context, bootstrapToken string) (*controlpla
 	return n.register(ctx, bootstrapToken, nil, true)
 }
 
-// RegisterWithSPKI advertises an explicitly supplied staged SPKI without
-// requiring that staged material be activated on disk first.
+// RegisterWithSPKI is retained for tests that inject an explicit pin into the
+// bootstrap registration path. Runtime SPKI maintenance must use UpdateNodeSPKI.
 func (n *Node) RegisterWithSPKI(ctx context.Context, spkiPin []byte) (*controlplane.RegisterResponse, error) {
 	if len(spkiPin) == 0 {
 		return nil, errors.New("runtime: SPKI override is empty")
 	}
 	return n.register(ctx, "", append([]byte(nil), spkiPin...), false)
+}
+
+type stagedRegistrationTLS struct {
+	stageCert, stageKey string
+	liveCert, liveKey   string
+	newPin              []byte
+	pinChanged          bool
+	backup              *configure.TLSBackup
 }
 
 func (n *Node) register(ctx context.Context, bootstrapToken string, spkiOverride []byte, requireBootstrap bool) (*controlplane.RegisterResponse, error) {
@@ -269,7 +277,6 @@ func (n *Node) register(ctx context.Context, bootstrapToken string, spkiOverride
 	}
 	// Operator Register always requires a bootstrap token (fresh install and repair).
 	// Existing local key additionally proves possession via NodeToken (PoP).
-	// RegisterWithSPKI (internal) may omit bootstrap when identity is already committed.
 	token := strings.TrimSpace(bootstrapToken)
 	if requireBootstrap && token == "" {
 		return nil, errors.New("runtime: bootstrap token required for registration")
@@ -284,12 +291,37 @@ func (n *Node) register(ctx context.Context, bootstrapToken string, spkiOverride
 		return nil, errors.New("runtime: bootstrap token required for registration")
 	}
 
+	var staged *stagedRegistrationTLS
+	productionTLSRequired := strings.TrimSpace(cfg.ACMEDomain) != "" || (!n.opts.TestMode && (strings.TrimSpace(cfg.TLSCertFile) != "" || strings.TrimSpace(cfg.TLSKeyFile) != "" || strings.TrimSpace(cfg.PublicHost) != ""))
+
 	if len(spkiOverride) > 0 {
 		req.SPKIPin = append([]byte(nil), spkiOverride...)
-	} else if cert, err := n.loadTLSCert(ctx, cfg); err == nil {
-		if pin, err := SPKIPinSHA256(cert); err == nil {
-			req.SPKIPin = pin
+	} else if strings.TrimSpace(cfg.ACMEDomain) != "" {
+		// Fresh/repair registration: stage ACME, include SPKI in bootstrap register.
+		// Never call NodeAuth SPKI before the CP node exists.
+		pin, st, err := n.prepareACMEForRegistration(ctx, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("runtime: TLS/ACME preparation failed (registration aborted): %w", err)
 		}
+		if len(pin) == 0 {
+			return nil, errors.New("runtime: TLS/ACME preparation produced empty SPKI (registration aborted)")
+		}
+		req.SPKIPin = pin
+		staged = st
+	} else if cert, err := n.loadTLSCert(ctx, cfg); err != nil {
+		if productionTLSRequired {
+			return nil, fmt.Errorf("runtime: TLS preparation failed (registration aborted): %w", err)
+		}
+	} else if pin, err := SPKIPinSHA256(cert); err != nil {
+		if productionTLSRequired {
+			return nil, fmt.Errorf("runtime: SPKI from TLS material failed (registration aborted): %w", err)
+		}
+	} else {
+		req.SPKIPin = pin
+	}
+
+	if productionTLSRequired && len(req.SPKIPin) == 0 {
+		return nil, errors.New("runtime: production registration requires SPKI pin (TLS preparation incomplete)")
 	}
 
 	tlsPort := listenPort(cfg.TLSListen, 443)
@@ -322,6 +354,9 @@ func (n *Node) register(ctx context.Context, bootstrapToken string, spkiOverride
 	bootstrapToken = "" // scrub local copy
 	_ = bootstrapToken
 	if err != nil {
+		if staged != nil {
+			configure.CleanStaging(staged.stageCert, staged.stageKey)
+		}
 		// HTTP 2xx then decode failure: CP already committed registration/bootstrap.
 		// Keep node.key and clear fresh-key so retry uses the same identity + PoP.
 		if controlplane.IsAcceptedLocal(err) {
@@ -335,6 +370,12 @@ func (n *Node) register(ctx context.Context, bootstrapToken string, spkiOverride
 		return nil, fmt.Errorf("runtime: persist after Control Plane registration accepted: %w\nWARNING: Control Plane registration likely succeeded; node.key preserved — retry with the same identity/PoP (do not mint a new key)", err)
 	}
 	n.markIdentityCommittedForRetry()
+
+	if staged != nil {
+		if err := n.activateStagedTLSAfterRegistration(ctx, staged); err != nil {
+			return nil, fmt.Errorf("runtime: activate staged TLS after registration: %w", err)
+		}
+	}
 	return resp, nil
 }
 
@@ -1308,6 +1349,7 @@ func (n *Node) issueACME(ctx context.Context, cfg localconfig.File) (cert tls.Ce
 		return cert, prevPin, newPin, false, err
 	}
 
+	// Runtime / background renewal: NodeAuth SPKI maintenance (not /nodes/register).
 	backup, err := configure.BackupLiveTLS(certFile, keyFile)
 	if err != nil {
 		return tls.Certificate{}, prevPin, newPin, true, err
@@ -1316,6 +1358,7 @@ func (n *Node) issueACME(ctx context.Context, cfg localconfig.File) (cert tls.Ce
 		return tls.Certificate{}, prevPin, newPin, true, fmt.Errorf("runtime: advertise staged SPKI: %w", err)
 	}
 	if err = n.verifyAdvertisedSPKI(ctx, newPin); err != nil {
+		_ = n.advertiseStagedSPKI(ctx, prevPin)
 		return tls.Certificate{}, prevPin, newPin, true, fmt.Errorf("runtime: verify staged SPKI catalog: %w", err)
 	}
 
@@ -1346,11 +1389,141 @@ func (n *Node) issueACME(ctx context.Context, cfg localconfig.File) (cert tls.Ce
 	return cert, prevPin, newPin, true, nil
 }
 
+// prepareACMEForRegistration stages ACME material and returns the SPKI pin for
+// inclusion in the bootstrap registration request. It does NOT call NodeAuth
+// and does NOT activate live TLS until activateStagedTLSAfterRegistration.
+func (n *Node) prepareACMEForRegistration(ctx context.Context, cfg localconfig.File) ([]byte, *stagedRegistrationTLS, error) {
+	certFile := cfg.TLSCertFile
+	keyFile := cfg.TLSKeyFile
+	if certFile == "" {
+		certFile = paths.TLSCert()
+	}
+	if keyFile == "" {
+		keyFile = paths.TLSKey()
+	}
+	domain := strings.TrimSpace(cfg.ACMEDomain)
+	if domain == "" {
+		return nil, nil, errors.New("runtime: acme_domain required for ACME registration prep")
+	}
+	stateDir := filepath.Join(filepath.Dir(keyFile), "acme")
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	live := nodetls.Paths{CertFile: certFile, KeyFile: keyFile}
+	validateLive := n.validateStagedTLS
+	if validateLive == nil {
+		validateLive = configure.ValidateLeafForDomain
+	}
+	if nodetls.Exists(live) && validateLive(certFile, keyFile, domain, time.Now()) == nil {
+		existing, loadErr := nodetls.Load(live)
+		if loadErr == nil && len(existing.Certificate) > 0 {
+			leaf, parseErr := x509.ParseCertificate(existing.Certificate[0])
+			if parseErr == nil && time.Until(leaf.NotAfter) > 30*24*time.Hour {
+				pin, err := nodetls.SPKIPinSHA256(existing)
+				if err != nil {
+					return nil, nil, err
+				}
+				// Live material already valid — no staged activation needed.
+				return pin, nil, nil
+			}
+		}
+	}
+
+	stageCert, stageKey := configure.StagingTLSPaths(filepath.Dir(keyFile))
+	configure.CleanStaging(stageCert, stageKey)
+	if err := configure.SeedStagingKeyFromLive(keyFile, stageKey); err != nil {
+		return nil, nil, err
+	}
+	var prevPin []byte
+	if nodetls.Exists(live) {
+		if current, loadErr := nodetls.Load(live); loadErr == nil {
+			prevPin, _ = nodetls.SPKIPinSHA256(current)
+		}
+	}
+	issuer := n.acmeIssuer
+	if issuer == nil {
+		issuer = nodetls.IssueOrRenew
+	}
+	_, _, _, _, err := issuer(ctx, nodetls.ACMEConfig{
+		Domain:     domain,
+		Email:      strings.TrimSpace(cfg.ACMEEmail),
+		StateDir:   stateDir,
+		AccountKey: filepath.Join(stateDir, "acme-account.key"),
+		Dest:       nodetls.Paths{CertFile: stageCert, KeyFile: stageKey},
+		Replace:    true,
+	})
+	if err != nil {
+		configure.CleanStaging(stageCert, stageKey)
+		return nil, nil, err
+	}
+	validate := n.validateStagedTLS
+	if validate == nil {
+		validate = configure.ValidateLeafForDomain
+	}
+	if err := validate(stageCert, stageKey, domain, time.Now()); err != nil {
+		configure.CleanStaging(stageCert, stageKey)
+		return nil, nil, err
+	}
+	stagedCert, err := nodetls.Load(nodetls.Paths{CertFile: stageCert, KeyFile: stageKey})
+	if err != nil {
+		configure.CleanStaging(stageCert, stageKey)
+		return nil, nil, err
+	}
+	newPin, err := nodetls.SPKIPinSHA256(stagedCert)
+	if err != nil {
+		configure.CleanStaging(stageCert, stageKey)
+		return nil, nil, err
+	}
+	pinChanged := nodetls.PinChanged(prevPin, newPin)
+	st := &stagedRegistrationTLS{
+		stageCert:  stageCert,
+		stageKey:   stageKey,
+		liveCert:   certFile,
+		liveKey:    keyFile,
+		newPin:     append([]byte(nil), newPin...),
+		pinChanged: pinChanged,
+	}
+	return newPin, st, nil
+}
+
+func (n *Node) activateStagedTLSAfterRegistration(ctx context.Context, staged *stagedRegistrationTLS) error {
+	if staged == nil {
+		return nil
+	}
+	defer configure.CleanStaging(staged.stageCert, staged.stageKey)
+
+	commit := n.commitTLS
+	if commit == nil {
+		commit = configure.AtomicCommitTLS
+	}
+	live := nodetls.Paths{CertFile: staged.liveCert, KeyFile: staged.liveKey}
+
+	// Catalog already carries the SPKI from bootstrap registration — verify then commit.
+	if err := n.verifyAdvertisedSPKI(ctx, staged.newPin); err != nil {
+		return fmt.Errorf("verify catalog SPKI after registration: %w", err)
+	}
+	if err := commit(staged.stageCert, staged.stageKey, staged.liveCert, staged.liveKey); err != nil {
+		return fmt.Errorf("activate staged TLS: %w", err)
+	}
+	cert, err := nodetls.Load(live)
+	if err != nil {
+		return err
+	}
+	if err := n.reloadActivatedTLS(cert); err != nil {
+		return err
+	}
+	if err := n.verifyActivatedSPKI(ctx, staged.newPin, live); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (n *Node) advertiseStagedSPKI(ctx context.Context, pin []byte) error {
 	if n.advertiseSPKI != nil {
 		return n.advertiseSPKI(ctx, append([]byte(nil), pin...))
 	}
-	_, err := n.RegisterWithSPKI(ctx, pin)
+	_, err := n.cp.UpdateNodeSPKI(ctx, pin)
 	return err
 }
 

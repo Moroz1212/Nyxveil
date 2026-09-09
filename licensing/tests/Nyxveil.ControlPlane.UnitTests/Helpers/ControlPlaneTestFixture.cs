@@ -171,6 +171,8 @@ public sealed class ControlPlaneTestFixture : IAsyncDisposable
         await Db.SaveChangesAsync();
     }
 
+    public IServiceScope CreateScope() => _provider.CreateScope();
+
     public static byte[] RandomKey32()
     {
         var bytes = new byte[32];

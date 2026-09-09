@@ -156,4 +156,49 @@ public sealed class NodesController : ControllerBase
             UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         });
     }
+
+    /// <summary>
+    /// POST /api/v1/node/spki — NodeAuth SPKI pin maintenance (authenticated node only).
+    /// </summary>
+    [HttpPost("node/spki")]
+    [NodeAuth]
+    [RateLimit]
+    public async Task<ActionResult<UpdateNodeSpkiResponse>> UpdateSpki(
+        [FromBody] UpdateNodeSpkiRequest request,
+        CancellationToken cancellationToken)
+    {
+        var nodeId = AuthTokenExtractor.GetNodeId(HttpContext)
+                     ?? throw new InvalidOperationException("node id missing after NodeAuth");
+        var result = await _registration.UpdateSpkiAsync(nodeId, request.SpkiPin, cancellationToken)
+            .ConfigureAwait(false);
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// POST /api/v1/nodes/{nodeId}/spki — path variant; node_id must match NodeAuth X-Node-Id.
+    /// </summary>
+    [HttpPost("nodes/{nodeId}/spki")]
+    [NodeAuth]
+    [RateLimit]
+    public async Task<ActionResult<UpdateNodeSpkiResponse>> UpdateSpkiByPath(
+        string nodeId,
+        [FromBody] UpdateNodeSpkiRequest request,
+        CancellationToken cancellationToken)
+    {
+        var authNodeId = AuthTokenExtractor.GetNodeId(HttpContext)
+                         ?? throw new InvalidOperationException("node id missing after NodeAuth");
+        if (!string.Equals(authNodeId, nodeId, StringComparison.Ordinal))
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Title = "Validation Failed",
+                Detail = "node_id path/header mismatch",
+                Status = StatusCodes.Status400BadRequest
+            });
+        }
+
+        var result = await _registration.UpdateSpkiAsync(authNodeId, request.SpkiPin, cancellationToken)
+            .ConfigureAwait(false);
+        return Ok(result);
+    }
 }

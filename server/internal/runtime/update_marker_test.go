@@ -3,6 +3,7 @@ package runtime
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -31,7 +32,8 @@ func TestWriteUpdateMarkerAtomicAndReadable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Mode().Perm()&0o077 != 0 {
+	// Unix permission bits are not meaningful the same way on Windows ACLs.
+	if runtime.GOOS != "windows" && st.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("marker mode too open: %v", st.Mode())
 	}
 	pinned, ok := ReadPinnedUpdateTarget(dir)

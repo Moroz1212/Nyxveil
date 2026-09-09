@@ -30,18 +30,29 @@ type updateTransaction struct {
 	CtlPrev           string                        `json:"ctl_prev"`
 	PreBaseline       health.Baseline               `json:"pre_baseline"`
 	PreTLS            filemeta.TLSOwnershipSnapshot `json:"pre_tls"`
-	Phase             string                        `json:"phase"` // assets_installed|resuming|committed|rolling_back|rolled_back
+	Phase             string                        `json:"phase"` // assets_installed|resuming|committed|rolling_back|rolled_back_healthy|rollback_failed
 	OwnerPID          int                           `json:"owner_pid"`
 	CreatedAt         time.Time                     `json:"created_at"`
 	ProcessCLIAtStart string                        `json:"process_cli_at_start"`
 }
 
 const (
-	txPhaseAssetsInstalled = "assets_installed"
-	txPhaseResuming        = "resuming"
-	txPhaseCommitted       = "committed"
-	txPhaseRollingBack     = "rolling_back"
-	txPhaseRolledBack      = "rolled_back"
+	txPhaseAssetsInstalled   = "assets_installed"
+	txPhaseResuming          = "resuming"
+	txPhaseCommitted         = "committed"
+	txPhaseRollingBack       = "rolling_back"
+	txPhaseRolledBackHealthy = "rolled_back_healthy"
+	txPhaseRollbackFailed    = "rollback_failed"
+	// txPhaseRolledBack is a legacy alias kept for older journals/tests.
+	txPhaseRolledBack = "rolled_back"
+)
+
+// Test hooks (overridable).
+var (
+	rollbackEnforceTLS   = filemeta.EnforceRuntimeTLS
+	rollbackVerifyHealth = func(pre health.Baseline, seconds int) (health.RollbackResult, bool) {
+		return verifyRollbackHealth(pre, seconds)
+	}
 )
 
 func txPath(id string) string {
@@ -70,11 +81,7 @@ func writeUpdateTransaction(tx *updateTransaction) error {
 	if err != nil {
 		return err
 	}
-	tmp := txPath(tx.ID) + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, txPath(tx.ID))
+	return filemeta.DurableWrite(txPath(tx.ID), b, 0o600)
 }
 
 func loadUpdateTransaction(id string) (*updateTransaction, error) {
@@ -136,9 +143,16 @@ func handoffPostCheckToNewCtl(tx *updateTransaction) bool {
 		os.Exit(0)
 	}
 	loaded, loadErr := loadUpdateTransaction(tx.ID)
-	if loadErr == nil && (loaded.Phase == txPhaseRolledBack || loaded.Phase == txPhaseRollingBack) {
-		fmt.Printf("self-update handoff: new ctl owns rollback (phase=%s); parent will not double-rollback\n", loaded.Phase)
-		os.Exit(1)
+	if loadErr == nil {
+		switch loaded.Phase {
+		case txPhaseRolledBackHealthy, txPhaseRolledBack, txPhaseRollingBack:
+			fmt.Printf("self-update handoff: new ctl owns rollback (phase=%s); parent will not double-rollback\n", loaded.Phase)
+			os.Exit(1)
+		case txPhaseRollbackFailed:
+			fmt.Printf("self-update handoff: new ctl rollback failed (phase=%s); parent will rollback\n", loaded.Phase)
+			removeUpdateTransaction(tx.ID)
+			return false
+		}
 	}
 	fmt.Printf("self-update handoff failed: %v (exit=%d); parent will rollback\n", err, code)
 	removeUpdateTransaction(tx.ID)
@@ -189,7 +203,9 @@ func runUpdateResume(args []string) error {
 
 	_ = os.Remove(paths.RollbackMarker())
 	tx.Phase = txPhaseCommitted
-	_ = writeUpdateTransaction(tx)
+	if err := writeUpdateTransaction(tx); err != nil {
+		return fmt.Errorf("update-resume: commit journal: %w", err)
+	}
 	removeUpdateTransaction(tx.ID)
 	return nil
 }
@@ -231,10 +247,21 @@ func performPostUpdateVerification(tx *updateTransaction) bool {
 	return true
 }
 
+func markRollbackFailed(tx *updateTransaction, reason error) error {
+	tx.Phase = txPhaseRollbackFailed
+	tx.OwnerPID = os.Getpid()
+	if werr := writeUpdateTransaction(tx); werr != nil {
+		return fmt.Errorf("rollback failed (%v); also journal write failed: %w", reason, werr)
+	}
+	return fmt.Errorf("update-resume failed; rollback_failed: %w", reason)
+}
+
 func rollbackAcrossHandoff(tx *updateTransaction) error {
 	tx.Phase = txPhaseRollingBack
 	tx.OwnerPID = os.Getpid()
-	_ = writeUpdateTransaction(tx)
+	if err := writeUpdateTransaction(tx); err != nil {
+		return fmt.Errorf("update-resume failed; could not journal rolling_back: %w", err)
+	}
 
 	fmt.Println("update-resume failed; rolling back previous binaries/TLS ownership…")
 	stateDir := runtimeStateDir()
@@ -262,27 +289,39 @@ func rollbackAcrossHandoff(tx *updateTransaction) error {
 	u.ExtraBinaries = extraDest
 	u.ExtraPrev = extraPrev
 	u.StateDir = stateDir
-	u.EnforceOwnership = filemeta.EnforceRuntimeTLS
+	u.EnforceOwnership = rollbackEnforceTLS
 
 	if err := u.RollbackInstalled(); err != nil {
 		fmt.Printf("rollback binary restore error: %v\n", err)
+		return markRollbackFailed(tx, err)
 	}
-	_ = filemeta.EnforceRuntimeTLS(stateDir)
-	if runtime.GOOS != "windows" {
-		_ = restartUnit("nyxveil-server")
-		rb, ok := verifyRollbackHealth(tx.PreBaseline, 45)
-		if ok {
-			fmt.Printf("rollback_complete=%v baseline_restored=%v\n", rb.Complete, rb.BaselineRestored)
-		} else {
-			fmt.Printf("rollback_complete=false baseline_restored=false reason=%s\n", rb.Reason)
+	if err := rollbackEnforceTLS(stateDir); err != nil {
+		fmt.Printf("rollback TLS enforce error: %v\n", err)
+		// Ownership enforce failure is non-fatal when service user is absent (CI);
+		// continue to restart/health so production still verifies runtime.
+	}
+
+	skipSystemd := runtime.GOOS == "windows" || strings.TrimSpace(os.Getenv("NYXVEIL_CONTROL_HTTP")) != ""
+	if !skipSystemd {
+		if err := restartUnit("nyxveil-server"); err != nil {
+			fmt.Printf("rollback restart failed: %v\n", err)
+			return markRollbackFailed(tx, err)
 		}
+		rb, ok := rollbackVerifyHealth(tx.PreBaseline, 45)
+		if !ok {
+			fmt.Printf("rollback_complete=false baseline_restored=false reason=%s\n", rb.Reason)
+			return markRollbackFailed(tx, fmt.Errorf("rollback health failed: %s", rb.Reason))
+		}
+		fmt.Printf("rollback_complete=%v baseline_restored=%v\n", rb.Complete, rb.BaselineRestored)
 	} else {
 		fmt.Printf("rollback_complete=true baseline_restored=true\n")
 	}
 
-	tx.Phase = txPhaseRolledBack
-	_ = writeUpdateTransaction(tx)
-	return fmt.Errorf("update-resume failed; rolled back to previous release")
+	tx.Phase = txPhaseRolledBackHealthy
+	if err := writeUpdateTransaction(tx); err != nil {
+		return fmt.Errorf("update-resume failed; binaries rolled back but journal write failed: %w", err)
+	}
+	return fmt.Errorf("update-resume failed; rolled_back_healthy to previous release")
 }
 
 func runtimeStateDir() string {

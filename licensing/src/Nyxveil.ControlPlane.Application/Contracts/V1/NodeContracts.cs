@@ -133,6 +133,27 @@ public sealed class NodeConfigResponse
 }
 
 /// <summary>
+/// NodeAuth SPKI pin maintenance — updates only <c>Node.SpkiPin</c>.
+/// </summary>
+public sealed class UpdateNodeSpkiRequest
+{
+    [JsonPropertyName("spki_pin")]
+    public byte[] SpkiPin { get; set; } = Array.Empty<byte>();
+}
+
+public sealed class UpdateNodeSpkiResponse
+{
+    [JsonPropertyName("node_id")]
+    public string NodeId { get; set; } = string.Empty;
+
+    [JsonPropertyName("spki_pin")]
+    public byte[] SpkiPin { get; set; } = Array.Empty<byte>();
+
+    [JsonPropertyName("config_version")]
+    public long ConfigVersion { get; set; }
+}
+
+/// <summary>
 /// Access-ticket verification public keys for nodes (never private keys).
 /// Compatible with Go <c>ticketkeys.File</c> plus <c>updated_at</c>.
 /// </summary>

@@ -166,6 +166,60 @@ else
   fail "mocked resolve_stable_server_version failed (got '${resolved:-}' rc=${rc})"
 fi
 
+echo "== semver MAX ignores GitHub API order + draft/prerelease =="
+cat >"${MOCK_CURL_BIN}/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    --connect-timeout|--max-time) shift 2 ;;
+    -H) shift 2 ;;
+    -fsSL|-f|-s|-S|-L) shift ;;
+    http*|HTTP*)
+      # Deliberately unordered: 1.1.9, 1.1.11, 1.1.10 + draft 1.1.12 + prerelease 1.1.13
+      payload='[
+        {"tag_name":"server-v1.1.9","draft":false,"prerelease":false},
+        {"tag_name":"server-v1.1.11","draft":false,"prerelease":false},
+        {"tag_name":"server-v1.1.10","draft":false,"prerelease":false},
+        {"tag_name":"server-v1.1.12","draft":true,"prerelease":false},
+        {"tag_name":"server-v1.1.13","draft":false,"prerelease":true}
+      ]'
+      if [[ -n "${out}" ]]; then
+        printf '%s\n' "${payload}" >"${out}"
+      else
+        printf '%s\n' "${payload}"
+      fi
+      exit 0
+      ;;
+    *) shift ;;
+  esac
+done
+echo "mock curl: no URL" >&2
+exit 1
+EOF
+chmod +x "${MOCK_CURL_BIN}/curl"
+
+set +e
+resolved_max="$(
+  PATH="${MOCK_CURL_BIN}:${PATH}" bash <<EOF
+set -euo pipefail
+GITHUB_REPO="Moroz1212/Nyxveil"
+GITHUB_RELEASE_RESOLVE_TIMEOUT_SEC=30
+die() { echo "\$*" >&2; exit 1; }
+$(sed -n '/^resolve_stable_server_version()/,/^}/p' "${INSTALLER}")
+resolve_stable_server_version
+EOF
+)"
+rc=$?
+set -e
+if [[ "${rc}" -eq 0 && "${resolved_max}" == "1.1.11" ]]; then
+  pass "semver MAX from unordered releases → 1.1.11"
+else
+  fail "semver MAX regression failed (got '${resolved_max:-}' rc=${rc}; want 1.1.11)"
+fi
+
 if [[ "${FAIL}" -ne 0 ]]; then
   echo "test-installer-version-resolution FAILED" >&2
   exit 1

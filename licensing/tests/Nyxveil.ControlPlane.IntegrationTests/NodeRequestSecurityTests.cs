@@ -347,6 +347,43 @@ public sealed class NodeRequestSecurityTests : IClassFixture<CustomWebApplicatio
         Assert.False(await final.AuditLog.AnyAsync(a => a.EntityId == _a));
     }
 
+    [Fact]
+    public async Task AnonymousSpkiUpdate_Returns401()
+    {
+        var pin = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        using var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/node/spki")
+        {
+            Content = new StringContent($"{{\"spki_pin\":\"{pin}\"}}", Encoding.UTF8, "application/json")
+        };
+        Assert.Equal(HttpStatusCode.Unauthorized, await Send(req));
+    }
+
+    [Fact]
+    public async Task NodeAuthCannotUpdateAnotherNodeSpkiViaPath()
+    {
+        var pinBytes = RandomNumberGenerator.GetBytes(32);
+        var body = JsonSerializer.Serialize(new { spki_pin = pinBytes });
+        // Authenticated as _a, targeting _b path — must be rejected; _b pin unchanged.
+        Assert.Equal(HttpStatusCode.Forbidden, await Send(Signed("POST", $"/api/v1/nodes/{_b}/spki", body)));
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ControlPlaneDbContext>();
+        var b = await db.Nodes.AsNoTracking().SingleAsync(n => n.NodeId == _b);
+        Assert.Null(b.SpkiPin);
+    }
+
+    [Fact]
+    public async Task NodeAuthCanUpdateOwnSpki()
+    {
+        var pinBytes = RandomNumberGenerator.GetBytes(32);
+        var body = JsonSerializer.Serialize(new { spki_pin = pinBytes });
+        using var resp = await _client.SendAsync(Signed("POST", "/api/v1/node/spki", body));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ControlPlaneDbContext>();
+        var a = await db.Nodes.AsNoTracking().SingleAsync(n => n.NodeId == _a);
+        Assert.Equal(pinBytes, a.SpkiPin);
+    }
+
     private sealed class FailingAudit(ControlPlaneDbContext db) : IAuditService
     {
         public async Task WriteAsync(AuditWriteRequest request, CancellationToken cancellationToken = default)

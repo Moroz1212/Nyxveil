@@ -17,6 +17,7 @@ public sealed class NodeRegistrationService : INodeRegistrationService
     private readonly ILicenseKeyHasher _hasher;
     private readonly NodeAuthService _nodeAuth;
     private readonly IClock _clock;
+    private readonly IAuditService _audit;
     private readonly NodeAuthOptions _nodeAuthOptions;
 
     public NodeRegistrationService(
@@ -24,12 +25,14 @@ public sealed class NodeRegistrationService : INodeRegistrationService
         ILicenseKeyHasher hasher,
         NodeAuthService nodeAuth,
         IClock clock,
+        IAuditService audit,
         IOptions<NodeAuthOptions> nodeAuthOptions)
     {
         _db = db;
         _hasher = hasher;
         _nodeAuth = nodeAuth;
         _clock = clock;
+        _audit = audit;
         _nodeAuthOptions = nodeAuthOptions.Value;
     }
 
@@ -222,6 +225,45 @@ public sealed class NodeRegistrationService : INodeRegistrationService
             ?? throw new NotFoundException("node config not found");
 
         return NodeManagementService.ToResponse(cfg);
+    }
+
+    public async Task<UpdateNodeSpkiResponse> UpdateSpkiAsync(
+        string authenticatedNodeId,
+        byte[] spkiPin,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(authenticatedNodeId))
+            throw new ValidationException("node_id is required");
+        if (spkiPin is not { Length: 32 })
+            throw new ValidationException("spki_pin must be exactly 32 bytes");
+
+        var node = await _db.Nodes.FirstOrDefaultAsync(n => n.NodeId == authenticatedNodeId, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new NotFoundException("node not found");
+
+        if (node.LifecycleState is NodeLifecycleState.Deleted or NodeLifecycleState.Revoked)
+            throw new ForbiddenException("node deleted/revoked");
+
+        // Only SpkiPin (+ UpdatedAt). Do not touch identity, location, admin flags, capacity, or endpoints.
+        node.SpkiPin = spkiPin;
+        node.UpdatedAt = _clock.UtcNow;
+        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        await _audit.WriteAsync(new AuditWriteRequest
+        {
+            Actor = authenticatedNodeId,
+            Action = "node.spki.updated",
+            EntityType = "Node",
+            EntityId = authenticatedNodeId,
+            Detail = $"{{\"config_version\":{node.ConfigVersion}}}"
+        }, cancellationToken).ConfigureAwait(false);
+
+        return new UpdateNodeSpkiResponse
+        {
+            NodeId = node.NodeId,
+            SpkiPin = node.SpkiPin ?? Array.Empty<byte>(),
+            ConfigVersion = node.ConfigVersion
+        };
     }
 
     /// <summary>

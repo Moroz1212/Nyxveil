@@ -285,64 +285,110 @@ is_truthy() {
   esac
 }
 
-node_is_healthy_online() {
-  local file="$1"
-  local status enabled draining maintenance version location
-  status="$(node_field "${file}" status)"
-  [[ -z "${status}" ]] && status="$(node_field "${file}" runtimeStatus)"
-  [[ -z "${status}" ]] && status="$(node_field "${file}" health)"
-  enabled="$(node_field "${file}" enabled)"
-  draining="$(node_field "${file}" draining)"
-  maintenance="$(node_field "${file}" maintenanceMode)"
-  [[ -z "${maintenance}" ]] && maintenance="$(node_field "${file}" maintenance)"
-  version="$(node_field "${file}" serverVersion)"
-  [[ -z "${version}" ]] && version="$(node_field "${file}" version)"
-  location="$(node_field "${file}" locationId)"
-
-  # Accept common healthy markers
-  case "${status,,}" in
-    healthy|online|ok|active) ;;
-    *)
-      # nested health object?
-      if ! is_truthy "$(node_field "${file}" healthy)"; then
-        return 1
-      fi
-      ;;
+is_falsey() {
+  case "${1:-}" in
+    false|False|FALSE|0|no|NO) return 0 ;;
+    *) return 1 ;;
   esac
-  if [[ -n "${enabled}" ]] && ! is_truthy "${enabled}"; then
-    return 1
-  fi
-  if is_truthy "${draining}"; then
-    return 1
-  fi
-  if is_truthy "${maintenance}"; then
+}
+
+# Required snake_case fields from NodeAdminStatusResponse (System.Text.Json).
+NODE_ADMIN_REQUIRED_FIELDS=(
+  node_id location_id enabled draining maintenance_mode healthy accepting online
+  last_seen_at current_sessions reported_server_version config_version lifecycle_state
+)
+
+node_missing_admin_fields() {
+  local file="$1" f v missing=()
+  for f in "${NODE_ADMIN_REQUIRED_FIELDS[@]}"; do
+    v="$(node_field "${file}" "${f}")"
+    if [[ -z "${v}" || "${v}" == "null" ]]; then
+      missing+=("${f}")
+    fi
+  done
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    printf '%s' "${missing[*]}"
     return 1
   fi
   return 0
 }
 
+last_seen_is_fresh() {
+  local raw="$1" max_age_sec="${2:-600}"
+  local py=python3
+  command -v python3 >/dev/null 2>&1 || py=python
+  if ! command -v "${py}" >/dev/null 2>&1; then
+    # Fallback: non-empty parseable-looking timestamp (ISO-8601 / RFC3339 prefix).
+    [[ "${raw}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || return 1
+    return 0
+  fi
+  NYXVEIL_LAST_SEEN="${raw}" NYXVEIL_MAX_AGE="${max_age_sec}" "${py}" - <<'PY'
+import os, sys
+from datetime import datetime, timezone, timedelta
+raw = (os.environ.get("NYXVEIL_LAST_SEEN") or "").strip()
+max_age = int(os.environ.get("NYXVEIL_MAX_AGE") or "600")
+if not raw:
+    sys.exit(1)
+s = raw.replace("Z", "+00:00")
+try:
+    dt = datetime.fromisoformat(s)
+except Exception:
+    sys.exit(1)
+if dt.tzinfo is None:
+    dt = dt.replace(tzinfo=timezone.utc)
+age = datetime.now(timezone.utc) - dt.astimezone(timezone.utc)
+sys.exit(0 if age <= timedelta(seconds=max_age) else 1)
+PY
+}
+
+# node_is_healthy_online requires full NodeAdminStatusResponse contract + operational flags.
+# Exit 0 = healthy; 1 = unhealthy/stale; 2 = API_CONTRACT (required field missing).
+node_is_healthy_online() {
+  local file="$1"
+  local expected_loc="${2:-${LOCATION_ID}}"
+  local missing location_id enabled draining maintenance_mode healthy online accepting last_seen_at
+
+  if ! missing="$(node_missing_admin_fields "${file}")"; then
+    echo "API_CONTRACT missing fields: ${missing}" >&2
+    return 2
+  fi
+
+  location_id="$(node_field "${file}" location_id)"
+  enabled="$(node_field "${file}" enabled)"
+  draining="$(node_field "${file}" draining)"
+  maintenance_mode="$(node_field "${file}" maintenance_mode)"
+  healthy="$(node_field "${file}" healthy)"
+  online="$(node_field "${file}" online)"
+  accepting="$(node_field "${file}" accepting)"
+  last_seen_at="$(node_field "${file}" last_seen_at)"
+
+  if [[ -n "${expected_loc}" && "${location_id}" != "${expected_loc}" ]]; then
+    return 1
+  fi
+  is_truthy "${enabled}" || return 1
+  is_falsey "${draining}" || return 1
+  is_falsey "${maintenance_mode}" || return 1
+  is_truthy "${healthy}" || return 1
+  is_truthy "${online}" || return 1
+  is_truthy "${accepting}" || return 1
+  last_seen_is_fresh "${last_seen_at}" 600 || return 1
+  return 0
+}
+
 wait_node_version() {
   local id="$1" want="$2" deadline=$((SECONDS + UPDATE_TIMEOUT))
-  local code file ver status
+  local code file ver
   file="${WORK}/wait-${id}.json"
   while (( SECONDS < deadline )); do
     code="$(get_node "${id}" "${file}")"
-    ver="$(node_field "${file}" serverVersion)"
-    [[ -z "${ver}" ]] && ver="$(node_field "${file}" version)"
-    status="$(node_field "${file}" lastCommandStatus)"
-    [[ -z "${status}" ]] && status="$(node_field "${file}" commandStatus)"
+    ver="$(node_field "${file}" reported_server_version)"
     if [[ "${ver}" == "${want}" ]]; then
-      echo "version=${ver}"
-      return 0
-    fi
-    # command succeeded field if present
-    if [[ "$(node_field "${file}" lastCommandSuccess)" == "true" && "${ver}" == "${want}" ]]; then
       echo "version=${ver}"
       return 0
     fi
     sleep "${POLL_SECONDS}"
   done
-  echo "timeout version=$(node_field "${file}" serverVersion) http_last=${code:-}"
+  echo "timeout version=$(node_field "${file}" reported_server_version) http_last=${code:-}"
   return 1
 }
 
@@ -357,16 +403,24 @@ if [[ "${code_a}" != "200" || "${code_b}" != "200" ]]; then
 fi
 record PREFLIGHT_NODES PASS "fetched A and B"
 
+miss_a="$(node_missing_admin_fields "${A_BEFORE}" || true)"
+miss_b="$(node_missing_admin_fields "${B_BEFORE}" || true)"
+if [[ -n "${miss_a}" || -n "${miss_b}" ]]; then
+  record API_CONTRACT FAIL "A missing=[${miss_a}] B missing=[${miss_b}]"
+  exit 1
+fi
+record API_CONTRACT PASS "NodeAdminStatusResponse snake_case fields present"
+
 A_ENABLED_BEFORE="$(node_field "${A_BEFORE}" enabled)"
 A_DRAINING_BEFORE="$(node_field "${A_BEFORE}" draining)"
-A_MAINT_BEFORE="$(node_field "${A_BEFORE}" maintenanceMode)"
-[[ -z "${A_MAINT_BEFORE}" ]] && A_MAINT_BEFORE="$(node_field "${A_BEFORE}" maintenance)"
-A_LOC="$(node_field "${A_BEFORE}" locationId)"
-B_LOC="$(node_field "${B_BEFORE}" locationId)"
-if [[ -n "${A_LOC}" && -n "${B_LOC}" && "${A_LOC}" != "${LOCATION_ID}" ]]; then
-  log "WARN: node A locationId=${A_LOC} differs from --location-id=${LOCATION_ID}"
+A_MAINT_BEFORE="$(node_field "${A_BEFORE}" maintenance_mode)"
+A_LOC="$(node_field "${A_BEFORE}" location_id)"
+B_LOC="$(node_field "${B_BEFORE}" location_id)"
+if [[ "${A_LOC}" != "${LOCATION_ID}" ]]; then
+  record SAME_LOCATION_PRECHECK FAIL "node A location_id=${A_LOC} differs from --location-id=${LOCATION_ID}"
+  exit 1
 fi
-if [[ -n "${A_LOC}" && -n "${B_LOC}" && "${A_LOC}" != "${B_LOC}" ]]; then
+if [[ "${A_LOC}" != "${B_LOC}" ]]; then
   record SAME_LOCATION_PRECHECK FAIL "A loc=${A_LOC} B loc=${B_LOC}"
   exit 1
 fi
@@ -410,7 +464,13 @@ get_node "${NODE_B_ID}" "${WORK}/b-after-restore.json" >/dev/null || true
 log "--- scenario TWO_HEALTHY ---"
 get_node "${NODE_A_ID}" "${WORK}/a-two.json" >/dev/null
 get_node "${NODE_B_ID}" "${WORK}/b-two.json" >/dev/null
-if ! node_is_healthy_online "${WORK}/a-two.json" || ! node_is_healthy_online "${WORK}/b-two.json"; then
+hc_a=0 hc_b=0
+node_is_healthy_online "${WORK}/a-two.json" || hc_a=$?
+node_is_healthy_online "${WORK}/b-two.json" || hc_b=$?
+if [[ "${hc_a}" -eq 2 || "${hc_b}" -eq 2 ]]; then
+  record API_CONTRACT FAIL "TWO_HEALTHY node status missing required snake_case fields"
+  record TWO_HEALTHY FAIL "API contract"
+elif [[ "${hc_a}" -ne 0 || "${hc_b}" -ne 0 ]]; then
   record TWO_HEALTHY FAIL "both nodes must be healthy/online/accepting before update"
 else
   upd_code="$(enqueue_update "${NODE_A_ID}")"
@@ -428,10 +488,8 @@ else
         break
       fi
       get_node "${NODE_A_ID}" "${WORK}/a-poll.json" >/dev/null || true
-      aver="$(node_field "${WORK}/a-poll.json" serverVersion)"
-      [[ -z "${aver}" ]] && aver="$(node_field "${WORK}/a-poll.json" version)"
-      astatus="$(node_field "${WORK}/a-poll.json" lastCommandStatus)"
-      if [[ "${aver}" == "${TARGET_VERSION}" ]] || [[ "${astatus,,}" == "succeeded" || "${astatus,,}" == "success" || "${astatus,,}" == "completed" ]]; then
+      aver="$(node_field "${WORK}/a-poll.json" reported_server_version)"
+      if [[ "${aver}" == "${TARGET_VERSION}" ]]; then
         break
       fi
       sleep "${POLL_SECONDS}"
@@ -465,8 +523,7 @@ log "--- scenario CONCURRENT ---"
 
 get_node "${NODE_A_ID}" "${WORK}/a-conc.json" >/dev/null
 get_node "${NODE_B_ID}" "${WORK}/b-conc.json" >/dev/null
-aver="$(node_field "${WORK}/a-conc.json" serverVersion)"
-[[ -z "${aver}" ]] && aver="$(node_field "${WORK}/a-conc.json" version)"
+aver="$(node_field "${WORK}/a-conc.json" reported_server_version)"
 
 CONC_FIRST="${NODE_A_ID}"
 CONC_SECOND="${NODE_B_ID}"
@@ -516,9 +573,9 @@ else
   set_draining "${NODE_B_ID}" true >/dev/null || true
   sleep 2
   get_node "${CROSS_LOCATION_NODE_ID}" "${WORK}/cross.json" >/dev/null || true
-  cross_loc="$(node_field "${WORK}/cross.json" locationId)"
+  cross_loc="$(node_field "${WORK}/cross.json" location_id)"
   if [[ -n "${cross_loc}" && "${cross_loc}" == "${LOCATION_ID}" ]]; then
-    record SAME_LOCATION_ONLY FAIL "cross node locationId=${cross_loc} matches LOCATION_ID (not cross-location)"
+    record SAME_LOCATION_ONLY FAIL "cross node location_id=${cross_loc} matches LOCATION_ID (not cross-location)"
   else
     upd_code="$(enqueue_update "${NODE_A_ID}")"
     cp -f "${WORK}/resp.body" "${WORK}/cross-upd.json" || true
@@ -538,8 +595,7 @@ log "--- scenario STATE_RESTORE ---"
 get_node "${NODE_A_ID}" "${WORK}/a-after.json" >/dev/null
 A_ENABLED_AFTER="$(node_field "${WORK}/a-after.json" enabled)"
 A_DRAINING_AFTER="$(node_field "${WORK}/a-after.json" draining)"
-A_MAINT_AFTER="$(node_field "${WORK}/a-after.json" maintenanceMode)"
-[[ -z "${A_MAINT_AFTER}" ]] && A_MAINT_AFTER="$(node_field "${WORK}/a-after.json" maintenance)"
+A_MAINT_AFTER="$(node_field "${WORK}/a-after.json" maintenance_mode)"
 
 # If we cannot observe fields, FAIL (not PASS)
 if [[ -z "${A_ENABLED_BEFORE}${A_DRAINING_BEFORE}${A_MAINT_BEFORE}" ]]; then

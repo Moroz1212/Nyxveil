@@ -110,22 +110,24 @@ func (n *Node) completePendingUpdate(ctx context.Context) {
 
 	cur := version.ServerVersion
 	target := strings.TrimPrefix(strings.TrimSpace(m.TargetVersion), "v")
+	prev := strings.TrimPrefix(strings.TrimSpace(m.PreviousVersion), "v")
 	got := strings.TrimPrefix(strings.TrimSpace(cur), "v")
-	if got != target {
-		n.finishUpdateLocal(ctx, m, false, "version_not_confirmed",
-			fmt.Sprintf("expected %s got %s", m.TargetVersion, cur))
-		return
-	}
 
 	st := n.Status()
 	st.Healthy = st.ComputeHealthy()
-	if !st.Healthy {
-		n.finishUpdateLocal(ctx, m, false, "health_failed",
-			"runtime unhealthy after update (cp/tun/ticket keys/datapath)")
-		return
-	}
 
-	n.finishUpdateLocal(ctx, m, true, "updated", "Runtime version and health confirmed: "+cur)
+	switch {
+	case got == prev && st.Healthy:
+		n.finishUpdateLocal(ctx, m, true, "rolled_back_healthy",
+			"Runtime rolled back and healthy at previous version: "+cur)
+	case got == target && st.Healthy:
+		n.finishUpdateLocal(ctx, m, true, "updated_healthy",
+			"Runtime version and health confirmed: "+cur)
+	default:
+		n.finishUpdateLocal(ctx, m, false, "outcome_unknown",
+			fmt.Sprintf("update outcome ambiguous: current=%s target=%s previous=%s healthy=%v",
+				cur, m.TargetVersion, m.PreviousVersion, st.Healthy))
+	}
 }
 
 func (n *Node) finishUpdateLocal(ctx context.Context, m updateMarker, success bool, code, message string) {

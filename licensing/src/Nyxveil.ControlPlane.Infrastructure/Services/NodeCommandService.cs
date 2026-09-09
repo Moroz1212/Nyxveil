@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Data;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
@@ -26,12 +28,31 @@ public sealed class NodeCommandService : INodeCommandService
     public static readonly TimeSpan UpdateDrainWait = TimeSpan.FromSeconds(120);
     public static readonly TimeSpan UpdateDrainPoll = TimeSpan.FromSeconds(2);
 
+    /// <summary>
+    /// Result codes that indicate a safe no-mutation / healthy rollback path where admin
+    /// state (including prior drain) may be restored after UpdateNodeLatest.
+    /// </summary>
+    private static readonly HashSet<string> SafeRestoreResultCodes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "no_mutation_failed",
+        "rolled_back_healthy",
+        "already_current",
+        "ahead",
+        "target_missing"
+    };
+
     private static readonly NodeCommandType[] DisruptiveTypes =
     [
         NodeCommandType.UpdateNodeLatest,
         NodeCommandType.RestartNyxveilService,
         NodeCommandType.RebootHost
     ];
+
+    /// <summary>
+    /// Process-level serialization for disruptive enqueue per location.
+    /// Complements SQL Server Serializable transactions (InMemory ignores isolation).
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> LocationEnqueueGates = new(StringComparer.Ordinal);
 
     private readonly ControlPlaneDbContext _db;
     private readonly IClock _clock;
@@ -64,16 +85,83 @@ public sealed class NodeCommandService : INodeCommandService
 
         AssertCanEnqueue(type, roles);
 
-        var node = await _db.Nodes.FirstOrDefaultAsync(n => n.NodeId == nodeId, cancellationToken)
+        if (IsDisruptive(type))
+        {
+            // Resolve location under AsNoTracking, then hold the per-location gate for the
+            // entire assert+insert path (process-level; complements SQL Serializable).
+            var locId = await _db.Nodes.AsNoTracking()
+                .Where(n => n.NodeId == nodeId)
+                .Select(n => n.LocationId)
+                .FirstOrDefaultAsync(cancellationToken)
+                .ConfigureAwait(false)
+                ?? throw new NotFoundException("node not found");
+
+            var gate = LocationEnqueueGates.GetOrAdd(locId, _ => new SemaphoreSlim(1, 1));
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var node = await _db.Nodes.FirstOrDefaultAsync(n => n.NodeId == nodeId, cancellationToken)
+                    .ConfigureAwait(false)
+                    ?? throw new NotFoundException("node not found");
+                if (node.LifecycleState is NodeLifecycleState.Deleted or NodeLifecycleState.Revoked)
+                    throw new ForbiddenException("node deleted/revoked");
+                return await EnqueueDisruptiveCoreAsync(node, type, actor, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
+        var nodeNonDisruptive = await _db.Nodes.FirstOrDefaultAsync(n => n.NodeId == nodeId, cancellationToken)
             .ConfigureAwait(false)
             ?? throw new NotFoundException("node not found");
-        if (node.LifecycleState is NodeLifecycleState.Deleted or NodeLifecycleState.Revoked)
+        if (nodeNonDisruptive.LifecycleState is NodeLifecycleState.Deleted or NodeLifecycleState.Revoked)
             throw new ForbiddenException("node deleted/revoked");
 
-        if (IsDisruptive(type))
+        return await EnqueueCoreAsync(nodeNonDisruptive, type, actor, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<NodeCommand> EnqueueDisruptiveCoreAsync(
+        Node node,
+        NodeCommandType type,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        await using var tx = await _db.Database
+            .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            // Re-load node under the transaction for a consistent location id / lifecycle snapshot.
+            node = await _db.Nodes.FirstAsync(n => n.NodeId == node.NodeId, cancellationToken)
+                .ConfigureAwait(false);
+            if (node.LifecycleState is NodeLifecycleState.Deleted or NodeLifecycleState.Revoked)
+                throw new ForbiddenException("node deleted/revoked");
+
             await AssertLocationDisruptionAllowedAsync(node, excludeCommandId: null, cancellationToken)
                 .ConfigureAwait(false);
 
+            var command = await EnqueueCoreAsync(node, type, actor, cancellationToken)
+                .ConfigureAwait(false);
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return command;
+        }
+        catch
+        {
+            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private async Task<NodeCommand> EnqueueCoreAsync(
+        Node node,
+        NodeCommandType type,
+        string actor,
+        CancellationToken cancellationToken)
+    {
         var now = _clock.UtcNow;
         var command = new NodeCommand
         {
@@ -301,8 +389,21 @@ public sealed class NodeCommandService : INodeCommandService
         if (command.Type == NodeCommandType.UpdateNodeLatest
             && command.Status is NodeCommandStatus.Succeeded or NodeCommandStatus.Failed)
         {
-            await RestoreAdminStateFromPayloadAsync(command, nodeId, cancellationToken)
-                .ConfigureAwait(false);
+            if (ShouldRestoreAdminState(success, command.ResultCode))
+            {
+                await RestoreAdminStateFromPayloadAsync(command, nodeId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else if (!success)
+            {
+                // Drain remains; ensure a clear failure code when caller omitted one.
+                if (string.IsNullOrWhiteSpace(command.ResultCode)
+                    && TryReadDrainEntered(command.PayloadJson))
+                {
+                    command.ResultCode = "failed_unhealthy_drained";
+                    await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
         }
 
         if (command.Status is NodeCommandStatus.Succeeded or NodeCommandStatus.Failed
@@ -338,13 +439,64 @@ public sealed class NodeCommandService : INodeCommandService
 
         foreach (var c in stale)
         {
+            var priorStatus = c.Status;
+            var drainEntered = c.Type == NodeCommandType.UpdateNodeLatest
+                               && TryReadDrainEntered(c.PayloadJson);
+            var hasSnapshot = c.Type == NodeCommandType.UpdateNodeLatest
+                              && TryReadAdminSnapshot(c.PayloadJson, out _, out _, out _);
+
+            if (drainEntered && hasSnapshot)
+            {
+                // Drain applied; outcome unknown — leave node drained.
+                c.Status = NodeCommandStatus.Failed;
+                c.CompletedAt ??= now;
+                c.ResultCode = "expired_outcome_unknown";
+                c.ResultMessage ??=
+                    "command TTL exceeded after drain entered; node left drained (outcome unknown)";
+                continue;
+            }
+
             c.Status = NodeCommandStatus.Expired;
             c.CompletedAt ??= now;
-            c.ResultCode ??= "expired";
-            c.ResultMessage ??= "command TTL exceeded";
+
+            if (c.Type == NodeCommandType.UpdateNodeLatest
+                && hasSnapshot
+                && priorStatus is NodeCommandStatus.Pending or NodeCommandStatus.Claimed
+                && !drainEntered)
+            {
+                c.ResultCode = "expired_no_mutation";
+                c.ResultMessage ??= "command TTL exceeded before drain; admin state restored";
+                await RestoreAdminStateFromPayloadAsync(c, c.NodeId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                c.ResultCode ??= "expired";
+                c.ResultMessage ??= "command TTL exceeded";
+            }
         }
 
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Whether UpdateNodeLatest completion should restore admin_state_before (including prior drain).
+    /// Success implies updated_healthy; listed result codes are safe no-mutation / rollback paths.
+    /// Generic failures (health_failed, version_not_confirmed, rollback_failed, outcome_unknown) do not restore.
+    /// </summary>
+    public static bool ShouldRestoreAdminState(bool success, string? resultCode)
+    {
+        if (success)
+            return true;
+        if (string.IsNullOrWhiteSpace(resultCode))
+            return false;
+        if (SafeRestoreResultCodes.Contains(resultCode.Trim()))
+            return true;
+        // Explicit safe-rollback naming convention.
+        if (resultCode.Contains("rolled_back", StringComparison.OrdinalIgnoreCase)
+            && resultCode.Contains("healthy", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return false;
     }
 
     private async Task PrepareUpdateDrainAsync(
@@ -361,7 +513,9 @@ public sealed class NodeCommandService : INodeCommandService
         var beforeDraining = cfg.Draining;
         var beforeMaintenance = cfg.MaintenanceMode;
 
-        MergePayloadAdminSnapshot(command, beforeEnabled, beforeDraining, beforeMaintenance, drainTimedOut: false);
+        MergePayloadAdminSnapshot(
+            command, beforeEnabled, beforeDraining, beforeMaintenance,
+            drainTimedOut: false, drainEntered: false);
 
         // Stop accepting new sessions; do not blindly clear prior manual drain/maintenance.
         cfg.Draining = true;
@@ -370,6 +524,9 @@ public sealed class NodeCommandService : INodeCommandService
         cfg.UpdatedAt = _clock.UtcNow;
         node.ConfigVersion = cfg.ConfigVersion;
         node.UpdatedAt = cfg.UpdatedAt;
+        MergePayloadAdminSnapshot(
+            command, beforeEnabled, beforeDraining, beforeMaintenance,
+            drainTimedOut: false, drainEntered: true);
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         var deadline = _clock.UtcNow.Add(UpdateDrainWait);
@@ -397,7 +554,9 @@ public sealed class NodeCommandService : INodeCommandService
         }
 
         if (timedOut)
-            MergePayloadAdminSnapshot(command, beforeEnabled, beforeDraining, beforeMaintenance, drainTimedOut: true);
+            MergePayloadAdminSnapshot(
+                command, beforeEnabled, beforeDraining, beforeMaintenance,
+                drainTimedOut: true, drainEntered: true);
 
         await _audit.WriteAsync(new AuditWriteRequest
         {
@@ -452,7 +611,8 @@ public sealed class NodeCommandService : INodeCommandService
         bool enabled,
         bool draining,
         bool maintenance,
-        bool drainTimedOut)
+        bool drainTimedOut,
+        bool drainEntered)
     {
         JsonObject root;
         try
@@ -473,7 +633,25 @@ public sealed class NodeCommandService : INodeCommandService
             ["maintenance_mode"] = maintenance
         };
         root["drain_timed_out"] = drainTimedOut;
+        root["drain_entered"] = drainEntered;
         command.PayloadJson = root.ToJsonString();
+    }
+
+    public static bool TryReadDrainEntered(string? payloadJson)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson))
+            return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(payloadJson);
+            if (!doc.RootElement.TryGetProperty("drain_entered", out var d))
+                return false;
+            return d.ValueKind == JsonValueKind.True;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     public static bool TryReadAdminSnapshot(

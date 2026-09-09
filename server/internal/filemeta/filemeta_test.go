@@ -76,6 +76,25 @@ func TestAtomicWriteAppliesMode(t *testing.T) {
 	}
 }
 
+func TestDurableWritePersistsContents(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "journal.json")
+	want := []byte(`{"phase":"rolled_back_healthy"}`)
+	if err := filemeta.DurableWrite(p, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	if _, err := os.Stat(p + ".durable.tmp"); !os.IsNotExist(err) {
+		t.Fatal("temp file should be gone after DurableWrite")
+	}
+}
+
 func TestRestoreCallsChownWithSavedIDs(t *testing.T) {
 	dir := t.TempDir()
 	live := filepath.Join(dir, "tls.key")

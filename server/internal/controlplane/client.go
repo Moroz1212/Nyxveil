@@ -236,6 +236,32 @@ func (c *Client) GetConfig(ctx context.Context) (*NodeConfig, error) {
 	return &out, nil
 }
 
+// UpdateNodeSPKIRequest is POST /api/v1/node/spki (NodeAuth).
+type UpdateNodeSPKIRequest struct {
+	SPKIPin []byte `json:"spki_pin"`
+}
+
+// UpdateNodeSPKIResponse is the NodeAuth SPKI maintenance result.
+type UpdateNodeSPKIResponse struct {
+	NodeID        string `json:"node_id"`
+	SPKIPin       []byte `json:"spki_pin"`
+	ConfigVersion int64  `json:"config_version"`
+}
+
+// UpdateNodeSPKI advertises a leaf SPKI pin for the authenticated node only.
+// Used for runtime/background TLS renewal — NOT installer bootstrap registration.
+func (c *Client) UpdateNodeSPKI(ctx context.Context, pin []byte) (*UpdateNodeSPKIResponse, error) {
+	if len(pin) != 32 {
+		return nil, fmt.Errorf("controlplane: spki_pin must be 32 bytes, got %d", len(pin))
+	}
+	req := UpdateNodeSPKIRequest{SPKIPin: append([]byte(nil), pin...)}
+	var out UpdateNodeSPKIResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/node/spki", req, true, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) GetRevocation(ctx context.Context) (*RevocationSnapshot, error) {
 	var out RevocationSnapshot
 	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/revocation", nil, true, &out); err != nil {
