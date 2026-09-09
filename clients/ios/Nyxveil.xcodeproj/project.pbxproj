@@ -1,0 +1,619 @@
+// !$*UTF8*$!
+{
+archiveVersion = 1;
+classes = {
+
+};
+objectVersion = 56;
+objects = {
+BE8695ABAB576E3266F40323 = {
+isa = "PBXFileReference";
+lastKnownFileType = "sourcecode.swift";
+path = "Nyxveil/NyxveilApp.swift";
+sourceTree = "<group>";
+};
+8200218EB4777485A946B34A = {
+isa = "PBXFileReference";
+lastKnownFileType = "sourcecode.swift";
+path = "NyxveilShared/ControlPlane.swift";
+sourceTree = "<group>";
+};
+6951D6D2968790D31F39E0ED = {
+isa = "PBXFileReference";
+lastKnownFileType = "sourcecode.swift";
+path = "NyxveilShared/CoreBridge.swift";
+sourceTree = "<group>";
+};
+14AB5BB49D9BF7C5724B6308 = {
+isa = "PBXFileReference";
+lastKnownFileType = "sourcecode.c.objc";
+path = "NyxveilShared/CoreShim.m";
+sourceTree = "<group>";
+};
+87BDD28B8D9A1A9C45E49DE2 = {
+isa = "PBXFileReference";
+lastKnownFileType = "sourcecode.swift";
+path = "NyxveilShared/Models.swift";
+sourceTree = "<group>";
+};
+1865E3ED0CF4DBF1E9B39E7F = {
+isa = "PBXFileReference";
+lastKnownFileType = "sourcecode.swift";
+path = "NyxveilShared/SecureStorage.swift";
+sourceTree = "<group>";
+};
+A81DBD4252A75D37DF667498 = {
+isa = "PBXFileReference";
+lastKnownFileType = "sourcecode.swift";
+path = "NyxveilTunnel/PacketTunnelProvider.swift";
+sourceTree = "<group>";
+};
+BA4A407A8A9327175B1C7CD7 = {
+isa = "PBXFileReference";
+lastKnownFileType = "sourcecode.swift";
+path = "Tests/ContractTests.swift";
+sourceTree = "<group>";
+};
+256557ED4E089520976E4B21 = {
+isa = "PBXFileReference";
+lastKnownFileType = "sourcecode.c.h";
+path = "NyxveilShared/CoreShim.h";
+sourceTree = "<group>";
+};
+54CBF589FBE154202315557B = {
+isa = "PBXFileReference";
+lastKnownFileType = "sourcecode.c.h";
+path = "NyxveilShared/NyxveilShared.h";
+sourceTree = "<group>";
+};
+811A77D4C417876477335792 = {
+isa = "PBXFileReference";
+lastKnownFileType = "text.xcconfig";
+path = "Config/Signing.xcconfig";
+sourceTree = "<group>";
+};
+2CF341A460E1C2A461E74CCF = {
+isa = "PBXFileReference";
+lastKnownFileType = "wrapper.xcframework";
+path = "Frameworks/Nvp.xcframework";
+sourceTree = "<group>";
+};
+7254E8760814D5E23E0B4CFE = {
+isa = "PBXFileReference";
+explicitFileType = "wrapper.application";
+path = "Nyxveil.app";
+sourceTree = "BUILT_PRODUCTS_DIR";
+};
+97FA8C2B67124BC59F389626 = {
+isa = "PBXFileReference";
+explicitFileType = "wrapper.app-extension";
+path = "NyxveilTunnel.appex";
+sourceTree = "BUILT_PRODUCTS_DIR";
+};
+43348426AB32EACCC4822DC4 = {
+isa = "PBXFileReference";
+explicitFileType = "wrapper.framework";
+path = "NyxveilShared.framework";
+sourceTree = "BUILT_PRODUCTS_DIR";
+};
+216F9005D2ACF9A81C06FD85 = {
+isa = "PBXFileReference";
+explicitFileType = "wrapper.cfbundle";
+path = "NyxveilTests.xctest";
+sourceTree = "BUILT_PRODUCTS_DIR";
+};
+CAB69EBEDD656D251666572F = {
+isa = "PBXBuildFile";
+fileRef = BE8695ABAB576E3266F40323;
+};
+88426789E5C146FEF1721BA7 = {
+isa = "PBXSourcesBuildPhase";
+buildActionMask = 2147483647;
+files = (CAB69EBEDD656D251666572F,);
+runOnlyForDeploymentPostprocessing = 0;
+};
+76B917120C62F74BB89351F8 = {
+isa = "PBXResourcesBuildPhase";
+buildActionMask = 2147483647;
+files = ();
+runOnlyForDeploymentPostprocessing = 0;
+};
+19ACC2557F9B735BF928B20C = {
+isa = "PBXBuildFile";
+fileRef = 43348426AB32EACCC4822DC4;
+};
+7C9937A85E6D5E5CDA79308D = {
+isa = "PBXFrameworksBuildPhase";
+buildActionMask = 2147483647;
+files = (19ACC2557F9B735BF928B20C,);
+runOnlyForDeploymentPostprocessing = 0;
+};
+6C98296EF95358F5B734EE48 = {
+isa = "PBXContainerItemProxy";
+containerPortal = 985959785319747668373CC6;
+proxyType = 1;
+remoteGlobalIDString = E5C071CF509B4E04ADCA83EC;
+remoteInfo = "NyxveilShared";
+};
+DE7F57795EE1F28648534A78 = {
+isa = "PBXTargetDependency";
+target = E5C071CF509B4E04ADCA83EC;
+targetProxy = 6C98296EF95358F5B734EE48;
+};
+DC404C914E4991B63756D5CA = {
+isa = "PBXContainerItemProxy";
+containerPortal = 985959785319747668373CC6;
+proxyType = 1;
+remoteGlobalIDString = A852B3BFEB81ACAE84102032;
+remoteInfo = "NyxveilTunnel";
+};
+F287388647EFF5BDF0C44529 = {
+isa = "PBXTargetDependency";
+target = A852B3BFEB81ACAE84102032;
+targetProxy = DC404C914E4991B63756D5CA;
+};
+3ED30F083A5EE2A208199B4C = {
+isa = "PBXBuildFile";
+fileRef = 97FA8C2B67124BC59F389626;
+settings = {
+ATTRIBUTES = ("RemoveHeadersOnCopy",);
+};
+};
+29C296BFB12C7EC437BC3604 = {
+isa = "PBXCopyFilesBuildPhase";
+buildActionMask = 2147483647;
+dstPath = "";
+dstSubfolderSpec = 13;
+name = "Embed App Extensions";
+files = (3ED30F083A5EE2A208199B4C,);
+runOnlyForDeploymentPostprocessing = 0;
+};
+6662CF39D0126BE31E67AEFF = {
+isa = "PBXBuildFile";
+fileRef = 43348426AB32EACCC4822DC4;
+settings = {
+ATTRIBUTES = ("CodeSignOnCopy", "RemoveHeadersOnCopy",);
+};
+};
+B056E9FD525EC7D25F49956D = {
+isa = "PBXCopyFilesBuildPhase";
+buildActionMask = 2147483647;
+dstPath = "";
+dstSubfolderSpec = 10;
+name = "Embed Frameworks";
+files = (6662CF39D0126BE31E67AEFF,);
+runOnlyForDeploymentPostprocessing = 0;
+};
+8E3EC47DBD579B860EE568A0 = {
+isa = "XCBuildConfiguration";
+name = "Debug";
+buildSettings = {
+PRODUCT_NAME = "$(TARGET_NAME)";
+SWIFT_VERSION = "5.0";
+CODE_SIGN_STYLE = "Automatic";
+PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_IDENTIFIER)";
+GENERATE_INFOPLIST_FILE = "YES";
+SKIP_INSTALL = "NO";
+LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", "@loader_path/Frameworks",);
+TARGETED_DEVICE_FAMILY = "1,2";
+APPLICATION_EXTENSION_API_ONLY = "NO";
+INFOPLIST_FILE = "Nyxveil/Info.plist";
+CODE_SIGN_ENTITLEMENTS = "Nyxveil/Nyxveil.entitlements";
+INFOPLIST_KEY_UILaunchScreen_Generation = "YES";
+INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+};
+};
+C1D993258F0FF15AC9431B0E = {
+isa = "XCBuildConfiguration";
+name = "Release";
+buildSettings = {
+PRODUCT_NAME = "$(TARGET_NAME)";
+SWIFT_VERSION = "5.0";
+CODE_SIGN_STYLE = "Automatic";
+PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_IDENTIFIER)";
+GENERATE_INFOPLIST_FILE = "YES";
+SKIP_INSTALL = "NO";
+LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", "@loader_path/Frameworks",);
+TARGETED_DEVICE_FAMILY = "1,2";
+APPLICATION_EXTENSION_API_ONLY = "NO";
+INFOPLIST_FILE = "Nyxveil/Info.plist";
+CODE_SIGN_ENTITLEMENTS = "Nyxveil/Nyxveil.entitlements";
+INFOPLIST_KEY_UILaunchScreen_Generation = "YES";
+INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+};
+};
+9085976498AA90A05EAEED38 = {
+isa = "XCConfigurationList";
+buildConfigurations = (8E3EC47DBD579B860EE568A0, C1D993258F0FF15AC9431B0E,);
+defaultConfigurationIsVisible = 0;
+defaultConfigurationName = "Debug";
+};
+7700BDE6C7FD5FAA260B20F6 = {
+isa = "PBXNativeTarget";
+buildConfigurationList = 9085976498AA90A05EAEED38;
+buildPhases = (88426789E5C146FEF1721BA7, 7C9937A85E6D5E5CDA79308D, 76B917120C62F74BB89351F8, 29C296BFB12C7EC437BC3604, B056E9FD525EC7D25F49956D,);
+buildRules = ();
+dependencies = (DE7F57795EE1F28648534A78, F287388647EFF5BDF0C44529,);
+name = "Nyxveil";
+productName = "Nyxveil";
+productReference = 7254E8760814D5E23E0B4CFE;
+productType = "com.apple.product-type.application";
+};
+3C3323E8493A9E44C804C0E7 = {
+isa = "PBXBuildFile";
+fileRef = A81DBD4252A75D37DF667498;
+};
+7766962D2F0B9CD7AF3AE150 = {
+isa = "PBXSourcesBuildPhase";
+buildActionMask = 2147483647;
+files = (3C3323E8493A9E44C804C0E7,);
+runOnlyForDeploymentPostprocessing = 0;
+};
+458E2A9ABC34EC5B2C964BE4 = {
+isa = "PBXResourcesBuildPhase";
+buildActionMask = 2147483647;
+files = ();
+runOnlyForDeploymentPostprocessing = 0;
+};
+D7F8CA88D188C3B744AEE7BE = {
+isa = "PBXBuildFile";
+fileRef = 43348426AB32EACCC4822DC4;
+};
+DF0C7A50719AB884F9F2C420 = {
+isa = "PBXFrameworksBuildPhase";
+buildActionMask = 2147483647;
+files = (D7F8CA88D188C3B744AEE7BE,);
+runOnlyForDeploymentPostprocessing = 0;
+};
+8EE696D8A81BDAE51AD353B5 = {
+isa = "PBXContainerItemProxy";
+containerPortal = 985959785319747668373CC6;
+proxyType = 1;
+remoteGlobalIDString = E5C071CF509B4E04ADCA83EC;
+remoteInfo = "NyxveilShared";
+};
+60DC68A1C11CF02E574179A4 = {
+isa = "PBXTargetDependency";
+target = E5C071CF509B4E04ADCA83EC;
+targetProxy = 8EE696D8A81BDAE51AD353B5;
+};
+15999A373A30A9BE5DFEA1CD = {
+isa = "XCBuildConfiguration";
+name = "Debug";
+buildSettings = {
+PRODUCT_NAME = "$(TARGET_NAME)";
+SWIFT_VERSION = "5.0";
+CODE_SIGN_STYLE = "Automatic";
+PRODUCT_BUNDLE_IDENTIFIER = "$(TUNNEL_BUNDLE_IDENTIFIER)";
+GENERATE_INFOPLIST_FILE = "YES";
+SKIP_INSTALL = "YES";
+LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", "@loader_path/Frameworks",);
+TARGETED_DEVICE_FAMILY = "1,2";
+APPLICATION_EXTENSION_API_ONLY = "YES";
+INFOPLIST_FILE = "NyxveilTunnel/Info.plist";
+CODE_SIGN_ENTITLEMENTS = "NyxveilTunnel/NyxveilTunnel.entitlements";
+};
+};
+31B2168E494B6423EE7202CD = {
+isa = "XCBuildConfiguration";
+name = "Release";
+buildSettings = {
+PRODUCT_NAME = "$(TARGET_NAME)";
+SWIFT_VERSION = "5.0";
+CODE_SIGN_STYLE = "Automatic";
+PRODUCT_BUNDLE_IDENTIFIER = "$(TUNNEL_BUNDLE_IDENTIFIER)";
+GENERATE_INFOPLIST_FILE = "YES";
+SKIP_INSTALL = "YES";
+LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", "@loader_path/Frameworks",);
+TARGETED_DEVICE_FAMILY = "1,2";
+APPLICATION_EXTENSION_API_ONLY = "YES";
+INFOPLIST_FILE = "NyxveilTunnel/Info.plist";
+CODE_SIGN_ENTITLEMENTS = "NyxveilTunnel/NyxveilTunnel.entitlements";
+};
+};
+BB46F91798FB3A2E241281B0 = {
+isa = "XCConfigurationList";
+buildConfigurations = (15999A373A30A9BE5DFEA1CD, 31B2168E494B6423EE7202CD,);
+defaultConfigurationIsVisible = 0;
+defaultConfigurationName = "Debug";
+};
+A852B3BFEB81ACAE84102032 = {
+isa = "PBXNativeTarget";
+buildConfigurationList = BB46F91798FB3A2E241281B0;
+buildPhases = (7766962D2F0B9CD7AF3AE150, DF0C7A50719AB884F9F2C420, 458E2A9ABC34EC5B2C964BE4,);
+buildRules = ();
+dependencies = (60DC68A1C11CF02E574179A4,);
+name = "NyxveilTunnel";
+productName = "NyxveilTunnel";
+productReference = 97FA8C2B67124BC59F389626;
+productType = "com.apple.product-type.app-extension";
+};
+A5529F7E5D78BC408879B126 = {
+isa = "PBXBuildFile";
+fileRef = 8200218EB4777485A946B34A;
+};
+0F111EE31D099BEB7AB318A1 = {
+isa = "PBXBuildFile";
+fileRef = 6951D6D2968790D31F39E0ED;
+};
+2ABDC4359F4EB29E754A85FB = {
+isa = "PBXBuildFile";
+fileRef = 14AB5BB49D9BF7C5724B6308;
+};
+E8C0734CDD9C44426D596F4E = {
+isa = "PBXBuildFile";
+fileRef = 87BDD28B8D9A1A9C45E49DE2;
+};
+E3F7550625CADD019D3048C5 = {
+isa = "PBXBuildFile";
+fileRef = 1865E3ED0CF4DBF1E9B39E7F;
+};
+73BEC9ED5F6B46230D3A398E = {
+isa = "PBXSourcesBuildPhase";
+buildActionMask = 2147483647;
+files = (A5529F7E5D78BC408879B126, 0F111EE31D099BEB7AB318A1, 2ABDC4359F4EB29E754A85FB, E8C0734CDD9C44426D596F4E, E3F7550625CADD019D3048C5,);
+runOnlyForDeploymentPostprocessing = 0;
+};
+12DAFD223B9E7122BA43DF20 = {
+isa = "PBXResourcesBuildPhase";
+buildActionMask = 2147483647;
+files = ();
+runOnlyForDeploymentPostprocessing = 0;
+};
+F8B4423BDED8CB30827C646C = {
+isa = "PBXBuildFile";
+fileRef = 2CF341A460E1C2A461E74CCF;
+};
+35F4AC9DCF844B1D5895B22B = {
+isa = "PBXFrameworksBuildPhase";
+buildActionMask = 2147483647;
+files = (F8B4423BDED8CB30827C646C,);
+runOnlyForDeploymentPostprocessing = 0;
+};
+BE502E3B31F15B2E7B6F886A = {
+isa = "PBXBuildFile";
+fileRef = 256557ED4E089520976E4B21;
+settings = {
+ATTRIBUTES = ("Public",);
+};
+};
+F25682290836A069188D20C3 = {
+isa = "PBXBuildFile";
+fileRef = 54CBF589FBE154202315557B;
+settings = {
+ATTRIBUTES = ("Public",);
+};
+};
+194E9FE656A1BCABFA596619 = {
+isa = "PBXHeadersBuildPhase";
+buildActionMask = 2147483647;
+files = (BE502E3B31F15B2E7B6F886A, F25682290836A069188D20C3,);
+runOnlyForDeploymentPostprocessing = 0;
+};
+AA07A038B0BC55EA269632FD = {
+isa = "XCBuildConfiguration";
+name = "Debug";
+buildSettings = {
+PRODUCT_NAME = "$(TARGET_NAME)";
+SWIFT_VERSION = "5.0";
+CODE_SIGN_STYLE = "Automatic";
+PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_IDENTIFIER).shared";
+GENERATE_INFOPLIST_FILE = "YES";
+SKIP_INSTALL = "YES";
+LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", "@loader_path/Frameworks",);
+TARGETED_DEVICE_FAMILY = "1,2";
+APPLICATION_EXTENSION_API_ONLY = "YES";
+DEFINES_MODULE = "YES";
+INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+OTHER_LDFLAGS = ("$(inherited)", "-lresolv",);
+};
+};
+A748F144C8E06206A0616774 = {
+isa = "XCBuildConfiguration";
+name = "Release";
+buildSettings = {
+PRODUCT_NAME = "$(TARGET_NAME)";
+SWIFT_VERSION = "5.0";
+CODE_SIGN_STYLE = "Automatic";
+PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_IDENTIFIER).shared";
+GENERATE_INFOPLIST_FILE = "YES";
+SKIP_INSTALL = "YES";
+LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", "@loader_path/Frameworks",);
+TARGETED_DEVICE_FAMILY = "1,2";
+APPLICATION_EXTENSION_API_ONLY = "YES";
+DEFINES_MODULE = "YES";
+INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+OTHER_LDFLAGS = ("$(inherited)", "-lresolv",);
+};
+};
+58668A3E9F1B37DD29CA09D9 = {
+isa = "XCConfigurationList";
+buildConfigurations = (AA07A038B0BC55EA269632FD, A748F144C8E06206A0616774,);
+defaultConfigurationIsVisible = 0;
+defaultConfigurationName = "Debug";
+};
+E5C071CF509B4E04ADCA83EC = {
+isa = "PBXNativeTarget";
+buildConfigurationList = 58668A3E9F1B37DD29CA09D9;
+buildPhases = (194E9FE656A1BCABFA596619, 73BEC9ED5F6B46230D3A398E, 35F4AC9DCF844B1D5895B22B, 12DAFD223B9E7122BA43DF20,);
+buildRules = ();
+dependencies = ();
+name = "NyxveilShared";
+productName = "NyxveilShared";
+productReference = 43348426AB32EACCC4822DC4;
+productType = "com.apple.product-type.framework";
+};
+EF1AD8F2668942928968CFDB = {
+isa = "PBXBuildFile";
+fileRef = BA4A407A8A9327175B1C7CD7;
+};
+ABB89B0F417902151EF998AF = {
+isa = "PBXSourcesBuildPhase";
+buildActionMask = 2147483647;
+files = (EF1AD8F2668942928968CFDB,);
+runOnlyForDeploymentPostprocessing = 0;
+};
+82E19AF12AC5881981D063DD = {
+isa = "PBXResourcesBuildPhase";
+buildActionMask = 2147483647;
+files = ();
+runOnlyForDeploymentPostprocessing = 0;
+};
+FF8C466351AE404BC20293AA = {
+isa = "PBXBuildFile";
+fileRef = 43348426AB32EACCC4822DC4;
+};
+F9760D324DE83AE6EC3410D0 = {
+isa = "PBXFrameworksBuildPhase";
+buildActionMask = 2147483647;
+files = (FF8C466351AE404BC20293AA,);
+runOnlyForDeploymentPostprocessing = 0;
+};
+54AC7A69B4408AA7D940FC22 = {
+isa = "PBXContainerItemProxy";
+containerPortal = 985959785319747668373CC6;
+proxyType = 1;
+remoteGlobalIDString = E5C071CF509B4E04ADCA83EC;
+remoteInfo = "NyxveilShared";
+};
+01242E87F603A9682D923066 = {
+isa = "PBXTargetDependency";
+target = E5C071CF509B4E04ADCA83EC;
+targetProxy = 54AC7A69B4408AA7D940FC22;
+};
+D6D20189480161C51124BE5C = {
+isa = "PBXBuildFile";
+fileRef = 43348426AB32EACCC4822DC4;
+settings = {
+ATTRIBUTES = ("CodeSignOnCopy", "RemoveHeadersOnCopy",);
+};
+};
+AA0447EECEBB31EFFE404309 = {
+isa = "PBXCopyFilesBuildPhase";
+buildActionMask = 2147483647;
+dstPath = "";
+dstSubfolderSpec = 10;
+name = "Embed Frameworks";
+files = (D6D20189480161C51124BE5C,);
+runOnlyForDeploymentPostprocessing = 0;
+};
+8EF44952C3D9A58BCC4BD19C = {
+isa = "XCBuildConfiguration";
+name = "Debug";
+buildSettings = {
+PRODUCT_NAME = "$(TARGET_NAME)";
+SWIFT_VERSION = "5.0";
+CODE_SIGN_STYLE = "Automatic";
+PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_IDENTIFIER).tests";
+GENERATE_INFOPLIST_FILE = "YES";
+SKIP_INSTALL = "YES";
+LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", "@loader_path/Frameworks",);
+TARGETED_DEVICE_FAMILY = "1,2";
+APPLICATION_EXTENSION_API_ONLY = "YES";
+};
+};
+DF930F303E72A5CC2ADDA8E7 = {
+isa = "XCBuildConfiguration";
+name = "Release";
+buildSettings = {
+PRODUCT_NAME = "$(TARGET_NAME)";
+SWIFT_VERSION = "5.0";
+CODE_SIGN_STYLE = "Automatic";
+PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_IDENTIFIER).tests";
+GENERATE_INFOPLIST_FILE = "YES";
+SKIP_INSTALL = "YES";
+LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", "@loader_path/Frameworks",);
+TARGETED_DEVICE_FAMILY = "1,2";
+APPLICATION_EXTENSION_API_ONLY = "YES";
+};
+};
+24F460AB6B6683F46AC89840 = {
+isa = "XCConfigurationList";
+buildConfigurations = (8EF44952C3D9A58BCC4BD19C, DF930F303E72A5CC2ADDA8E7,);
+defaultConfigurationIsVisible = 0;
+defaultConfigurationName = "Debug";
+};
+E9B6CCDC3D653377D9F266E8 = {
+isa = "PBXNativeTarget";
+buildConfigurationList = 24F460AB6B6683F46AC89840;
+buildPhases = (ABB89B0F417902151EF998AF, F9760D324DE83AE6EC3410D0, 82E19AF12AC5881981D063DD, AA0447EECEBB31EFFE404309,);
+buildRules = ();
+dependencies = (01242E87F603A9682D923066,);
+name = "NyxveilTests";
+productName = "NyxveilTests";
+productReference = 216F9005D2ACF9A81C06FD85;
+productType = "com.apple.product-type.bundle.unit-test";
+};
+433548979C024CC63B5F3B8D = {
+isa = "XCBuildConfiguration";
+name = "Debug";
+baseConfigurationReference = 811A77D4C417876477335792;
+buildSettings = {
+SDKROOT = "iphoneos";
+IPHONEOS_DEPLOYMENT_TARGET = "16.0";
+CLANG_ENABLE_MODULES = "YES";
+CLANG_ENABLE_OBJC_ARC = "YES";
+CLANG_WARN_DOCUMENTATION_COMMENTS = "YES";
+ENABLE_USER_SCRIPT_SANDBOXING = "NO";
+GCC_C_LANGUAGE_STANDARD = "gnu11";
+SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+ENABLE_TESTABILITY = "YES";
+DEBUG_INFORMATION_FORMAT = "dwarf";
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG";
+};
+};
+B800A40FDE6F0A0218D9BCD2 = {
+isa = "XCBuildConfiguration";
+name = "Release";
+baseConfigurationReference = 811A77D4C417876477335792;
+buildSettings = {
+SDKROOT = "iphoneos";
+IPHONEOS_DEPLOYMENT_TARGET = "16.0";
+CLANG_ENABLE_MODULES = "YES";
+CLANG_ENABLE_OBJC_ARC = "YES";
+CLANG_WARN_DOCUMENTATION_COMMENTS = "YES";
+ENABLE_USER_SCRIPT_SANDBOXING = "NO";
+GCC_C_LANGUAGE_STANDARD = "gnu11";
+SWIFT_OPTIMIZATION_LEVEL = "-O";
+ENABLE_TESTABILITY = "NO";
+DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
+};
+};
+3C05BEEE7303EE3FA7B250FA = {
+isa = "XCConfigurationList";
+buildConfigurations = (433548979C024CC63B5F3B8D, B800A40FDE6F0A0218D9BCD2,);
+defaultConfigurationIsVisible = 0;
+defaultConfigurationName = "Debug";
+};
+4EDC8BFAFC6BD936B849F38C = {
+isa = "PBXGroup";
+name = "Products";
+children = (7254E8760814D5E23E0B4CFE, 97FA8C2B67124BC59F389626, 43348426AB32EACCC4822DC4, 216F9005D2ACF9A81C06FD85,);
+sourceTree = "<group>";
+};
+EB814BE3CA3B78C0734C5605 = {
+isa = "PBXGroup";
+children = (BE8695ABAB576E3266F40323, 8200218EB4777485A946B34A, 6951D6D2968790D31F39E0ED, 14AB5BB49D9BF7C5724B6308, 87BDD28B8D9A1A9C45E49DE2, 1865E3ED0CF4DBF1E9B39E7F, A81DBD4252A75D37DF667498, BA4A407A8A9327175B1C7CD7, 256557ED4E089520976E4B21, 54CBF589FBE154202315557B, 811A77D4C417876477335792, 2CF341A460E1C2A461E74CCF, 4EDC8BFAFC6BD936B849F38C,);
+sourceTree = "<group>";
+};
+985959785319747668373CC6 = {
+isa = "PBXProject";
+attributes = {
+BuildIndependentTargetsInParallel = "YES";
+LastUpgradeCheck = "1600";
+};
+buildConfigurationList = 3C05BEEE7303EE3FA7B250FA;
+compatibilityVersion = "Xcode 14.0";
+developmentRegion = "en";
+hasScannedForEncodings = 0;
+knownRegions = ("en", "Base",);
+mainGroup = EB814BE3CA3B78C0734C5605;
+productRefGroup = 4EDC8BFAFC6BD936B849F38C;
+projectDirPath = "";
+projectRoot = "";
+targets = (7700BDE6C7FD5FAA260B20F6, A852B3BFEB81ACAE84102032, E5C071CF509B4E04ADCA83EC, E9B6CCDC3D653377D9F266E8,);
+};
+};
+rootObject = 985959785319747668373CC6;
+}

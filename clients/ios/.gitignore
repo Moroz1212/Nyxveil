@@ -1,0 +1,6 @@
+.build/
+Frameworks/
+Config/Local.xcconfig
+xcuserdata/
+*.xcuserstate
+DerivedData/

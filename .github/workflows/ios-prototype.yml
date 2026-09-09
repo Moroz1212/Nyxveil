@@ -1,0 +1,69 @@
+name: iOS prototype (unsigned)
+
+on:
+  push:
+    branches: [ios-prototype, 'codex/ios-*']
+    paths: ['clients/ios/**', '.github/workflows/ios-prototype.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-prototype-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: clients/ios
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: clients/ios/Bridge/go.mod
+          cache-dependency-path: clients/ios/Bridge/go.sum
+      - name: Toolchain and bridge tests
+        run: |
+          set -euo pipefail
+          mkdir -p .build
+          xcodebuild -version
+          go version
+          (cd Bridge && go test -race ./... -count=1 -timeout=90s && go vet ./...)
+      - name: Build Frozen Core XCFramework
+        run: bash scripts/build-core.sh 2>&1 | tee .build/core-build.log
+      - name: Build iPhone app and packet tunnel without signing
+        run: |
+          set -euo pipefail
+          xcodebuild -project Nyxveil.xcodeproj -scheme Nyxveil \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath .build/xcode CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee .build/xcode-build.log
+      - name: Package explicitly unsigned IPA
+        run: bash scripts/package-unsigned.sh
+      - name: Upload unsigned build and provenance
+        id: package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nyxveil-iOS-UNSIGNED-${{ github.sha }}
+          path: clients/ios/.build/output/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Build summary
+        run: |
+          echo '## Unsigned iOS prototype' >> "$GITHUB_STEP_SUMMARY"
+          echo 'NOT INSTALLABLE: requires Apple profiles supporting Packet Tunnel before installation.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Artifact ID: ${{ steps.package.outputs.artifact-id }}' >> "$GITHUB_STEP_SUMMARY"
+          cat .build/output/build-report.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iOS-build-logs-${{ github.sha }}
+          path: clients/ios/.build/*.log
+          if-no-files-found: ignore
+          retention-days: 7
