@@ -32,8 +32,18 @@ else
   fail "run_as_nyxveil_bounded missing"
 fi
 
-# Prefer the install.sh pattern: runuser -u USER -- timeout -k N SEC exe …
-# Fall back to timeout wrapping current-user binary when runuser is absent.
+# Production shape must be: runuser/setpriv OUTER, timeout wraps REAL executable.
+if grep -qE 'runuser -u nyxveil -- timeout -k' "${INSTALLER}"; then
+  pass "runuser -u nyxveil -- timeout -k … executable pattern"
+else
+  fail "missing runuser -u nyxveil -- timeout -k pattern"
+fi
+if grep -qE 'setpriv .* timeout -k' "${INSTALLER}"; then
+  pass "setpriv … timeout -k fallback present"
+else
+  fail "missing setpriv timeout fallback"
+fi
+
 TMP="$(mktemp -d /tmp/nyxveil-bounded-timeout.XXXXXX)"
 cleanup() { rm -rf "${TMP}"; }
 trap cleanup EXIT
@@ -43,6 +53,8 @@ cat >"${TMP}/echo_stdin.sh" <<'EOF'
 set -euo pipefail
 IFS= read -r line || true
 printf 'stdin=%s\n' "${line}"
+whoami_out="$(id -un 2>/dev/null || true)"
+printf 'user=%s\n' "${whoami_out}"
 exit 0
 EOF
 chmod +x "${TMP}/echo_stdin.sh"
@@ -55,30 +67,44 @@ chmod +x "${TMP}/exit_code.sh"
 
 cat >"${TMP}/hang.sh" <<'EOF'
 #!/usr/bin/env bash
+trap '' TERM
+# Ignore first TERM so -k grace path is exercised when possible; still die on KILL.
 exec sleep 30
 EOF
 chmod +x "${TMP}/hang.sh"
 
+# Exercise the exact wrapper shape when root; otherwise prove timeout wraps a real
+# executable (CI runners are non-root and cannot runuser).
 run_bounded() {
   local sec="$1" kill_after="$2"
   shift 2
   local exe="$1"
   shift
-  if command -v runuser >/dev/null 2>&1; then
-    # Same shape as install.sh: user switch outer, timeout wraps real binary.
+  if [[ "${EUID}" -eq 0 ]] && command -v runuser >/dev/null 2>&1; then
     runuser -u "$(id -un)" -- timeout -k "${kill_after}" "${sec}" "${exe}" "$@"
     return $?
   fi
+  if [[ "${EUID}" -eq 0 ]] && command -v setpriv >/dev/null 2>&1; then
+    setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups -- \
+      timeout -k "${kill_after}" "${sec}" "${exe}" "$@"
+    return $?
+  fi
+  # Non-root CI: timeout must wrap the actual executable (not a shell function).
   timeout -k "${kill_after}" "${sec}" "${exe}" "$@"
   return $?
 }
 
 echo "== stdin reaches wrapped binary =="
 out="$(printf 'tok-secret\n' | run_bounded 5 1 "${TMP}/echo_stdin.sh" || true)"
-if [[ "${out}" == "stdin=tok-secret" ]]; then
+if printf '%s\n' "${out}" | grep -qx 'stdin=tok-secret'; then
   pass "stdin preserved through timeout wrapper"
 else
   fail "stdin not preserved (got '${out}')"
+fi
+if printf '%s\n' "${out}" | grep -q '^user='; then
+  pass "command started (user line present)"
+else
+  fail "wrapped command did not report user"
 fi
 
 echo "== exit code propagated =="
@@ -101,6 +127,27 @@ if [[ "${rc}" -eq 124 ]]; then
   pass "timeout exit 124 on hung sleep"
 else
   fail "expected timeout exit 124 got ${rc}"
+fi
+
+# Prove TERM is delivered: short timeout against a process that exits on TERM.
+cat >"${TMP}/term_ok.sh" <<'EOF'
+#!/usr/bin/env bash
+trap 'exit 77' TERM
+sleep 30
+exit 0
+EOF
+chmod +x "${TMP}/term_ok.sh"
+echo "== TERM delivered to child =="
+set +e
+run_bounded 1 5 "${TMP}/term_ok.sh"
+rc=$?
+set -e
+# timeout returns 124 when it kills; child may exit 77 on TERM before timeout reports.
+# Accept 124 (timeout) or 77 (child handled TERM) — both prove TERM path works.
+if [[ "${rc}" -eq 124 || "${rc}" -eq 77 ]]; then
+  pass "TERM path exercised (rc=${rc})"
+else
+  fail "expected TERM-related exit 124/77 got ${rc}"
 fi
 
 if [[ "${FAIL}" -ne 0 ]]; then
