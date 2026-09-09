@@ -1,0 +1,105 @@
+@page "/admin/operations"
+@attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@inject IServiceScopeFactory Scopes
+
+<PageTitle>Обновления и операции · Nyxveil</PageTitle>
+<div class="page-header">
+    <div><div class="eyebrow">Инфраструктура</div><h1>Обновления и операции</h1>
+        <div class="sub">Принятие команды, выполнение и результат — в одном журнале. Время UTC.</div></div>
+    <button class="btn btn-ghost" disabled="@_busy" @onclick="RefreshAsync">Обновить статус</button>
+</div>
+@if (_error is not null) { <div class="alert alert-error" role="alert">@_error</div> }
+<div class="operations-intro">
+    <section class="panel">
+        <div class="eyebrow">Стабильный выпуск сервера</div>
+        <h2>@(_release?.LatestVersion ?? "Версия не подтверждена")</h2>
+        <p class="muted">@_release?.ReleaseTag · источник: @(_release?.SourceStatus ?? "проверка")</p>
+        @if (_release?.ErrorMessage is not null) { <p class="alert alert-error">@_release.ErrorMessage</p> }
+        <p class="muted">Целевая версия фиксируется при постановке команды. Откат отображается как неудачное обновление.</p>
+        <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
+            <button class="btn" disabled="@_busy" @onclick="RefreshReleaseAsync">Проверить GitHub Releases</button>
+        </AuthorizeView>
+    </section>
+    <section class="operations-guide">
+        <h2>Управление по локациям</h2>
+        <p>Для обновления откройте карточку VPN-сервера. В его локации должен оставаться другой здоровый сервер со свободной ёмкостью.</p>
+        <p class="muted">Во время обновления новые подключения направляются на доступные серверы. Неопределённый результат требует диагностики.</p>
+        <div class="actions"><a class="btn btn-ghost" href="/admin/nodes">Выбрать сервер</a><a class="btn btn-ghost" href="/admin/infrastructure">Сертификаты</a></div>
+    </section>
+</div>
+<div class="toolbar">
+    <label>Поиск<input @bind="_query" @bind:event="oninput" placeholder="Сервер, версия или результат" /></label>
+    <label>Показать<select @bind="_filter"><option value="all">Все операции</option><option value="active">В процессе</option><option value="failed">Ошибки и откаты</option></select></label>
+    <span class="muted">Последние 100 операций · обновление каждые 10 секунд</span>
+</div>
+<div class="table-wrap"><table class="data">
+    <thead><tr><th>Время UTC / сервер</th><th>Операция / версии</th><th>Состояние</th><th>Результат</th></tr></thead>
+    <tbody>
+    @foreach (var command in VisibleCommands)
+    {
+        <tr><td>@command.CreatedAt.ToString("dd.MM.yyyy HH:mm:ss")<br /><a href="@($"/admin/nodes/{Uri.EscapeDataString(command.NodeId)}")">@command.NodeId</a></td>
+        <td>@Label(command.Type)<div class="muted">@command.PreviousVersion → @command.TargetVersion</div></td>
+        <td><StatusBadge Status="@command.Status.ToString()" /><div class="muted">@command.ProgressPhase</div></td>
+        <td><strong>@command.ResultCode</strong><div class="muted">@(command.ResultMessage ?? command.ProgressMessage ?? "Ожидание Node")</div></td></tr>
+    }
+    </tbody>
+</table></div>
+@if (!_busy && !VisibleCommands.Any()) { <p class="muted">Операций по выбранному фильтру нет.</p> }
+
+@code {
+    private readonly CancellationTokenSource _stop = new();
+    private Task? _poll;
+    private List<NodeCommand> _commands = new();
+    private ServerReleaseInfo? _release;
+    private string _query = "", _filter = "all";
+    private string? _error;
+    private bool _busy;
+    private IEnumerable<NodeCommand> VisibleCommands => _commands.Where(c =>
+        (_filter == "all" || (_filter == "active" ? c.CompletedAt is null : c.Status is NodeCommandStatus.Failed or NodeCommandStatus.Expired))
+        && $"{c.NodeId} {c.TargetVersion} {c.ResultCode} {c.ResultMessage}".Contains(_query, StringComparison.OrdinalIgnoreCase));
+    protected override async Task OnInitializedAsync() => await RefreshAsync();
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender) _poll = PollAsync();
+        return Task.CompletedTask;
+    }
+    private async Task PollAsync()
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+        try { while (await timer.WaitForNextTickAsync(_stop.Token)) await InvokeAsync(async () => { await RefreshAsync(); StateHasChanged(); }); }
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
+    }
+    private Task RefreshAsync() => LoadAsync(false);
+    private Task RefreshReleaseAsync() => LoadAsync(true);
+    private async Task LoadAsync(bool refreshRelease)
+    {
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                _commands = (await sp.GetRequiredService<INodeCommandService>().ListRecentAsync(100, _stop.Token)).ToList();
+                var releases = sp.GetRequiredService<IServerReleaseService>();
+                _release = refreshRelease ? await releases.RefreshAsync(_stop.Token) : await releases.GetLatestAsync(_stop.Token);
+            });
+            _error = null;
+        }
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
+        catch (Exception ex) { _error = UiText.Error(ex.Message); }
+        finally { _busy = false; }
+    }
+    private static string Label(NodeCommandType type) => type switch
+    {
+        NodeCommandType.UpdateNodeLatest => "Обновление ПО", NodeCommandType.RenewCertificate => "Обновление сертификата",
+        NodeCommandType.RestartNyxveilService => "Перезапуск службы", NodeCommandType.RebootHost => "Перезагрузка ОС", _ => type.ToString()
+    };
+    public async ValueTask DisposeAsync()
+    {
+        _stop.Cancel();
+        if (_poll is not null) await _poll;
+        _stop.Dispose();
+    }
+}

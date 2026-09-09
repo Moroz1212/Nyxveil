@@ -197,7 +197,7 @@ public sealed class NodeManagementService : INodeManagementService
         if (string.IsNullOrWhiteSpace(nodeId))
             throw new ValidationException("node_id is required");
 
-        await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await using var tx = await LockLocationAsync(nodeId, cancellationToken);
         try
         {
             var node = await _db.Nodes.FirstOrDefaultAsync(n => n.NodeId == nodeId, cancellationToken)
@@ -240,6 +240,23 @@ public sealed class NodeManagementService : INodeManagementService
         }
     }
 
+    private async Task<ManagementOperationLock> LockLocationAsync(string nodeId, CancellationToken ct)
+    {
+        var location = await _db.Nodes.AsNoTracking().Where(n => n.NodeId == nodeId)
+            .Select(n => n.LocationId).SingleOrDefaultAsync(ct) ?? throw new NotFoundException("node not found");
+        var lease = await ManagementOperationLock.AcquireAsync(_db, "location:" + location, ct);
+        try
+        {
+            if (await _db.NodeCommands.AsNoTracking().AnyAsync(c => c.Node.LocationId == location
+                && (c.Status == NodeCommandStatus.Pending || c.Status == NodeCommandStatus.Claimed
+                    || c.Status == NodeCommandStatus.Running || c.Status == NodeCommandStatus.Executing
+                    || c.Status == NodeCommandStatus.Accepted), ct))
+                throw new ConflictException("location has an active management command; wait for completion before changing node configuration");
+            return lease;
+        }
+        catch { await lease.DisposeAsync(); throw; }
+    }
+
     private async Task MutateAsync(
         string nodeId,
         string actor,
@@ -250,7 +267,7 @@ public sealed class NodeManagementService : INodeManagementService
         if (string.IsNullOrWhiteSpace(nodeId))
             throw new ValidationException("node_id is required");
 
-        await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await using var tx = await LockLocationAsync(nodeId, cancellationToken);
 
         try
         {

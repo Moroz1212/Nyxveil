@@ -111,6 +111,12 @@ public static class TlsConfigureCommand
         for (var i = 2; i < args.Length; i++)
         {
             var a = args[i];
+            if (a.Equals("--certificate-pfx-password-stdin", StringComparison.OrdinalIgnoreCase))
+            {
+                pfxPassword = Console.In.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult()
+                    ?? throw new InvalidOperationException("PFX password stdin closed");
+                continue;
+            }
             if (a.Equals("--check", StringComparison.OrdinalIgnoreCase) ||
                 a.Equals("--dry-run", StringComparison.OrdinalIgnoreCase))
             {

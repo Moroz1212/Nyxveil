@@ -446,7 +446,7 @@ public class ControlPlaneDbContext : IdentityDbContext<ApplicationUser>
             e.Property(x => x.ErrorMessage).HasMaxLength(1024);
             e.HasIndex(x => new { x.Status, x.CreatedAt });
             e.ToTable(t =>
-                t.HasCheckConstraint("CK_CertificateRenewalOperations_Status", "[Status] BETWEEN 0 AND 7"));
+                t.HasCheckConstraint("CK_CertificateRenewalOperations_Status", "[Status] BETWEEN 0 AND 9"));
         });
     }
 }

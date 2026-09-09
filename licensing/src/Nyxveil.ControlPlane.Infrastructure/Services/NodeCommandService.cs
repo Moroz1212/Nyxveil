@@ -1,5 +1,3 @@
-using System.Collections.Concurrent;
-using System.Data;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
@@ -48,12 +46,6 @@ public sealed class NodeCommandService : INodeCommandService
         NodeCommandType.RebootHost
     ];
 
-    /// <summary>
-    /// Process-level serialization for disruptive enqueue per location.
-    /// Complements SQL Server Serializable transactions (InMemory ignores isolation).
-    /// </summary>
-    private static readonly ConcurrentDictionary<string, SemaphoreSlim> LocationEnqueueGates = new(StringComparer.Ordinal);
-
     private readonly ControlPlaneDbContext _db;
     private readonly IClock _clock;
     private readonly IAuditService _audit;
@@ -78,12 +70,29 @@ public sealed class NodeCommandService : INodeCommandService
         IEnumerable<string> roles,
         CancellationToken cancellationToken = default)
     {
+        return await WithLocationLockAsync(nodeId,
+            () => EnqueueLockedAsync(nodeId, type, actor, roles, cancellationToken), cancellationToken);
+    }
+
+    private async Task<NodeCommand> EnqueueLockedAsync(string nodeId, NodeCommandType type,
+        string actor, IEnumerable<string> roles, CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(nodeId))
             throw new ValidationException("node_id is required");
         if (string.IsNullOrWhiteSpace(actor))
             throw new ValidationException("actor is required");
 
         AssertCanEnqueue(type, roles);
+        await ExpireStaleForNodeAsync(nodeId, cancellationToken);
+
+        if (!Enum.IsDefined(type))
+            throw new ValidationException("unsupported command type");
+
+        if (await _db.NodeCommands.AsNoTracking().AnyAsync(c => c.NodeId == nodeId
+            && (c.Status == NodeCommandStatus.Pending || c.Status == NodeCommandStatus.Claimed
+                || c.Status == NodeCommandStatus.Running || c.Status == NodeCommandStatus.Executing
+                || c.Status == NodeCommandStatus.Accepted), cancellationToken))
+            throw new ConflictException("another command is already active on this node");
 
         if (IsDisruptive(type))
         {
@@ -96,10 +105,6 @@ public sealed class NodeCommandService : INodeCommandService
                 .ConfigureAwait(false)
                 ?? throw new NotFoundException("node not found");
 
-            var gate = LocationEnqueueGates.GetOrAdd(locId, _ => new SemaphoreSlim(1, 1));
-            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
                 var node = await _db.Nodes.FirstOrDefaultAsync(n => n.NodeId == nodeId, cancellationToken)
                     .ConfigureAwait(false)
                     ?? throw new NotFoundException("node not found");
@@ -107,11 +112,6 @@ public sealed class NodeCommandService : INodeCommandService
                     throw new ForbiddenException("node deleted/revoked");
                 return await EnqueueDisruptiveCoreAsync(node, type, actor, cancellationToken)
                     .ConfigureAwait(false);
-            }
-            finally
-            {
-                gate.Release();
-            }
         }
 
         var nodeNonDisruptive = await _db.Nodes.FirstOrDefaultAsync(n => n.NodeId == nodeId, cancellationToken)
@@ -130,11 +130,6 @@ public sealed class NodeCommandService : INodeCommandService
         string actor,
         CancellationToken cancellationToken)
     {
-        await using var tx = await _db.Database
-            .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
-            .ConfigureAwait(false);
-        try
-        {
             // Re-load node under the transaction for a consistent location id / lifecycle snapshot.
             node = await _db.Nodes.FirstAsync(n => n.NodeId == node.NodeId, cancellationToken)
                 .ConfigureAwait(false);
@@ -146,14 +141,7 @@ public sealed class NodeCommandService : INodeCommandService
 
             var command = await EnqueueCoreAsync(node, type, actor, cancellationToken)
                 .ConfigureAwait(false);
-            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
             return command;
-        }
-        catch
-        {
-            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
-            throw;
-        }
     }
 
     private async Task<NodeCommand> EnqueueCoreAsync(
@@ -163,6 +151,8 @@ public sealed class NodeCommandService : INodeCommandService
         CancellationToken cancellationToken)
     {
         var now = _clock.UtcNow;
+        if (!NodeCommandCapabilities.Supports(node, type))
+            throw new ConflictException("node has not advertised support for this command");
         var command = new NodeCommand
         {
             Id = Guid.NewGuid(),
@@ -182,9 +172,11 @@ public sealed class NodeCommandService : INodeCommandService
         if (type == NodeCommandType.UpdateNodeLatest)
         {
             var latest = await _releases.GetLatestAsync(cancellationToken).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(latest.LatestVersion))
+            if (latest.SourceStatus is not ("ok" or "cached")
+                || !SemVersion.TryParse(latest.LatestVersion, out var target) || target.IsPrerelease
+                || latest.ReleaseTag != "server-v" + target)
                 throw new ConflictException("latest stable server release is unknown; refresh Server Releases and retry");
-            command.TargetVersion = latest.LatestVersion.Trim().TrimStart('v', 'V');
+            command.TargetVersion = target.ToString();
             command.PayloadJson =
                 $"{{\"target_version\":\"{Escape(command.TargetVersion)}\",\"release_tag\":\"{Escape(latest.ReleaseTag)}\"}}";
         }
@@ -232,12 +224,15 @@ public sealed class NodeCommandService : INodeCommandService
     }
 
     public async Task<NodeCommand?> ClaimNextAsync(string nodeId, CancellationToken cancellationToken = default)
+        => await WithLocationLockAsync(nodeId, () => ClaimNextLockedAsync(nodeId, cancellationToken), cancellationToken);
+
+    private async Task<NodeCommand?> ClaimNextLockedAsync(string nodeId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(nodeId))
             throw new ValidationException("node_id is required");
 
         var now = _clock.UtcNow;
-        await ExpireStaleAsync(cancellationToken).ConfigureAwait(false);
+        await ExpireStaleForNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
 
         while (true)
         {
@@ -272,6 +267,25 @@ public sealed class NodeCommandService : INodeCommandService
                 }
             }
 
+            if (command.Type == NodeCommandType.UpdateNodeLatest)
+            {
+                if (!TryReadDrainEntered(command.PayloadJson))
+                    await PrepareUpdateDrainAsync(command, nodeId, cancellationToken);
+                var drainingNode = await _db.Nodes.AsNoTracking().SingleAsync(n => n.NodeId == nodeId, cancellationToken);
+                // Durable wait across short polls: Node's HTTP timeout is 30 seconds.
+                // Require a heartbeat received after drain was published before dispatch.
+                if (drainingNode.LastSeenAt <= command.ProgressUpdatedAt || drainingNode.LastSeenAt is null)
+                    return null;
+                if (drainingNode.CurrentSessions > 0 && _clock.UtcNow < command.ProgressUpdatedAt + UpdateDrainWait)
+                    return null;
+                if (drainingNode.CurrentSessions > 0)
+                {
+                    var payload = JsonNode.Parse(command.PayloadJson!)!.AsObject();
+                    payload["drain_timed_out"] = true;
+                    command.PayloadJson = payload.ToJsonString();
+                }
+            }
+
             command.Status = NodeCommandStatus.Claimed;
             command.ClaimedAt = now;
             command.AttemptCount += 1;
@@ -289,6 +303,9 @@ public sealed class NodeCommandService : INodeCommandService
     }
 
     public async Task MarkStartedAsync(Guid id, string nodeId, CancellationToken cancellationToken = default)
+        => await WithLocationLockAsync(nodeId, async () => { await MarkStartedLockedAsync(id, nodeId, cancellationToken); return true; }, cancellationToken);
+
+    private async Task MarkStartedLockedAsync(Guid id, string nodeId, CancellationToken cancellationToken)
     {
         var command = await GetOwnedCommandAsync(id, nodeId, cancellationToken).ConfigureAwait(false);
         if (command.Status is NodeCommandStatus.Succeeded or NodeCommandStatus.Failed
@@ -302,7 +319,16 @@ public sealed class NodeCommandService : INodeCommandService
         var now = _clock.UtcNow;
         if (command.Status == NodeCommandStatus.Claimed)
         {
-            if (command.Type == NodeCommandType.UpdateNodeLatest)
+            var commandNode = await _db.Nodes.AsNoTracking().SingleAsync(n => n.NodeId == nodeId, cancellationToken);
+            if (commandNode.LifecycleState != NodeLifecycleState.Active || !NodeCommandCapabilities.Supports(commandNode, command.Type))
+                throw new ConflictException("node has not advertised support for this command");
+
+            if (IsDisruptive(command.Type))
+            {
+                var targetNode = await _db.Nodes.AsNoTracking().SingleAsync(n => n.NodeId == nodeId, cancellationToken);
+                await AssertLocationDisruptionAllowedAsync(targetNode, command.Id, cancellationToken);
+            }
+            if (command.Type == NodeCommandType.UpdateNodeLatest && !TryReadDrainEntered(command.PayloadJson))
                 await PrepareUpdateDrainAsync(command, nodeId, cancellationToken).ConfigureAwait(false);
 
             command.Status = NodeCommandStatus.Running;
@@ -327,14 +353,33 @@ public sealed class NodeCommandService : INodeCommandService
         string? bootId = null,
         CancellationToken cancellationToken = default)
     {
-        var command = await GetOwnedCommandAsync(id, nodeId, cancellationToken).ConfigureAwait(false);
+        await WithLocationLockAsync(nodeId, async () =>
+        {
+            await CompleteLockedAsync(id, nodeId, success, resultCode, resultMessage, bootId, cancellationToken);
+            return true;
+        }, cancellationToken);
+    }
 
-        // Idempotent success/failure if already terminal with same outcome.
-        if (command.Status is NodeCommandStatus.Succeeded or NodeCommandStatus.Failed
-            or NodeCommandStatus.Expired or NodeCommandStatus.Cancelled or NodeCommandStatus.NodeReturned)
+    private async Task CompleteLockedAsync(Guid id, string nodeId, bool success, string? resultCode,
+        string? resultMessage, string? bootId, CancellationToken cancellationToken)
+    {
+        var command = await GetOwnedCommandAsync(id, nodeId, cancellationToken).ConfigureAwait(false);
+        resultCode = resultCode?.Trim();
+        // Older nodes incorrectly report healthy rollback as success. Normalize before idempotency.
+        if (command.Type == NodeCommandType.UpdateNodeLatest)
+            success = success && resultCode is "updated_healthy" or "already_current" or "ahead";
+        if (command.Status == NodeCommandStatus.Pending)
+            throw new ConflictException("unclaimed command cannot be completed");
+
+        // A verified late result can resolve an interrupted update after the CP TTL.
+        var resolvesUnknown = command.Type == NodeCommandType.UpdateNodeLatest
+            && command.ResultCode is "expired_outcome_unknown" or "outcome_unknown"
+            && (success && resultCode == "updated_healthy" || resultCode == "rolled_back_healthy");
+        if (!resolvesUnknown && command.Status is (NodeCommandStatus.Succeeded or NodeCommandStatus.Failed
+            or NodeCommandStatus.Expired or NodeCommandStatus.Cancelled or NodeCommandStatus.NodeReturned))
         {
             var alreadySuccess = command.Status is NodeCommandStatus.Succeeded or NodeCommandStatus.NodeReturned;
-            if (alreadySuccess == success)
+            if (alreadySuccess == success && string.Equals(command.ResultCode, resultCode, StringComparison.Ordinal))
                 return;
             throw new ConflictException("command already completed with a different result");
         }
@@ -342,6 +387,8 @@ public sealed class NodeCommandService : INodeCommandService
         var now = _clock.UtcNow;
         command.ResultCode = Truncate(resultCode, 64);
         command.ResultMessage = Truncate(resultMessage, 1024);
+        command.ProgressPhase = success ? "Completed" : "Failed";
+        command.ProgressUpdatedAt = now;
 
         if (command.Type == NodeCommandType.RebootHost && success)
         {
@@ -423,9 +470,19 @@ public sealed class NodeCommandService : INodeCommandService
 
     public async Task ExpireStaleAsync(CancellationToken cancellationToken = default)
     {
+        var nodes = await _db.NodeCommands.AsNoTracking().Where(c => c.ExpiresAt <= _clock.UtcNow
+            && (c.Status == NodeCommandStatus.Pending || c.Status == NodeCommandStatus.Claimed
+                || c.Status == NodeCommandStatus.Running || c.Status == NodeCommandStatus.Executing
+                || c.Status == NodeCommandStatus.Accepted)).Select(c => c.NodeId).Distinct().ToListAsync(cancellationToken);
+        foreach (var nodeId in nodes)
+            await WithLocationLockAsync(nodeId, async () => { await ExpireStaleForNodeAsync(nodeId, cancellationToken); return true; }, cancellationToken);
+    }
+
+    private async Task ExpireStaleForNodeAsync(string nodeId, CancellationToken cancellationToken)
+    {
         var now = _clock.UtcNow;
         var stale = await _db.NodeCommands
-            .Where(c => c.ExpiresAt <= now &&
+            .Where(c => c.NodeId == nodeId && c.ExpiresAt <= now &&
                         (c.Status == NodeCommandStatus.Pending
                          || c.Status == NodeCommandStatus.Claimed
                          || c.Status == NodeCommandStatus.Running
@@ -486,15 +543,10 @@ public sealed class NodeCommandService : INodeCommandService
     /// </summary>
     public static bool ShouldRestoreAdminState(bool success, string? resultCode)
     {
-        if (success)
-            return true;
+        if (success && resultCode == "updated_healthy") return true;
         if (string.IsNullOrWhiteSpace(resultCode))
             return false;
         if (SafeRestoreResultCodes.Contains(resultCode.Trim()))
-            return true;
-        // Explicit safe-rollback naming convention.
-        if (resultCode.Contains("rolled_back", StringComparison.OrdinalIgnoreCase)
-            && resultCode.Contains("healthy", StringComparison.OrdinalIgnoreCase))
             return true;
         return false;
     }
@@ -529,34 +581,10 @@ public sealed class NodeCommandService : INodeCommandService
             drainTimedOut: false, drainEntered: true);
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        var deadline = _clock.UtcNow.Add(UpdateDrainWait);
-        var timedOut = false;
-        while (node.CurrentSessions > 0)
-        {
-            if (_clock.UtcNow >= deadline)
-            {
-                timedOut = true;
-                break;
-            }
-
-            var clockBeforeDelay = _clock.UtcNow;
-            await Task.Delay(UpdateDrainPoll, cancellationToken).ConfigureAwait(false);
-            await _db.Entry(node).ReloadAsync(cancellationToken).ConfigureAwait(false);
-            if (node.CurrentSessions <= 0)
-                break;
-            // Unit tests use FakeClock (does not advance during Delay). Avoid hanging:
-            // treat frozen clock as immediate drain-timeout evaluation.
-            if (_clock.UtcNow <= clockBeforeDelay)
-            {
-                timedOut = true;
-                break;
-            }
-        }
-
-        if (timedOut)
-            MergePayloadAdminSnapshot(
-                command, beforeEnabled, beforeDraining, beforeMaintenance,
-                drainTimedOut: true, drainEntered: true);
+        command.ProgressPhase = "Draining";
+        command.ProgressUpdatedAt = _clock.UtcNow;
+        command.ProgressMessage = "Waiting for a fresh heartbeat and session drain";
+        await _db.SaveChangesAsync(cancellationToken);
 
         await _audit.WriteAsync(new AuditWriteRequest
         {
@@ -565,7 +593,7 @@ public sealed class NodeCommandService : INodeCommandService
             EntityType = "NodeCommand",
             EntityId = command.Id.ToString("N"),
             Detail =
-                $"{{\"sessions\":{node.CurrentSessions},\"drain_timed_out\":{(timedOut ? "true" : "false")},\"before_enabled\":{(beforeEnabled ? "true" : "false")},\"before_draining\":{(beforeDraining ? "true" : "false")},\"before_maintenance\":{(beforeMaintenance ? "true" : "false")}}}"
+                $"{{\"sessions\":{node.CurrentSessions},\"drain_timed_out\":false}}"
         }, cancellationToken).ConfigureAwait(false);
     }
 
@@ -583,6 +611,7 @@ public sealed class NodeCommandService : INodeCommandService
             .ConfigureAwait(false);
         if (node is null || cfg is null)
             return;
+        if (node.LifecycleState != NodeLifecycleState.Active) return;
 
         cfg.Enabled = enabled;
         cfg.Draining = draining;
@@ -671,12 +700,13 @@ public sealed class NodeCommandService : INodeCommandService
             if (!doc.RootElement.TryGetProperty("admin_state_before", out var before)
                 || before.ValueKind != JsonValueKind.Object)
                 return false;
-            if (before.TryGetProperty("enabled", out var e) && e.ValueKind is JsonValueKind.True or JsonValueKind.False)
-                enabled = e.GetBoolean();
-            if (before.TryGetProperty("draining", out var d) && d.ValueKind is JsonValueKind.True or JsonValueKind.False)
-                draining = d.GetBoolean();
-            if (before.TryGetProperty("maintenance_mode", out var m) && m.ValueKind is JsonValueKind.True or JsonValueKind.False)
-                maintenance = m.GetBoolean();
+            if (!before.TryGetProperty("enabled", out var e) || e.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+                || !before.TryGetProperty("draining", out var d) || d.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+                || !before.TryGetProperty("maintenance_mode", out var m) || m.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                return false;
+            enabled = e.GetBoolean();
+            draining = d.GetBoolean();
+            maintenance = m.GetBoolean();
             return true;
         }
         catch (JsonException)
@@ -700,8 +730,11 @@ public sealed class NodeCommandService : INodeCommandService
                             || c.Status == NodeCommandStatus.Claimed
                             || c.Status == NodeCommandStatus.Running
                             || c.Status == NodeCommandStatus.Executing
-                            || c.Status == NodeCommandStatus.Accepted)
-                        && c.ExpiresAt > now)
+                            || c.Status == NodeCommandStatus.Accepted
+                            || c.ResultCode == "expired_outcome_unknown"
+                            || c.ResultCode == "outcome_unknown"
+                            || c.ResultCode == "rollback_failed")
+                        )
             .Join(_db.Nodes.AsNoTracking(),
                 c => c.NodeId,
                 n => n.NodeId,
@@ -741,7 +774,9 @@ public sealed class NodeCommandService : INodeCommandService
     {
         if (node.LifecycleState != NodeLifecycleState.Active)
             return false;
-        if (!node.Enabled || node.Draining)
+        if (!node.Enabled || node.Draining || node.TestOnly)
+            return false;
+        if (node.Capacity <= node.CurrentSessions || (cfg is not null && cfg.Capacity <= node.CurrentSessions))
             return false;
         if (cfg is { MaintenanceMode: true } or { Draining: true } or { Enabled: false })
             return false;
@@ -756,6 +791,22 @@ public sealed class NodeCommandService : INodeCommandService
         type is NodeCommandType.UpdateNodeLatest
             or NodeCommandType.RestartNyxveilService
             or NodeCommandType.RebootHost;
+
+    private async Task<T> WithLocationLockAsync<T>(string nodeId, Func<Task<T>> action, CancellationToken ct)
+    {
+        var location = await _db.Nodes.AsNoTracking().Where(n => n.NodeId == nodeId)
+            .Select(n => n.LocationId).FirstOrDefaultAsync(ct) ?? throw new NotFoundException("node not found");
+        await using var lease = await ManagementOperationLock.AcquireAsync(_db, "location:" + location, ct);
+        // Fresh state is essential for scoped services reused by tests and maintenance workers.
+        foreach (var entry in _db.ChangeTracker.Entries().Where(e => e.State == EntityState.Unchanged).ToArray())
+            entry.State = EntityState.Detached;
+        var currentLocation = await _db.Nodes.AsNoTracking().Where(n => n.NodeId == nodeId)
+            .Select(n => n.LocationId).SingleAsync(ct);
+        if (currentLocation != location) throw new ConflictException("node location changed; retry");
+        var result = await action();
+        await lease.CommitAsync(ct);
+        return result;
+    }
 
     private async Task<NodeCommand> GetOwnedCommandAsync(
         Guid id,

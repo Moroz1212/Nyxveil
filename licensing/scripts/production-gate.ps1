@@ -29,9 +29,10 @@ try {
         'database\migrations\002_node_lifecycle_cert_metadata.sql',
         'database\migrations\003_node_commands_cert_renewal.sql',
         'database\migrations\004_version_mgmt_signing_retiring.sql',
+        'database\migrations\005_certificate_operation_states.sql',
         'database\migrations\validate_schema_v2.sql',
         'database\migrations\validate_schema_v3.sql',
-        'database\migrations\validate_schema_v4.sql',
+        'database\migrations\validate_schema_v5.sql',
         'docs\RELEASE-1.3.2.md'
     )
     if ($PackageDir) {
@@ -42,7 +43,7 @@ try {
     }
     Record 'package_integrity' $(if ($missing.Count -eq 0) {'PASS'} else {'FAIL'}) "missing=$($missing -join ',')"
 
-    Record 'backup_reminder' 'PASS' 'operator must confirm tested SQL and signing-key backups before production update'
+    Record 'backup_reminder' 'INFO' 'operator must confirm tested SQL and signing-key backups before production update'
     $update = Get-Content (Join-Path $root 'scripts\update-windows.ps1') -Raw
     $migration = Get-Content (Join-Path $root 'database\migrations\002_node_lifecycle_cert_metadata.sql') -Raw
     $dryOk = $update -match 'MigrationScript' -and $update -match 'Backup' -and
@@ -61,8 +62,8 @@ try {
             Record 'install_config' 'FAIL' 'appsettings.Production.json missing'
         }
     } else {
-        Record 'port_8443' 'PASS' 'local mode architecture check; no install inspected'
-        Record 'tls_status' 'PASS' 'not inspected; provide -InstallDir for read-only installed-state checks'
+        Record 'port_8443' 'SKIP' 'local mode architecture check; no install inspected'
+        Record 'tls_status' 'SKIP' 'not inspected; provide -InstallDir for read-only installed-state checks'
     }
 
     if ($InstallDir -and (Test-Path -LiteralPath $InstallDir) -and
@@ -96,21 +97,21 @@ try {
                 -DatabaseAuth ([string]$db.Auth) `
                 -DatabaseUser ([string]$db.User) `
                 -DatabasePassword $dbPassword `
-                -InputFile (Join-Path $root 'database\migrations\validate_schema_v4.sql') `
+                -InputFile (Join-Path $root 'database\migrations\validate_schema_v5.sql') `
                 -TrustSqlServerCertificate ([bool]$db.TrustSqlServerCertificate) `
                 -Encrypt ([bool]$db.Encrypt)
-            Record 'schema_version' 'PASS' "database=$($db.Database) schema_version=4"
+            Record 'schema_version' 'PASS' "database=$($db.Database) schema_version=5"
             Record 'database_connectivity' 'PASS' "server=$($db.Server)"
         }
         catch {
             $detail = $_.Exception.Message -replace '(?i)(password|token|secret)=[^;\s]+','$1=<redacted>'
             if ($GateMode -eq 'local' -and -not $CheckDatabase) {
-                Record 'schema_version' 'PASS' "soft_local_check=$detail"
-                Record 'database_connectivity' 'PASS' 'soft local mode; database credentials/connectivity unavailable'
+                Record 'schema_version' 'SKIP' "soft_local_check=$detail"
+                Record 'database_connectivity' 'SKIP' 'soft local mode; database credentials/connectivity unavailable'
             }
             else {
                 Record 'schema_version' 'FAIL' $detail
-                Record 'database_connectivity' 'FAIL' 'schema v4 validation could not complete'
+                Record 'database_connectivity' 'FAIL' 'schema v5 validation could not complete'
             }
         }
     }
@@ -119,10 +120,10 @@ try {
         Record 'database_connectivity' 'FAIL' 'database validation requested but unavailable'
     }
     else {
-        Record 'schema_version' 'PASS' 'not inspected; provide -InstallDir with sqlcmd for validation'
-        Record 'database_connectivity' 'PASS' 'not requested/available'
+        Record 'schema_version' 'SKIP' 'not inspected; provide -InstallDir with sqlcmd for validation'
+        Record 'database_connectivity' 'SKIP' 'not requested/available'
     }
-    Record 'rollback_notes' 'PASS' 'restore binaries only before migration; after migration restore SQL backup and matching binaries'
+    Record 'rollback_notes' 'INFO' 'restore binaries only before migration; after migration restore SQL backup and matching binaries'
 }
 catch {
     Record 'unexpected_error' 'FAIL' ($_.Exception.Message -replace '(?i)(password|token|secret)=[^;\s]+','$1=<redacted>')
@@ -135,5 +136,6 @@ if ($failedGate) {
     Write-Output "diagnostic_bundle=$bundle"
     exit 1
 }
+if ($report -match '=SKIP ') { Write-Output 'RESULT=PARTIAL'; if ($GateMode -eq 'production') { exit 1 }; exit 0 }
 Write-Output 'RESULT=PASS'
 exit 0

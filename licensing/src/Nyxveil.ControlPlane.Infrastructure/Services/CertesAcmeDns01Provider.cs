@@ -21,6 +21,7 @@ public sealed class CertesAcmeDns01Provider : IAcmeDns01Provider
 {
     private readonly AcmeOptions _options;
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
+    private static readonly HttpClient AcmeHttp = new() { Timeout = TimeSpan.FromSeconds(20) };
 
     public CertesAcmeDns01Provider(IOptions<AcmeOptions> options)
     {
@@ -185,11 +186,11 @@ public sealed class CertesAcmeDns01Provider : IAcmeDns01Provider
         if (File.Exists(keyPath))
         {
             accountKey = KeyFactory.FromPem(await File.ReadAllTextAsync(keyPath, cancellationToken).ConfigureAwait(false));
-            return new AcmeContext(directory, accountKey);
+            return new AcmeContext(directory, accountKey, new AcmeHttpClient(directory, AcmeHttp));
         }
 
         accountKey = KeyFactory.NewKey(KeyAlgorithm.ES256);
-        var acme = new AcmeContext(directory, accountKey);
+        var acme = new AcmeContext(directory, accountKey, new AcmeHttpClient(directory, AcmeHttp));
         var email = string.IsNullOrWhiteSpace(_options.ContactEmail)
             ? "mailto:acme@" + Environment.MachineName
             : _options.ContactEmail.Trim();

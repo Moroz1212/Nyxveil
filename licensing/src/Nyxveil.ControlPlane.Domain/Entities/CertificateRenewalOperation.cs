@@ -11,6 +11,7 @@ public class CertificateRenewalOperation
 {
     public Guid Id { get; set; }
 
+    [ConcurrencyCheck]
     public CertificateRenewalStatus Status { get; set; } = CertificateRenewalStatus.PendingDns;
 
     [MaxLength(256)]

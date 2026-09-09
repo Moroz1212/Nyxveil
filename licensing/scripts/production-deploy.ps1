@@ -16,7 +16,7 @@ param(
     [string]$ServiceName = 'NyxveilControlPlane',
     [string]$MigrationScript = '',
     [string]$ReleaseZip = '',
-    [string]$ExpectedSchemaVersion = '4'
+    [string]$ExpectedSchemaVersion = '5'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,9 +26,10 @@ $licensingRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $PSScriptRoot 'Nyxveil.ControlPlane.Deploy.psm1') -Force
 
 $requiredServiceName = 'NyxveilControlPlane'
-$validationScript = Join-Path $licensingRoot 'database\migrations\validate_schema_v4.sql'
+$validationScript = Join-Path $licensingRoot 'database\migrations\validate_schema_v5.sql'
 $migration002 = Join-Path $licensingRoot 'database\migrations\002_node_lifecycle_cert_metadata.sql'
 $migration003 = Join-Path $licensingRoot 'database\migrations\003_node_commands_cert_renewal.sql'
+$migration005 = Join-Path $licensingRoot 'database\migrations\005_certificate_operation_states.sql'
 $migration004 = Join-Path $licensingRoot 'database\migrations\004_version_mgmt_signing_retiring.sql'
 $stage = 'precheck'
 $failedGate = ''
@@ -211,6 +212,9 @@ function Resolve-SchemaMigrationPlan {
     if ($CurrentSchemaVersion -lt 4) {
         $chain.Add((Resolve-Path -LiteralPath $script:migration004 -ErrorAction Stop).Path)
     }
+    if ($CurrentSchemaVersion -lt 5) {
+        $chain.Add((Resolve-Path -LiteralPath $script:migration005 -ErrorAction Stop).Path)
+    }
     if ($chain.Count -eq 0) {
         throw "No migration chain available from schema $CurrentSchemaVersion to $ExpectedSchemaVersion."
     }
@@ -380,8 +384,8 @@ try {
     if ($ServiceName -cne $requiredServiceName) {
         throw "This deploy may only operate on service '$requiredServiceName'."
     }
-    if ($ExpectedSchemaVersion -cne '4') {
-        throw "Control Plane 1.3.2 requires ExpectedSchemaVersion=4."
+    if ($ExpectedSchemaVersion -cne '5') {
+        throw "Control Plane 1.3.2 requires ExpectedSchemaVersion=5."
     }
     $releaseVersion = (Get-Content -LiteralPath (Join-Path $licensingRoot 'VERSION') -Raw).Trim()
     if ($releaseVersion -cne '1.3.2') {
@@ -416,7 +420,8 @@ try {
     $validationScript = (Resolve-Path -LiteralPath $validationScript -ErrorAction Stop).Path
     $migration002 = (Resolve-Path -LiteralPath $migration002 -ErrorAction Stop).Path
     $migration003 = (Resolve-Path -LiteralPath $migration003 -ErrorAction Stop).Path
-    $migration004 = (Resolve-Path -LiteralPath $migration004 -ErrorAction Stop).Path
+    $migration005 = Join-Path $licensingRoot 'database\migrations\005_certificate_operation_states.sql'
+$migration004 = (Resolve-Path -LiteralPath $migration004 -ErrorAction Stop).Path
 
     $webExe = Join-Path $PublishDir 'Nyxveil.ControlPlane.Web.exe'
     $webDll = Join-Path $PublishDir 'Nyxveil.ControlPlane.Web.dll'
@@ -579,7 +584,7 @@ try {
 
     # 10. RECORD EXPECTED SCHEMA VERSION.
     $stage = 'write_operational_config'
-    $op | Add-Member -NotePropertyName ExpectedSchemaVersion -NotePropertyValue '4' -Force
+    $op | Add-Member -NotePropertyName ExpectedSchemaVersion -NotePropertyValue '5' -Force
     Write-OperationalConfig -Config $op -InstallDir $InstallDir
 
     # 11. START ONLY THE CONTROL PLANE SERVICE.

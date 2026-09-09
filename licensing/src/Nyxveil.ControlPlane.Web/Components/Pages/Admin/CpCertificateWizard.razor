@@ -13,6 +13,7 @@
         <div class="sub">DNS-01 wizard · TXT запись создаётся вручную у регистратора</div>
     </div>
     <div class="actions">
+        <button class="btn btn-ghost" disabled="@_busy" @onclick="LoadAsync">Проверить состояние</button>
         <a class="btn btn-ghost" href="/admin/infrastructure">Назад</a>
     </div>
 </div>
@@ -42,6 +43,14 @@
 
 @if (_op is not null)
 {
+    @if (_op.ErrorMessage is not null)
+    {
+        <div class="alert alert-error" role="alert">@_op.ErrorMessage</div>
+    }
+    @if (_op.Status == CertificateRenewalStatus.Switching)
+    {
+        <div class="panel"><h3>Проверка активации</h3><p>Ожидаем новый сертификат на HTTPS-подключении. Подтверждение ограничено пятью минутами.</p></div>
+    }
     <div class="panel">
         <h3>Состояние запроса: @StatusLabel(_op.Status)</h3>
         <p class="muted">Id: @_op.Id · Создан: @_op.CreatedAt.ToString("dd.MM.yyyy HH:mm 'UTC'") · @_op.CreatedBy</p>
@@ -145,10 +154,11 @@
         await BlazorWork.RunAsync(Scopes, async sp =>
         {
             _status = await sp.GetRequiredService<IControlPlaneCertificateStatusService>().GetStatusAsync();
-            _op = await sp.GetRequiredService<IControlPlaneAcmeWizardService>().GetActiveAsync();
+            var wizard = sp.GetRequiredService<IControlPlaneAcmeWizardService>();
+            _op = _op is null ? await wizard.GetActiveAsync() : await wizard.GetStatusAsync(_op.Id);
         });
         if (_op?.Status == CertificateRenewalStatus.Switching)
-            _info = "Control Plane перезапущена. Проверяем новый сертификат…";
+            _info = "Активация запрошена. Проверяем сертификат HTTPS…";
         if (_op?.Status == CertificateRenewalStatus.DnsReady)
             _dnsFound = true;
     }

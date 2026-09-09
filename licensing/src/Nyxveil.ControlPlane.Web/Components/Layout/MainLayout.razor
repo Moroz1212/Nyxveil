@@ -4,7 +4,8 @@
 @inject NavigationManager Nav
 @inject IServiceScopeFactory Scopes
 
-<div class="admin-shell">
+<a class="skip-link" href="#main-content">Перейти к содержимому</a>
+<div class="admin-shell @(_showNav ? "" : "without-nav")">
     @if (_showNav)
     {
         <aside class="admin-nav">
@@ -25,7 +26,7 @@
         </aside>
     }
 
-    <main class="admin-main">
+    <main class="admin-main" id="main-content" tabindex="-1">
         <div class="admin-content">
             @Body
         </div>

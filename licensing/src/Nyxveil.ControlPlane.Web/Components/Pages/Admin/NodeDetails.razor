@@ -17,10 +17,26 @@ else
             <div class="sub mono">@_node.NodeId · @_node.LocationId</div>
         </div>
         <div class="actions">
+            <button class="btn btn-ghost" disabled="@_busy" @onclick="LoadAsync">Обновить статус</button>
             <a class="btn" href="@($"/admin/metrics?node={Uri.EscapeDataString(NodeId)}")">Графики нагрузки</a>
             <a class="btn btn-ghost" href="/admin/nodes">Назад</a>
         </div>
     </div>
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <div class="alert alert-error" role="alert">@_error</div>
+    }
+    @if (!string.IsNullOrEmpty(_cmdInfo))
+    {
+        <div class="alert" role="status">@_cmdInfo</div>
+    }
+    <nav class="section-nav" aria-label="Разделы сервера">
+        <a href="#node-management">Обновление и TLS</a>
+        <a href="#node-history">История операций</a>
+        <a href="#node-config">Конфигурация</a>
+        <a href="#node-endpoints">Адреса подключения</a>
+    </nav>
 
     <div class="stats-grid">
         <div class="stat"><div class="label">Состояние</div><div class="value" style="font-size:1.1rem"><StatusBadge Status="@_node.Status.ToString()" /></div></div>
@@ -32,7 +48,7 @@ else
 
     @if (_cfg is not null)
     {
-        <div class="panel">
+        <div class="panel" id="node-config">
             <h3>Настройки сервера</h3>
             <p class="muted">
                 Включён=@(_cfg.Enabled ? "да" : "нет") ·
@@ -83,7 +99,7 @@ else
         </div>
     </AuthorizeView>
 
-    <div class="panel">
+    <div class="panel" id="node-endpoints">
         <h3>Идентификация и адреса подключения</h3>
         <p class="mono muted">Открытый ключ идентификации: @Convert.ToHexString(_node.PublicIdentity)</p>
         <p class="muted">Протокол @_node.ProtocolVersion · Версия сервера @(_node.ServerVersion ?? "—") · SPKI @(_node.SpkiPin is null ? "—" : Convert.ToHexString(_node.SpkiPin))</p>
@@ -106,7 +122,7 @@ else
         </div>
     </div>
 
-    <div class="panel">
+    <div class="panel" id="node-management">
         <h3>TLS и состояние среды</h3>
         @{
             var certHealth = CertificateExpiry.Evaluate(_node.CertNotAfter, DateTime.UtcNow);
@@ -135,7 +151,7 @@ else
         <p class="muted">Remote management: @(_node.SupportsNodeCommands ? "поддерживается" : "не поддерживается этой версией node")</p>
         @{
             var installed = NodeVersionEvaluator.EffectiveInstalledVersion(_node.ReportedServerVersion, _node.ServerVersion);
-            var hasUpdateCap = (_node.ManagementCapabilities ?? "").Contains("node_update", StringComparison.OrdinalIgnoreCase);
+            var hasUpdateCap = NodeCommandCapabilities.Supports(_node, NodeCommandType.UpdateNodeLatest);
         }
         <div class="panel" style="margin-top:.75rem; box-shadow:none; border:0; padding:0">
             <h3>Версия сервера</h3>
@@ -166,8 +182,8 @@ else
         {
             <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
                 <div class="actions" style="margin-top:.75rem">
-                    <button class="btn" disabled="@_busy" @onclick="() => EnqueueAsync(NodeCommandType.RenewCertificate)">Обновить сертификат сейчас</button>
-                    <button class="btn btn-ghost" disabled="@_busy" @onclick="() => EnqueueAsync(NodeCommandType.RestartNyxveilService)">Перезапустить Nyxveil</button>
+                    <button class="btn" disabled="@(_busy || !NodeCommandCapabilities.Supports(_node, NodeCommandType.RenewCertificate))" @onclick="() => EnqueueAsync(NodeCommandType.RenewCertificate)">Обновить сертификат сейчас</button>
+                    <button class="btn btn-ghost" disabled="@(_busy || !NodeCommandCapabilities.Supports(_node, NodeCommandType.RestartNyxveilService))" @onclick="() => EnqueueAsync(NodeCommandType.RestartNyxveilService)">Перезапустить Nyxveil</button>
                 </div>
             </AuthorizeView>
             <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
@@ -182,7 +198,7 @@ else
         }
     </div>
 
-    <div class="panel">
+    <div class="panel" id="node-history">
         <h3>Последние команды</h3>
         <div class="table-wrap">
             <table class="data">
@@ -202,8 +218,8 @@ else
                         <td>@c.CreatedAt.ToString("dd.MM.yyyy HH:mm")</td>
                         <td>@CommandLabel(c.Type)</td>
                         <td>@c.CreatedBy</td>
-                        <td>@c.Status</td>
-                        <td class="muted">@(c.ResultMessage ?? c.ResultCode ?? "—")</td>
+                        <td><StatusBadge Status="@c.Status.ToString()" /> @c.ProgressPhase</td>
+                        <td class="muted">@c.PreviousVersion → @c.TargetVersion<br />@c.ResultCode<br />@(c.ResultMessage ?? c.ProgressMessage ?? "Ожидание выполнения")</td>
                     </tr>
                 }
                 </tbody>
@@ -379,17 +395,9 @@ else
         _confirmUpdate = true;
     }
 
-    private async Task ConfirmRebootAsync()
-    {
-        await EnqueueAsync(NodeCommandType.RebootHost);
-        _cmdInfo = "Перезагрузка принята. Ожидание Offline → Online…";
-    }
+    private Task ConfirmRebootAsync() => EnqueueAsync(NodeCommandType.RebootHost);
 
-    private async Task ConfirmUpdateAsync()
-    {
-        await EnqueueAsync(NodeCommandType.UpdateNodeLatest);
-        _cmdInfo = "Обновление отправлено. Ожидание CheckingLatest → Installing → Restarting → heartbeat…";
-    }
+    private Task ConfirmUpdateAsync() => EnqueueAsync(NodeCommandType.UpdateNodeLatest);
 
     private async Task RunNodeActionAsync(Func<INodeManagementService, string, Task> action)
     {

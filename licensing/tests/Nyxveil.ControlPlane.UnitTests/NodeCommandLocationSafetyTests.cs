@@ -268,6 +268,8 @@ public sealed class NodeCommandLocationSafetyTests : IAsyncDisposable
     private void MarkHealthy(string nodeId)
     {
         var node = _fx.Db.Nodes.Single(n => n.NodeId == nodeId);
+        node.SupportsNodeCommands = true;
+        node.ManagementCapabilities = "certificate_renew,service_restart,host_reboot,node_update";
         node.Status = NodeRuntimeStatus.Healthy;
         node.Enabled = true;
         node.Draining = false;

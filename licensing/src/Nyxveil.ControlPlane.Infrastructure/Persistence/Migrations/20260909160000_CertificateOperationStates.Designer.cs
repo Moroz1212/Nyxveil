@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
 
@@ -10,10 +11,10 @@ using Nyxveil.ControlPlane.Infrastructure.Persistence;
 
 namespace Nyxveil.ControlPlane.Infrastructure.Persistence.Migrations
 {
-    [DbContext(typeof(ControlPlaneDbContext))]
-    partial class ControlPlaneDbContextModelSnapshot : ModelSnapshot
+
+    public sealed partial class CertificateOperationStates
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

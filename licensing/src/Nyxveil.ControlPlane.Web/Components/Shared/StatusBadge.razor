@@ -7,9 +7,9 @@
 
     private string CssClass => Status.ToLowerInvariant() switch
     {
-        "healthy" or "active" or "online" => "healthy",
-        "degraded" or "pending" or "expiring" => "degraded",
-        "offline" or "revoked" or "disabled" or "expired" => "offline",
+        "healthy" or "active" or "online" or "succeeded" => "healthy",
+        "degraded" or "pending" or "expiring" or "claimed" or "running" or "executing" or "accepted" => "degraded",
+        "offline" or "revoked" or "disabled" or "expired" or "failed" => "offline",
         "maintenance" or "draining" => "degraded",
         _ => "neutral"
     };

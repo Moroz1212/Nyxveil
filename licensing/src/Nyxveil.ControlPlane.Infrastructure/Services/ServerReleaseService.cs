@@ -59,7 +59,7 @@ public sealed class ServerReleaseService : IServerReleaseService
         {
             var client = _httpClientFactory.CreateClient("GitHubReleases");
             var url =
-                $"https://api.github.com/repos/{_options.GitHubOwner}/{_options.GitHubRepo}/releases?per_page=40";
+                "https://api.github.com/repos/Moroz1212/Nyxveil/releases?per_page=100";
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
             req.Headers.UserAgent.ParseAdd("Nyxveil-ControlPlane");
@@ -80,11 +80,6 @@ public sealed class ServerReleaseService : IServerReleaseService
             }
 
             resp.EnsureSuccessStatusCode();
-            if (resp.Headers.ETag is not null)
-            {
-                lock (_gate) _etag = resp.Headers.ETag.Tag;
-            }
-
             await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             var releases = await JsonSerializer.DeserializeAsync<List<GhRelease>>(stream, cancellationToken: cancellationToken)
                 .ConfigureAwait(false) ?? new List<GhRelease>();
@@ -103,9 +98,14 @@ public sealed class ServerReleaseService : IServerReleaseService
                 info.PublishedAt = best.Value.PublishedAt;
             }
 
-            lock (_gate) _cache = info;
+            lock (_gate)
+            {
+                _cache = info;
+                _etag = resp.Headers.ETag?.ToString();
+            }
             return Clone(info);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "GitHub server release refresh failed");

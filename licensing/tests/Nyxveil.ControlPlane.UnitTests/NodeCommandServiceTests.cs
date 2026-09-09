@@ -145,6 +145,10 @@ public sealed class NodeCommandServiceTests : IAsyncDisposable
     public async Task HeartbeatAcceptsNullOptionalManagementFields()
     {
         var nodeId = (await RegisterAsync("cmd-hb-null")).NodeId;
+        var initial = await _fx.Db.Nodes.SingleAsync(n => n.NodeId == nodeId);
+        initial.SupportsNodeCommands = false;
+        initial.ManagementCapabilities = null;
+        await _fx.Db.SaveChangesAsync();
         var response = await _fx.Heartbeats.ProcessHeartbeatAsync(new NodeHeartbeatRequest
         {
             NodeId = nodeId,
@@ -241,6 +245,8 @@ public sealed class NodeCommandServiceTests : IAsyncDisposable
     private void MarkHealthy(string nodeId)
     {
         var node = _fx.Db.Nodes.Single(n => n.NodeId == nodeId);
+        node.SupportsNodeCommands = true;
+        node.ManagementCapabilities = "certificate_renew,service_restart,host_reboot,node_update";
         node.Status = NodeRuntimeStatus.Healthy;
         node.Enabled = true;
         node.Draining = false;

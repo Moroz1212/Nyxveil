@@ -1,17 +1,21 @@
 @using Microsoft.AspNetCore.Components.Authorization
 @using Nyxveil.ControlPlane.Web.Security
 
-<nav class="nav-links">
+<nav class="nav-links" aria-label="Основная навигация">
     <NavLink href="/" Match="NavLinkMatch.All">Обзор</NavLink>
+    <div class="nav-group-label">Инфраструктура</div>
+    <NavLink href="/admin/locations">Локации</NavLink>
+    <NavLink href="/admin/nodes">VPN-серверы</NavLink>
+    <NavLink href="/admin/operations">Обновления и операции</NavLink>
+    <NavLink href="/admin/infrastructure" Match="NavLinkMatch.All">Сертификаты</NavLink>
+    <NavLink href="/admin/metrics">Мониторинг</NavLink>
+    <div class="nav-group-label">Клиенты и доступ</div>
     <NavLink href="/admin/licenses">Лицензии</NavLink>
     <NavLink href="/admin/users">Пользователи</NavLink>
     <NavLink href="/admin/devices">Устройства</NavLink>
     <NavLink href="/admin/plans">Тарифы</NavLink>
-    <NavLink href="/admin/locations">Локации</NavLink>
-    <NavLink href="/admin/nodes">Серверы</NavLink>
-    <NavLink href="/admin/infrastructure">Инфраструктура</NavLink>
-    <NavLink href="/admin/metrics">Метрики</NavLink>
     <NavLink href="/admin/revocations">Список отзывов</NavLink>
+    <div class="nav-group-label">Администрирование</div>
     <NavLink href="/admin/bootstrap-tokens">Токены регистрации</NavLink>
     <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
         <NavLink href="/admin/signing-keys">Ключи подписи</NavLink>

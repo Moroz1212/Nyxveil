@@ -106,7 +106,7 @@ public sealed class MigrationDeployHardeningTests
     public void TestProductionDeployUsesValidateSchemaV4()
     {
         var deploy = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-deploy.ps1"));
-        Assert.Contains(@"database\migrations\validate_schema_v4.sql", deploy, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(@"database\migrations\validate_schema_v5.sql", deploy, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(@"$validationScript = Join-Path $licensingRoot 'database\migrations\validate_schema_v3.sql'",
             deploy, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Resolve-SchemaMigrationPlan", deploy, StringComparison.Ordinal);
@@ -173,8 +173,8 @@ public sealed class MigrationDeployHardeningTests
     public void TestProductionGateValidatesSchemaV4()
     {
         var gate = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-gate.ps1"));
-        Assert.Contains(@"validate_schema_v4.sql", gate, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("schema v4 validation could not complete", gate, StringComparison.Ordinal);
+        Assert.Contains(@"validate_schema_v5.sql", gate, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("schema v5 validation could not complete", gate, StringComparison.Ordinal);
         Assert.DoesNotContain(@"validate_schema_v3.sql') `", gate, StringComparison.Ordinal);
     }
 

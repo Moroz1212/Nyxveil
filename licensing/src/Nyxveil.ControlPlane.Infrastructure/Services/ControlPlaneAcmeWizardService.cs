@@ -42,6 +42,8 @@ public sealed class ControlPlaneAcmeWizardService : IControlPlaneAcmeWizardServi
         if (string.IsNullOrWhiteSpace(actor))
             throw new ValidationException("actor is required");
 
+        await using var lease = await ManagementOperationLock.AcquireAsync(_db, "cp-certificate", cancellationToken);
+
         var domain = (_configuration?["Hosting:PublicHostname"] ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(domain))
             throw new ValidationException("Hosting:PublicHostname is required for ACME wizard");
@@ -69,6 +71,7 @@ public sealed class ControlPlaneAcmeWizardService : IControlPlaneAcmeWizardServi
 
         _db.CertificateRenewalOperations.Add(op);
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await lease.CommitAsync(cancellationToken);
         return op;
     }
 
@@ -105,6 +108,15 @@ public sealed class ControlPlaneAcmeWizardService : IControlPlaneAcmeWizardServi
         if (op.Status == CertificateRenewalStatus.Switching)
             await TryCompleteAfterSwitchAsync(op, cancellationToken).ConfigureAwait(false);
 
+        if (op.Status is CertificateRenewalStatus.Validating or CertificateRenewalStatus.Issuing
+            && _clock.UtcNow - op.UpdatedAt > TimeSpan.FromMinutes(10))
+        {
+            op.Status = CertificateRenewalStatus.Failed;
+            op.ErrorMessage = "Certificate operation interrupted or timed out; create a new request";
+            op.CompletedAt = op.UpdatedAt = _clock.UtcNow;
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+
         return op;
     }
 
@@ -128,6 +140,9 @@ public sealed class ControlPlaneAcmeWizardService : IControlPlaneAcmeWizardServi
         CancellationToken cancellationToken = default)
     {
         var op = await LoadAsync(id, cancellationToken).ConfigureAwait(false);
+        if (op.Status is not (CertificateRenewalStatus.PendingDns or CertificateRenewalStatus.DnsReady)
+            || op.ChallengeExpiresAt <= _clock.UtcNow)
+            throw new ConflictException("DNS challenge is not active or has expired");
         var host = string.IsNullOrWhiteSpace(op.ChallengeName)
             ? $"_acme-challenge.{op.Domain}"
             : op.ChallengeName;
@@ -165,8 +180,8 @@ public sealed class ControlPlaneAcmeWizardService : IControlPlaneAcmeWizardServi
         CancellationToken cancellationToken = default)
     {
         var op = await LoadAsync(id, cancellationToken).ConfigureAwait(false);
-        if (op.Status is CertificateRenewalStatus.Completed or CertificateRenewalStatus.Cancelled)
-            throw new ConflictException("operation already finished");
+        if (op.Status != CertificateRenewalStatus.DnsReady || op.ChallengeExpiresAt <= _clock.UtcNow)
+            throw new ConflictException("verify an unexpired DNS challenge before issuing");
 
         try
         {
@@ -191,13 +206,14 @@ public sealed class ControlPlaneAcmeWizardService : IControlPlaneAcmeWizardServi
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             return op;
         }
-        catch (Exception ex) when (ex is not Nyxveil.ControlPlane.Application.Exceptions.ApplicationException)
+        catch (Exception ex)
         {
             op.Status = CertificateRenewalStatus.Failed;
             op.ErrorMessage = Truncate(ex.Message, 1024);
             op.UpdatedAt = _clock.UtcNow;
             op.CompletedAt = op.UpdatedAt;
-            await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            using var persist = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await _db.SaveChangesAsync(persist.Token).ConfigureAwait(false);
             throw;
         }
     }
@@ -213,13 +229,12 @@ public sealed class ControlPlaneAcmeWizardService : IControlPlaneAcmeWizardServi
         var (pfxPath, pfxPassword) = CertesAcmeDns01Provider.TryGetIssuedPfx(op.AcmeOrderUrl, op.NewThumbprint);
         if (string.IsNullOrWhiteSpace(pfxPath) || !File.Exists(pfxPath))
         {
-            // Fake/dev provider: durable wizard completes without Windows Store switch.
-            op.Status = CertificateRenewalStatus.Completed;
+            op.Status = CertificateRenewalStatus.Failed;
             op.UpdatedAt = _clock.UtcNow;
             op.CompletedAt = op.UpdatedAt;
-            op.ErrorMessage = "PFX not present (fake ACME); Store import skipped";
+            op.ErrorMessage = "Issued PFX is missing; certificate activation was not performed";
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            return op;
+            throw new ValidationException(op.ErrorMessage);
         }
 
         var hostname = op.Domain;
@@ -227,13 +242,9 @@ public sealed class ControlPlaneAcmeWizardService : IControlPlaneAcmeWizardServi
         if (string.IsNullOrWhiteSpace(publicUrl))
             publicUrl = "https://" + hostname;
 
-        var exe = Environment.ProcessPath
-                   ?? throw new InvalidOperationException("process path unavailable for detached tls configure");
-        var args =
-            $"tls configure --hostname {EscapeArg(hostname)} --public-url {EscapeArg(publicUrl)} " +
-            $"--certificate-pfx {EscapeArg(pfxPath)}";
-        if (!string.IsNullOrEmpty(pfxPassword))
-            args += $" --certificate-pfx-password {EscapeArg(pfxPassword)}";
+        var exe = Path.Combine(AppContext.BaseDirectory, "Nyxveil.ControlPlane.Web.exe");
+        if (!OperatingSystem.IsWindows() || !File.Exists(exe))
+            throw new ValidationException("certificate activation requires the installed Windows release executable");
 
         op.Status = CertificateRenewalStatus.Switching;
         op.UpdatedAt = _clock.UtcNow;
@@ -244,13 +255,30 @@ public sealed class ControlPlaneAcmeWizardService : IControlPlaneAcmeWizardServi
         var psi = new ProcessStartInfo
         {
             FileName = exe,
-            Arguments = args,
             UseShellExecute = false,
             CreateNoWindow = true,
+            RedirectStandardInput = true,
             WorkingDirectory = Path.GetDirectoryName(exe) ?? Environment.CurrentDirectory
         };
-        _ = Process.Start(psi)
-            ?? throw new InvalidOperationException("failed to start detached tls configure process");
+        foreach (var argument in new[] { "tls", "configure", "--hostname", hostname, "--public-url", publicUrl,
+                     "--certificate-pfx", pfxPath, "--certificate-pfx-password-stdin", "--install-dir", AppContext.BaseDirectory })
+            psi.ArgumentList.Add(argument);
+        try
+        {
+            using var process = Process.Start(psi)
+                ?? throw new InvalidOperationException("failed to start detached tls configure process");
+            await process.StandardInput.WriteLineAsync((pfxPassword ?? "").AsMemory(), cancellationToken);
+            process.StandardInput.Close();
+        }
+        catch (Exception)
+        {
+            op.Status = CertificateRenewalStatus.Failed;
+            op.ErrorMessage = "Unable to start certificate activation; inspect local TLS diagnostics";
+            op.CompletedAt = op.UpdatedAt = _clock.UtcNow;
+            using var persist = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await _db.SaveChangesAsync(persist.Token);
+            throw;
+        }
 
         return op;
     }
@@ -265,7 +293,7 @@ public sealed class ControlPlaneAcmeWizardService : IControlPlaneAcmeWizardServi
             if (!string.IsNullOrWhiteSpace(op.NewThumbprint) &&
                 string.Equals(status.Thumbprint, op.NewThumbprint, StringComparison.OrdinalIgnoreCase) &&
                 status.HasPrivateKey &&
-                status.SystemTrustOk)
+                status.SystemTrustOk && await VerifyServedCertificateAsync(op, cancellationToken))
             {
                 op.Status = CertificateRenewalStatus.Completed;
                 op.UpdatedAt = _clock.UtcNow;
@@ -274,10 +302,35 @@ public sealed class ControlPlaneAcmeWizardService : IControlPlaneAcmeWizardServi
                 await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             }
         }
-        catch
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
-            // Keep Switching until post-verify succeeds or operator cancels.
+            // Retry within the bounded activation window.
         }
+        if (op.Status == CertificateRenewalStatus.Switching && _clock.UtcNow - op.UpdatedAt > TimeSpan.FromMinutes(5))
+        {
+            op.Status = CertificateRenewalStatus.Failed;
+            op.ErrorMessage = "Certificate activation not verified within five minutes; inspect TLS rollback diagnostics";
+            op.CompletedAt = _clock.UtcNow;
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    private async Task<bool> VerifyServedCertificateAsync(CertificateRenewalOperation op, CancellationToken ct)
+    {
+        if (!int.TryParse(_configuration?["Hosting:Port"], out var port) || port is < 1 or > 65535)
+            return false;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        using var tcp = new System.Net.Sockets.TcpClient();
+        await tcp.ConnectAsync("127.0.0.1", port, timeout.Token);
+        using var tls = new System.Net.Security.SslStream(tcp.GetStream());
+        await tls.AuthenticateAsClientAsync(new System.Net.Security.SslClientAuthenticationOptions
+        {
+            TargetHost = op.Domain,
+            CertificateRevocationCheckMode = System.Security.Cryptography.X509Certificates.X509RevocationMode.Online
+        }, timeout.Token);
+        return tls.RemoteCertificate is not null && string.Equals(tls.RemoteCertificate.GetCertHashString(),
+            op.NewThumbprint, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<CertificateRenewalOperation> LoadAsync(Guid id, CancellationToken cancellationToken) =>

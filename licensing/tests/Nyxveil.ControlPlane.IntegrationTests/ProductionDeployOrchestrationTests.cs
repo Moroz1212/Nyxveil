@@ -80,7 +80,7 @@ public sealed class ProductionDeployOrchestrationTests
     public void TestMigrationRehearsalUsesValidateSchemaV4AndDetectsSchema()
     {
         Assert.Contains("Get-SchemaVersionFromDatabase", Script, StringComparison.Ordinal);
-        Assert.Contains("validate_schema_v4.sql", Script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("validate_schema_v5.sql", Script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Resolve-SchemaMigrationPlan", Script, StringComparison.Ordinal);
         Assert.DoesNotContain("Invoke-MigrationRehearsal -BackupPath $databaseBackup -MigrationPath",
             Script, StringComparison.Ordinal);

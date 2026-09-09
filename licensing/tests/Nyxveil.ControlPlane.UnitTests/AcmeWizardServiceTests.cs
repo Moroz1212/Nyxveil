@@ -52,8 +52,8 @@ public sealed class AcmeWizardServiceTests : IAsyncDisposable
         Assert.Equal(CertificateRenewalStatus.ReadyToImport, op.Status);
         Assert.False(string.IsNullOrWhiteSpace(op.NewThumbprint));
 
-        op = await wizard.ImportAndSwitchAsync(op.Id);
-        Assert.Equal(CertificateRenewalStatus.Completed, op.Status);
+        await Assert.ThrowsAsync<Nyxveil.ControlPlane.Application.Exceptions.ValidationException>(() => wizard.ImportAndSwitchAsync(op.Id));
+        Assert.Equal(CertificateRenewalStatus.Failed, (await wizard.GetStatusAsync(op.Id)).Status);
     }
 
     private sealed class FakeDnsTxtLookup : IDnsTxtLookup
