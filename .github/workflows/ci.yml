@@ -39,11 +39,23 @@ jobs:
             exit 1
           fi
       - name: Vet
-        run: go vet ./core/...
+        # Frozen Core windows package: !windows stub Factory lacks OpenFunc while
+        # tun_test.go is untagged — Linux vet/test would rewrite/fail Core. Covered by
+        # the windows job instead. Do not modify Frozen Core.
+        run: |
+          set -euo pipefail
+          mapfile -t pkgs < <(go list ./core/... | grep -v '/platform/windows$')
+          go vet "${pkgs[@]}"
       - name: Test
-        run: go test -timeout 120s ./core/...
+        run: |
+          set -euo pipefail
+          mapfile -t pkgs < <(go list ./core/... | grep -v '/platform/windows$')
+          go test -timeout 120s "${pkgs[@]}"
       - name: Race test
-        run: go test -race -timeout 180s ./core/...
+        run: |
+          set -euo pipefail
+          mapfile -t pkgs < <(go list ./core/... | grep -v '/platform/windows$')
+          go test -race -timeout 180s "${pkgs[@]}"
       - name: Benchmark smoke
         run: go test -bench=BenchmarkTicketVerify -benchtime=1s ./core/auth/ticket/
       - name: Fuzz smoke

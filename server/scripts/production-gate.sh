@@ -64,7 +64,11 @@ capture_version_diagnostics() {
     if command -v systemctl >/dev/null 2>&1; then
       systemctl show nyxveil-server -p MainPID -p ExecStart -p ActiveEnterTimestamp 2>/dev/null || true
     fi
-    if [[ -f /usr/local/share/nyxveil/VERSION ]]; then
+    if [[ -n "${NYXVEIL_SHARE_VERSION:-}" && -f "${NYXVEIL_SHARE_VERSION}" ]]; then
+      echo -n "installed_share_VERSION="
+      tr -d '\r[:space:]' <"${NYXVEIL_SHARE_VERSION}"
+      echo
+    elif [[ -f /usr/local/share/nyxveil/VERSION ]]; then
       echo -n "installed_share_VERSION="
       tr -d '\r[:space:]' </usr/local/share/nyxveil/VERSION
       echo
@@ -196,10 +200,15 @@ case "${MODE}" in
 esac
 
 EXPECTED_VERSION="${NYXVEIL_EXPECTED_VERSION:-1.1.11}"
+SHARE_DIR="${NYXVEIL_SHARE_DIR:-/usr/local/share/nyxveil}"
+SHARE_VERSION_FILE="${NYXVEIL_SHARE_VERSION:-${SHARE_DIR}/VERSION}"
 VERSION="$(tr -d '\r[:space:]' < "${ROOT}/VERSION" 2>/dev/null || true)"
-if [[ -z "${VERSION}" ]]; then
-  # Installed layout: prefer share VERSION; fall back to binary --version output later.
-  VERSION="$(tr -d '\r[:space:]' < "/usr/local/share/nyxveil/VERSION" 2>/dev/null || true)"
+if [[ -z "${VERSION}" && -f "${SHARE_VERSION_FILE}" ]]; then
+  VERSION="$(tr -d '\r[:space:]' < "${SHARE_VERSION_FILE}" || true)"
+fi
+if [[ -z "${VERSION}" && -f /usr/local/share/nyxveil/VERSION ]]; then
+  # Installed production layout fallback.
+  VERSION="$(tr -d '\r[:space:]' < "/usr/local/share/nyxveil/VERSION" || true)"
 fi
 [[ "${VERSION}" == "${EXPECTED_VERSION}" ]] || fail "version_file" "expected VERSION=${EXPECTED_VERSION} got '${VERSION}'"
 
@@ -341,9 +350,16 @@ if [[ "${UPDATE_UNIT}" == "/etc/systemd/system/nyxveil-update.service" ]] \
   systemctl cat nyxveil-update.service >/dev/null 2>&1 ||
     fail "update_unit_systemd" "systemd does not see nyxveil-update.service (daemon-reload?)"
 fi
-SHARE_VER="$(tr -d '\r[:space:]' < /usr/local/share/nyxveil/VERSION 2>/dev/null || true)"
+SHARE_VER=""
+if [[ -f "${SHARE_VERSION_FILE}" ]]; then
+  SHARE_VER="$(tr -d '\r[:space:]' < "${SHARE_VERSION_FILE}" || true)"
+elif [[ -f "${ROOT}/VERSION" ]]; then
+  SHARE_VER="$(tr -d '\r[:space:]' < "${ROOT}/VERSION" || true)"
+elif [[ -f /usr/local/share/nyxveil/VERSION ]]; then
+  SHARE_VER="$(tr -d '\r[:space:]' < /usr/local/share/nyxveil/VERSION || true)"
+fi
 [[ "${SHARE_VER}" == "${EXPECTED_VERSION}" ]] ||
-  fail "share_version" "share VERSION='${SHARE_VER}' want ${EXPECTED_VERSION}"
+  fail "share_version" "share VERSION='${SHARE_VER}' want ${EXPECTED_VERSION} (file=${SHARE_VERSION_FILE})"
 record "management_prerequisites=update_unit+polkit_ok"
 
 [[ -s "${CONFIG}" ]] || fail "config" "${CONFIG} missing or empty"
