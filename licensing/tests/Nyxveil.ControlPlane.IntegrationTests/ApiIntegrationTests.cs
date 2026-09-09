@@ -87,11 +87,12 @@ public sealed class ApiIntegrationTests : IClassFixture<CustomWebApplicationFact
     }
 
     [Fact]
-    public async Task TestAnonymousCatalogKeysRejected()
+    public async Task TestAnonymousCatalogKeysAllowed()
     {
+        // Public by contract: Server GetCatalogKeys uses sign=false (no NodeAuth / no license).
         var client = _factory.CreateClient();
         var response = await client.GetAsync("/api/v1/catalog-keys");
-        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     [Fact]
@@ -100,9 +101,8 @@ public sealed class ApiIntegrationTests : IClassFixture<CustomWebApplicationFact
         var client = _factory.CreateClient();
         var token = await CreateLicenseTokenAsync();
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/catalog-keys");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        var response = await client.SendAsync(request);
+        // catalog-keys is public; license not required.
+        var response = await client.GetAsync("/api/v1/catalog-keys");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var body = await response.Content.ReadAsStringAsync();

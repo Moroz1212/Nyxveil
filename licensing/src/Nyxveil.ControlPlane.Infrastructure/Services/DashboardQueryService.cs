@@ -157,7 +157,7 @@ public sealed class DashboardQueryService : IDashboardQueryService
         {
         }
 
-        return "1.3.0";
+        return "1.3.1";
     }
 
     private void TryPopulateControlPlaneCertificate(DashboardSummary summary, DateTime now)

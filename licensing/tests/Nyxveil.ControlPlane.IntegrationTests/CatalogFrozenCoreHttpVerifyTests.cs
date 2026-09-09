@@ -37,7 +37,6 @@ public sealed class CatalogFrozenCoreHttpVerifyTests : IClassFixture<CustomWebAp
         var catalogBytes = await catalogResp.Content.ReadAsByteArrayAsync();
 
         using var keysReq = new HttpRequestMessage(HttpMethod.Get, "/api/v1/catalog-keys");
-        keysReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var keysResp = await client.SendAsync(keysReq);
         keysResp.EnsureSuccessStatusCode();
         var keysBytes = await keysResp.Content.ReadAsByteArrayAsync();

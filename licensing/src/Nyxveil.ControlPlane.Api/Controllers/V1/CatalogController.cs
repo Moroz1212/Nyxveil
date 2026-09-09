@@ -11,7 +11,6 @@ namespace Nyxveil.ControlPlane.Api.Controllers.V1;
 [ApiController]
 [Route("api/v1")]
 [Produces("application/json")]
-[LicenseAuth]
 public sealed class CatalogController : ControllerBase
 {
     private readonly ICatalogService _catalog;
@@ -30,6 +29,7 @@ public sealed class CatalogController : ControllerBase
 
     /// <summary>GET /api/v1/catalog — requires license Bearer or access ticket.</summary>
     [HttpGet("catalog")]
+    [LicenseAuth]
     [RateLimit]
     public async Task<ActionResult<SignedCatalogDto>> GetCatalog(CancellationToken cancellationToken)
     {
@@ -38,8 +38,10 @@ public sealed class CatalogController : ControllerBase
     }
 
     /// <summary>
-    /// GET /api/v1/catalog-keys — catalog signing verification public keys only
-    /// (current + next). Same ring as CatalogSigner. Never returns private keys.
+    /// GET /api/v1/catalog-keys — PUBLIC verification public keys only
+    /// (current/next/retiring ring). Same ring as CatalogSigner. Never returns private keys.
+    /// Intentionally unauthenticated so nodes can verify staged TLS SPKI catalogs
+    /// without a client license (Server GetCatalogKeys uses sign=false).
     /// </summary>
     [HttpGet("catalog-keys")]
     [RateLimit]
@@ -62,6 +64,7 @@ public sealed class CatalogController : ControllerBase
 
     /// <summary>GET /api/v1/locations — filtered location list.</summary>
     [HttpGet("locations")]
+    [LicenseAuth]
     [RateLimit]
     public async Task<ActionResult<IReadOnlyList<LocationDto>>> GetLocations(CancellationToken cancellationToken)
     {
@@ -71,6 +74,7 @@ public sealed class CatalogController : ControllerBase
 
     /// <summary>GET /api/v1/nodes — filtered node registry view.</summary>
     [HttpGet("nodes")]
+    [LicenseAuth]
     [RateLimit]
     public async Task<ActionResult<IReadOnlyList<NodeRegistryEntryDto>>> GetNodes(CancellationToken cancellationToken)
     {
