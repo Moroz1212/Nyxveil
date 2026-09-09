@@ -61,4 +61,28 @@ public sealed class ProductionDeployOrchestrationTests
             match => Assert.True(match.Index > rehearsal,
                 "No service stop is allowed before migration rehearsal."));
     }
+
+    [Fact]
+    public void TestSchemaV4NoOpSkipsProductionMigrationFlag()
+    {
+        // When already at expected schema, productionMigrationAttempted must stay false
+        // so rollback does not restore an untouched database.
+        Assert.Contains("if ($productionPlan.MigrationRequired)", Script, StringComparison.Ordinal);
+        Assert.Contains("$productionMigrationAttempted = $true", Script, StringComparison.Ordinal);
+        var applyIdx = Script.IndexOf("$stage = 'apply_production_migration'", StringComparison.Ordinal);
+        var flagIdx = Script.IndexOf("$productionMigrationAttempted = $true", applyIdx, StringComparison.Ordinal);
+        Assert.True(flagIdx > applyIdx);
+        var flagContext = Script.Substring(Math.Max(0, flagIdx - 120), Math.Min(200, Script.Length - Math.Max(0, flagIdx - 120)));
+        Assert.Contains("MigrationRequired", flagContext, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestMigrationRehearsalUsesValidateSchemaV4AndDetectsSchema()
+    {
+        Assert.Contains("Get-SchemaVersionFromDatabase", Script, StringComparison.Ordinal);
+        Assert.Contains("validate_schema_v4.sql", Script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Resolve-SchemaMigrationPlan", Script, StringComparison.Ordinal);
+        Assert.DoesNotContain("Invoke-MigrationRehearsal -BackupPath $databaseBackup -MigrationPath",
+            Script, StringComparison.Ordinal);
+    }
 }

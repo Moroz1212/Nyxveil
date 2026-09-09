@@ -28,8 +28,10 @@ try {
         'scripts\update-windows.ps1',
         'database\migrations\002_node_lifecycle_cert_metadata.sql',
         'database\migrations\003_node_commands_cert_renewal.sql',
+        'database\migrations\004_version_mgmt_signing_retiring.sql',
         'database\migrations\validate_schema_v2.sql',
         'database\migrations\validate_schema_v3.sql',
+        'database\migrations\validate_schema_v4.sql',
         'docs\RELEASE-1.3.1.md'
     )
     if ($PackageDir) {
@@ -94,7 +96,7 @@ try {
                 -DatabaseAuth ([string]$db.Auth) `
                 -DatabaseUser ([string]$db.User) `
                 -DatabasePassword $dbPassword `
-                -InputFile (Join-Path $root 'database\migrations\validate_schema_v3.sql') `
+                -InputFile (Join-Path $root 'database\migrations\validate_schema_v4.sql') `
                 -TrustSqlServerCertificate ([bool]$db.TrustSqlServerCertificate) `
                 -Encrypt ([bool]$db.Encrypt)
             Record 'schema_version' 'PASS' "database=$($db.Database) schema_version=4"
@@ -108,7 +110,7 @@ try {
             }
             else {
                 Record 'schema_version' 'FAIL' $detail
-                Record 'database_connectivity' 'FAIL' 'schema v3 validation could not complete'
+                Record 'database_connectivity' 'FAIL' 'schema v4 validation could not complete'
             }
         }
     }

@@ -103,6 +103,82 @@ public sealed class MigrationDeployHardeningTests
     }
 
     [Fact]
+    public void TestProductionDeployUsesValidateSchemaV4()
+    {
+        var deploy = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-deploy.ps1"));
+        Assert.Contains(@"database\migrations\validate_schema_v4.sql", deploy, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(@"$validationScript = Join-Path $licensingRoot 'database\migrations\validate_schema_v3.sql'",
+            deploy, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Resolve-SchemaMigrationPlan", deploy, StringComparison.Ordinal);
+        Assert.Contains("already_at_or_above_expected", deploy, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestProductionDeployDoesNotDefaultToObsoleteMigration002()
+    {
+        var deploy = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-deploy.ps1"));
+        Assert.DoesNotContain(
+            "Join-Path $licensingRoot 'database\\migrations\\002_node_lifecycle_cert_metadata.sql'\r\n    }",
+            deploy, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "else {\r\n        Join-Path $licensingRoot 'database\\migrations\\002_node_lifecycle_cert_metadata.sql'",
+            deploy, StringComparison.Ordinal);
+        // Auto chain may reference 002 only for schemas < 2, never as unconditional default apply.
+        Assert.Contains("CurrentSchemaVersion -lt 2", deploy, StringComparison.Ordinal);
+        Assert.Contains("004_version_mgmt_signing_retiring.sql", deploy, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("migration_required=$($productionPlan.MigrationRequired)", deploy, StringComparison.Ordinal);
+        Assert.Contains("skipping migration apply", deploy, StringComparison.OrdinalIgnoreCase);
+        // Unconditional default assignment to 002 must not remain.
+        Assert.DoesNotMatch(new Regex(
+            @"\$MigrationScript\s*=\s*if\s*\(\s*\$MigrationScript\s*\)[\s\S]{0,120}002_node_lifecycle_cert_metadata",
+            RegexOptions.IgnoreCase), deploy);
+    }
+
+    [Fact]
+    public void TestSchemaV4HotfixNoMigrationPlan()
+    {
+        // Mirrors Resolve-SchemaMigrationPlan: schema 4 + expected 4 => no scripts.
+        Assert.True(File.Exists(Path.Combine(LicensingRoot, "database", "migrations", "validate_schema_v4.sql")));
+        Assert.True(File.Exists(Path.Combine(LicensingRoot, "database", "migrations", "004_version_mgmt_signing_retiring.sql")));
+        var validate = File.ReadAllText(Path.Combine(LicensingRoot, "database", "migrations", "validate_schema_v4.sql"));
+        Assert.Contains("@v < 4", validate, StringComparison.Ordinal);
+        Assert.DoesNotContain("schema_version is not 3", validate, StringComparison.Ordinal);
+        Assert.DoesNotContain("@ver <> 3", validate, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestSchemaV3ToV4MigrationArtifactExists()
+    {
+        var sql = File.ReadAllText(Path.Combine(
+            LicensingRoot, "database", "migrations", "004_version_mgmt_signing_retiring.sql"));
+        Assert.Contains("ReportedServerVersion", sql, StringComparison.Ordinal);
+        Assert.Contains("RetireAfter", sql, StringComparison.Ordinal);
+        Assert.Contains("Version = 4", sql, StringComparison.Ordinal);
+        Assert.Contains("BEGIN TRAN", sql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TestValidateSchemaV4ScriptExists()
+    {
+        var path = Path.Combine(LicensingRoot, "database", "migrations", "validate_schema_v4.sql");
+        Assert.True(File.Exists(path));
+        var sql = File.ReadAllText(path);
+        Assert.Contains("NyxveilSchemaVersion", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("@v < 4", sql, StringComparison.Ordinal);
+        Assert.Contains("ReportedServerVersion", sql, StringComparison.Ordinal);
+        Assert.Contains("RetireAfter", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestProductionGateValidatesSchemaV4()
+    {
+        var gate = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-gate.ps1"));
+        Assert.Contains(@"validate_schema_v4.sql", gate, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("schema v4 validation could not complete", gate, StringComparison.Ordinal);
+        Assert.DoesNotContain(@"validate_schema_v3.sql') `", gate, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TestValidateSchemaV2ScriptExists()
     {
         var path = Path.Combine(LicensingRoot, "database", "migrations", "validate_schema_v2.sql");

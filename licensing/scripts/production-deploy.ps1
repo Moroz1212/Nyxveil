@@ -4,9 +4,10 @@
   Hardened emergency production deployment for Nyxveil Control Plane 1.3.1.
 
 .DESCRIPTION
-  Backs up and verifies production, rehearses schema v3 against a disposable
+  Backs up and verifies production, rehearses schema v4 against a disposable
   restored database, then performs the service outage and deploy. No live
   service, production database, or installed files are changed before rehearsal passes.
+  When production is already schema >= 4, migration is a no-op (validate only).
 #>
 [CmdletBinding()]
 param(
@@ -25,7 +26,10 @@ $licensingRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $PSScriptRoot 'Nyxveil.ControlPlane.Deploy.psm1') -Force
 
 $requiredServiceName = 'NyxveilControlPlane'
-$validationScript = Join-Path $licensingRoot 'database\migrations\validate_schema_v3.sql'
+$validationScript = Join-Path $licensingRoot 'database\migrations\validate_schema_v4.sql'
+$migration002 = Join-Path $licensingRoot 'database\migrations\002_node_lifecycle_cert_metadata.sql'
+$migration003 = Join-Path $licensingRoot 'database\migrations\003_node_commands_cert_renewal.sql'
+$migration004 = Join-Path $licensingRoot 'database\migrations\004_version_mgmt_signing_retiring.sql'
 $stage = 'precheck'
 $failedGate = ''
 $gateLog = ''
@@ -143,11 +147,101 @@ IF LEN(@sql) > 0 EXEC sys.sp_executesql @sql;
     Add-DeployEvent "Removed abandoned rehearsal databases matching ${prefix}%."
 }
 
+function Get-SchemaVersionFromDatabase {
+    param([Parameter(Mandatory = $true)][string]$DatabaseName)
+    $query = @"
+SET NOCOUNT ON;
+IF OBJECT_ID(N'dbo.NyxveilSchemaVersion', N'U') IS NULL
+BEGIN
+    SELECT CAST(0 AS int) AS schema_version;
+END
+ELSE
+BEGIN
+    SELECT TOP (1) CAST(Version AS int) AS schema_version
+    FROM dbo.NyxveilSchemaVersion
+    ORDER BY AppliedAt DESC, Version DESC;
+END
+"@
+    $lines = @(Invoke-DeploymentSql -Query $query -DatabaseName $DatabaseName `
+        -ExtraArgs @('-h', '-1', '-W'))
+    foreach ($line in $lines) {
+        $trimmed = ([string]$line).Trim()
+        if ($trimmed -match '^\d+$') {
+            return [int]$trimmed
+        }
+    }
+    throw "Unable to read NyxveilSchemaVersion from database '$DatabaseName'."
+}
+
+function Resolve-SchemaMigrationPlan {
+    param(
+        [Parameter(Mandatory = $true)][int]$CurrentSchemaVersion,
+        [Parameter(Mandatory = $true)][int]$ExpectedSchemaVersion,
+        [string]$ExplicitMigrationScript = ''
+    )
+    if ($CurrentSchemaVersion -gt $ExpectedSchemaVersion) {
+        throw ("Production schema_version=$CurrentSchemaVersion is newer than ExpectedSchemaVersion=$ExpectedSchemaVersion; refusing to downgrade.")
+    }
+    if ($CurrentSchemaVersion -ge $ExpectedSchemaVersion) {
+        return [pscustomobject]@{
+            CurrentSchemaVersion = $CurrentSchemaVersion
+            MigrationRequired = $false
+            MigrationScripts = @()
+            Reason = "already_at_or_above_expected schema=$CurrentSchemaVersion"
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitMigrationScript)) {
+        $resolved = (Resolve-Path -LiteralPath $ExplicitMigrationScript -ErrorAction Stop).Path
+        return [pscustomobject]@{
+            CurrentSchemaVersion = $CurrentSchemaVersion
+            MigrationRequired = $true
+            MigrationScripts = @($resolved)
+            Reason = "explicit_migration_script from_schema=$CurrentSchemaVersion"
+        }
+    }
+
+    $chain = [Collections.Generic.List[string]]::new()
+    if ($CurrentSchemaVersion -lt 2) {
+        $chain.Add((Resolve-Path -LiteralPath $script:migration002 -ErrorAction Stop).Path)
+    }
+    if ($CurrentSchemaVersion -lt 3) {
+        $chain.Add((Resolve-Path -LiteralPath $script:migration003 -ErrorAction Stop).Path)
+    }
+    if ($CurrentSchemaVersion -lt 4) {
+        $chain.Add((Resolve-Path -LiteralPath $script:migration004 -ErrorAction Stop).Path)
+    }
+    if ($chain.Count -eq 0) {
+        throw "No migration chain available from schema $CurrentSchemaVersion to $ExpectedSchemaVersion."
+    }
+    return [pscustomobject]@{
+        CurrentSchemaVersion = $CurrentSchemaVersion
+        MigrationRequired = $true
+        MigrationScripts = $chain.ToArray()
+        Reason = "auto_chain from_schema=$CurrentSchemaVersion to=$ExpectedSchemaVersion"
+    }
+}
+
+function Invoke-SchemaMigrationPlan {
+    param(
+        [Parameter(Mandatory = $true)][string]$DatabaseName,
+        [Parameter(Mandatory = $true)]$Plan
+    )
+    if (-not $Plan.MigrationRequired) {
+        Add-DeployEvent "Schema migration skipped for $DatabaseName ($($Plan.Reason))."
+        return
+    }
+    foreach ($scriptPath in @($Plan.MigrationScripts)) {
+        Add-DeployEvent "Applying migration $(Split-Path -Leaf $scriptPath) on $DatabaseName."
+        Invoke-DeploymentSql -InputFile $scriptPath -DatabaseName $DatabaseName
+    }
+}
+
 function Invoke-MigrationRehearsal {
     param(
         [Parameter(Mandatory = $true)][string]$BackupPath,
-        [Parameter(Mandatory = $true)][string]$MigrationPath,
-        [Parameter(Mandatory = $true)][string]$ValidatePath
+        [Parameter(Mandatory = $true)][string]$ValidatePath,
+        [string]$ExplicitMigrationScript = ''
     )
 
     Remove-MigrationCheckDatabases
@@ -206,9 +300,15 @@ function Invoke-MigrationRehearsal {
         $created = $true
         Invoke-DeploymentSql -Query $restoreSql -DatabaseName 'master'
 
-        Invoke-DeploymentSql -InputFile $MigrationPath -DatabaseName $tempDatabase
+        $currentSchema = Get-SchemaVersionFromDatabase -DatabaseName $tempDatabase
+        $expected = [int]$script:ExpectedSchemaVersion
+        $plan = Resolve-SchemaMigrationPlan -CurrentSchemaVersion $currentSchema `
+            -ExpectedSchemaVersion $expected -ExplicitMigrationScript $ExplicitMigrationScript
+        Add-DeployEvent ("Rehearsal detected schema_version=$currentSchema; migration_required=$($plan.MigrationRequired); $($plan.Reason)")
+        Invoke-SchemaMigrationPlan -DatabaseName $tempDatabase -Plan $plan
         Invoke-DeploymentSql -InputFile $ValidatePath -DatabaseName $tempDatabase
-        Add-DeployEvent "Migration rehearsal passed in disposable database $tempDatabase."
+        Add-DeployEvent "Migration rehearsal passed in disposable database $tempDatabase (validate=$(Split-Path -Leaf $ValidatePath))."
+        return $plan
     }
     finally {
         if ($created) {
@@ -301,11 +401,22 @@ try {
     $InstallDir = (Resolve-Path -LiteralPath $InstallDir -ErrorAction Stop).Path
     Assert-SeparateDirectoryTrees -First $PublishDir -Second $InstallDir
 
-    $MigrationScript = if ($MigrationScript) { $MigrationScript } else {
-        Join-Path $licensingRoot 'database\migrations\002_node_lifecycle_cert_metadata.sql'
+    $explicitMigrationScript = ''
+    if (-not [string]::IsNullOrWhiteSpace($MigrationScript)) {
+        $explicitMigrationScript = (Resolve-Path -LiteralPath $MigrationScript -ErrorAction Stop).Path
+        # Explicit override must never silently reintroduce obsolete 002 against an already-v4 DB;
+        # Resolve-SchemaMigrationPlan still skips when current >= expected.
+        Add-DeployEvent "Explicit MigrationScript override: $explicitMigrationScript"
     }
-    $MigrationScript = (Resolve-Path -LiteralPath $MigrationScript -ErrorAction Stop).Path
+    foreach ($requiredMigration in @($migration002, $migration003, $migration004, $validationScript)) {
+        if (-not (Test-Path -LiteralPath $requiredMigration -PathType Leaf)) {
+            throw "Required schema artifact missing: $requiredMigration"
+        }
+    }
     $validationScript = (Resolve-Path -LiteralPath $validationScript -ErrorAction Stop).Path
+    $migration002 = (Resolve-Path -LiteralPath $migration002 -ErrorAction Stop).Path
+    $migration003 = (Resolve-Path -LiteralPath $migration003 -ErrorAction Stop).Path
+    $migration004 = (Resolve-Path -LiteralPath $migration004 -ErrorAction Stop).Path
 
     $webExe = Join-Path $PublishDir 'Nyxveil.ControlPlane.Web.exe'
     $webDll = Join-Path $PublishDir 'Nyxveil.ControlPlane.Web.dll'
@@ -394,11 +505,12 @@ try {
     }
     & (Join-Path $PSScriptRoot 'backup-db.ps1') @backupArgs
 
-    # 4. REHEARSE RESTORE + MIGRATION + VALIDATION BEFORE OUTAGE.
+    # 4. REHEARSE RESTORE + OPTIONAL MIGRATION + V4 VALIDATION BEFORE OUTAGE.
     $stage = 'migration_rehearsal'
+    $schemaPlan = $null
     try {
-        Invoke-MigrationRehearsal -BackupPath $databaseBackup -MigrationPath $MigrationScript `
-            -ValidatePath $validationScript
+        $schemaPlan = Invoke-MigrationRehearsal -BackupPath $databaseBackup `
+            -ValidatePath $validationScript -ExplicitMigrationScript $explicitMigrationScript
     }
     catch {
         $failedGate = 'migration_rehearsal'
@@ -432,12 +544,21 @@ try {
     Stop-Service -Name $requiredServiceName -Force -ErrorAction Stop
     (Get-Service -Name $requiredServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
 
-    # 7. APPLY PRODUCTION MIGRATION.
+    # 7. APPLY PRODUCTION MIGRATION ONLY WHEN REQUIRED.
     $stage = 'apply_production_migration'
-    $productionMigrationAttempted = $true
-    Invoke-DeploymentSql -InputFile $MigrationScript -DatabaseName $dbName
+    $liveSchema = Get-SchemaVersionFromDatabase -DatabaseName $dbName
+    $productionPlan = Resolve-SchemaMigrationPlan -CurrentSchemaVersion $liveSchema `
+        -ExpectedSchemaVersion ([int]$ExpectedSchemaVersion) -ExplicitMigrationScript $explicitMigrationScript
+    Add-DeployEvent ("Production schema_version=$liveSchema; migration_required=$($productionPlan.MigrationRequired); $($productionPlan.Reason)")
+    if ($productionPlan.MigrationRequired) {
+        $productionMigrationAttempted = $true
+        Invoke-SchemaMigrationPlan -DatabaseName $dbName -Plan $productionPlan
+    }
+    else {
+        Add-DeployEvent 'Production database already at ExpectedSchemaVersion; skipping migration apply.'
+    }
 
-    # 8. VALIDATE PRODUCTION SCHEMA V2.
+    # 8. VALIDATE PRODUCTION SCHEMA V4.
     $stage = 'validate_production_schema'
     Invoke-DeploymentSql -InputFile $validationScript -DatabaseName $dbName
 
