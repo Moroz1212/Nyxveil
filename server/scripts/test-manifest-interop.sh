@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Manifest shell↔Go interop + curl|bash BASH_SOURCE regression.
+# Uses a temp fixture dir — never writes server-v1.0.0 pins into dist/release
+# (that tree is reserved for the current candidate package-release output).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,8 +10,12 @@ FAIL=0
 pass() { echo "OK  $*"; }
 fail() { echo "FAIL $*" >&2; FAIL=1; }
 
-AMD64="dist/release/release-manifest-linux-amd64.json"
-ARM64="dist/release/release-manifest-linux-arm64.json"
+FIXTURE="$(mktemp -d /tmp/nyxveil-manifest-interop.XXXXXX)"
+cleanup() { rm -rf "${FIXTURE}"; }
+trap cleanup EXIT
+
+AMD64="${FIXTURE}/release-manifest-linux-amd64.json"
+ARM64="${FIXTURE}/release-manifest-linux-arm64.json"
 INSTALLER="installer/install.sh"
 WANT_AMD64_SHA="e4a4fcb21b4bcffbf6c08b28b757dc8f7a5b0f30c66d8a961c3a7960f5128261"
 RELEASE_BASE="https://github.com/Moroz1212/Nyxveil/releases/download/server-v1.0.0"
@@ -20,19 +26,9 @@ need jq
 need openssl
 need curl
 
-ensure_manifests() {
-  mkdir -p dist/release
-  if [[ ! -f "${AMD64}" ]]; then
-    echo "fetching published ${AMD64} from server-v1.0.0…"
-    curl -fsSL -o "${AMD64}" "${RELEASE_BASE}/release-manifest-linux-amd64.json"
-  fi
-  if [[ ! -f "${ARM64}" ]]; then
-    echo "fetching published ${ARM64} from server-v1.0.0…"
-    curl -fsSL -o "${ARM64}" "${RELEASE_BASE}/release-manifest-linux-arm64.json"
-  fi
-}
-
-ensure_manifests
+echo "fetching published server-v1.0.0 manifests into ${FIXTURE}…"
+curl -fsSL -o "${AMD64}" "${RELEASE_BASE}/release-manifest-linux-amd64.json"
+curl -fsSL -o "${ARM64}" "${RELEASE_BASE}/release-manifest-linux-arm64.json"
 
 echo "== production amd64 manifest SHA (must not change) =="
 got="$(sha256sum "${AMD64}" | awk '{print $1}')"
@@ -63,8 +59,6 @@ for man in "${AMD64}" "${ARM64}"; do
     continue
   fi
   last="$(tail -c 1 "${man}" | od -An -tx1 | tr -d ' \n')"
-  # Published JSON may end with LF; that is fine for ParseManifest. We only
-  # assert the file is non-empty and readable.
   pass "manifest readable $(basename "${man}") (last=0x${last:-00})"
 done
 
