@@ -103,7 +103,7 @@ public sealed class MigrationDeployHardeningTests
     }
 
     [Fact]
-    public void TestProductionDeployUsesValidateSchemaV4()
+    public void TestProductionDeployUsesValidateSchemaV5()
     {
         var deploy = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-deploy.ps1"));
         Assert.Contains(@"database\migrations\validate_schema_v5.sql", deploy, StringComparison.OrdinalIgnoreCase);
@@ -111,6 +111,12 @@ public sealed class MigrationDeployHardeningTests
             deploy, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Resolve-SchemaMigrationPlan", deploy, StringComparison.Ordinal);
         Assert.Contains("already_at_or_above_expected", deploy, StringComparison.Ordinal);
+        Assert.Contains("005_certificate_operation_states.sql", deploy, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ExpectedSchemaVersion = '5'", deploy, StringComparison.Ordinal);
+        Assert.Contains("rehearses schema v5", deploy, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("$migration005", deploy, StringComparison.Ordinal);
+        Assert.Contains("@($migration002, $migration003, $migration004, $migration005, $validationScript)",
+            deploy, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -135,47 +141,89 @@ public sealed class MigrationDeployHardeningTests
     }
 
     [Fact]
-    public void TestSchemaV4HotfixNoMigrationPlan()
+    public void TestSchemaV5HotfixArtifactsExist()
     {
-        // Mirrors Resolve-SchemaMigrationPlan: schema 4 + expected 4 => no scripts.
-        Assert.True(File.Exists(Path.Combine(LicensingRoot, "database", "migrations", "validate_schema_v4.sql")));
-        Assert.True(File.Exists(Path.Combine(LicensingRoot, "database", "migrations", "004_version_mgmt_signing_retiring.sql")));
-        var validate = File.ReadAllText(Path.Combine(LicensingRoot, "database", "migrations", "validate_schema_v4.sql"));
-        Assert.Contains("@v < 4", validate, StringComparison.Ordinal);
-        Assert.DoesNotContain("schema_version is not 3", validate, StringComparison.Ordinal);
-        Assert.DoesNotContain("@ver <> 3", validate, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(LicensingRoot, "database", "migrations", "validate_schema_v5.sql")));
+        Assert.True(File.Exists(Path.Combine(LicensingRoot, "database", "migrations", "005_certificate_operation_states.sql")));
+        var validate = File.ReadAllText(Path.Combine(LicensingRoot, "database", "migrations", "validate_schema_v5.sql"));
+        Assert.Contains("@v < 5", validate, StringComparison.Ordinal);
+        Assert.Contains("[Status]>=0AND[Status]<=9", validate, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void TestSchemaV3ToV4MigrationArtifactExists()
+    public void TestSchemaV4ToV5MigrationArtifactExists()
     {
         var sql = File.ReadAllText(Path.Combine(
-            LicensingRoot, "database", "migrations", "004_version_mgmt_signing_retiring.sql"));
-        Assert.Contains("ReportedServerVersion", sql, StringComparison.Ordinal);
-        Assert.Contains("RetireAfter", sql, StringComparison.Ordinal);
-        Assert.Contains("Version = 4", sql, StringComparison.Ordinal);
+            LicensingRoot, "database", "migrations", "005_certificate_operation_states.sql"));
+        Assert.Contains("Version BETWEEN 4 AND 5", sql, StringComparison.Ordinal);
+        Assert.Contains("BETWEEN 0 AND 9", sql, StringComparison.Ordinal);
+        Assert.Contains("20260909160000_CertificateOperationStates", sql, StringComparison.Ordinal);
         Assert.Contains("BEGIN TRAN", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("__EFMigrationsHistory", sql, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void TestValidateSchemaV4ScriptExists()
+    public void TestValidateSchemaV5ScriptExists()
+    {
+        var path = Path.Combine(LicensingRoot, "database", "migrations", "validate_schema_v5.sql");
+        Assert.True(File.Exists(path));
+        var sql = File.ReadAllText(path);
+        Assert.Contains("NyxveilSchemaVersion", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("@v < 5", sql, StringComparison.Ordinal);
+        Assert.Contains("ReportedServerVersion", sql, StringComparison.Ordinal);
+        Assert.Contains("RetireAfter", sql, StringComparison.Ordinal);
+        Assert.Contains("ProgressPhase", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestCreateDatabaseSeedsOperationalSchemaVersion5()
+    {
+        var sql = File.ReadAllText(Path.Combine(LicensingRoot, "database", "create_database.sql"));
+        var body = sql.Split("-- END EF GENERATED BASELINE", 2)[1];
+        Assert.Contains("NyxveilSchemaVersion", body, StringComparison.Ordinal);
+        Assert.Contains("20260909160000_CertificateOperationStates", body, StringComparison.Ordinal);
+        Assert.Contains("VALUES (1, 5,", body, StringComparison.Ordinal);
+        // Must not alter the EF-generated body used by SchemaAlignmentTests.
+        var efBody = sql.Split("-- BEGIN EF GENERATED BASELINE")[1].Split("-- END EF GENERATED BASELINE")[0];
+        Assert.DoesNotContain("NyxveilSchemaVersion", efBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestProductionGateValidatesSchemaV5()
+    {
+        var gate = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-gate.ps1"));
+        Assert.Contains(@"validate_schema_v5.sql", gate, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("schema v5 validation could not complete", gate, StringComparison.Ordinal);
+        Assert.Contains("005_certificate_operation_states.sql", gate, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(@"validate_schema_v3.sql') `", gate, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestValidateSchemaV4ScriptStillExistsForHistory()
     {
         var path = Path.Combine(LicensingRoot, "database", "migrations", "validate_schema_v4.sql");
         Assert.True(File.Exists(path));
         var sql = File.ReadAllText(path);
         Assert.Contains("NyxveilSchemaVersion", sql, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@v < 4", sql, StringComparison.Ordinal);
-        Assert.Contains("ReportedServerVersion", sql, StringComparison.Ordinal);
-        Assert.Contains("RetireAfter", sql, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void TestProductionGateValidatesSchemaV4()
+    public void TestSchemaV4MigrationArtifactStillExistsForHistory()
     {
-        var gate = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-gate.ps1"));
-        Assert.Contains(@"validate_schema_v5.sql", gate, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("schema v5 validation could not complete", gate, StringComparison.Ordinal);
-        Assert.DoesNotContain(@"validate_schema_v3.sql') `", gate, StringComparison.Ordinal);
+        var sql = File.ReadAllText(Path.Combine(
+            LicensingRoot, "database", "migrations", "004_version_mgmt_signing_retiring.sql"));
+        Assert.Contains("ReportedServerVersion", sql, StringComparison.Ordinal);
+        Assert.Contains("Version = 4", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestPackReleaseExcludesTmpAndTrx()
+    {
+        var pack = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "pack-release.ps1"));
+        Assert.Contains("TestResults", pack, StringComparison.Ordinal);
+        Assert.Contains(@"\.(pfx|dpapi|user|trx|tmp)$", pack, StringComparison.Ordinal);
+        Assert.Contains("ef-baseline", pack, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

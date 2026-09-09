@@ -36,8 +36,10 @@ try {
         'docs\RELEASE-1.3.2.md'
     )
     if ($PackageDir) {
-        $required += 'Nyxveil.ControlPlane.Web.dll'
-        $missing = @($required | Where-Object { -not (Test-Path (Join-Path $PackageDir $_)) })
+        $missing = @($required | Where-Object { -not (Test-Path (Join-Path $root $_)) })
+        if (-not (Test-Path (Join-Path $PackageDir 'Nyxveil.ControlPlane.Web.dll'))) {
+            $missing += 'publish/Nyxveil.ControlPlane.Web.dll'
+        }
     } else {
         $missing = @($required | Where-Object { -not (Test-Path (Join-Path $root $_)) })
     }

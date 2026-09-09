@@ -4,10 +4,10 @@
   Hardened emergency production deployment for Nyxveil Control Plane 1.3.2.
 
 .DESCRIPTION
-  Backs up and verifies production, rehearses schema v4 against a disposable
+  Backs up and verifies production, rehearses schema v5 against a disposable
   restored database, then performs the service outage and deploy. No live
   service, production database, or installed files are changed before rehearsal passes.
-  When production is already schema >= 4, migration is a no-op (validate only).
+  When production is already schema >= 5, migration is a no-op (validate only).
 #>
 [CmdletBinding()]
 param(
@@ -408,11 +408,11 @@ try {
     $explicitMigrationScript = ''
     if (-not [string]::IsNullOrWhiteSpace($MigrationScript)) {
         $explicitMigrationScript = (Resolve-Path -LiteralPath $MigrationScript -ErrorAction Stop).Path
-        # Explicit override must never silently reintroduce obsolete 002 against an already-v4 DB;
+        # Explicit override must never silently reintroduce obsolete 002 against an already-v5 DB;
         # Resolve-SchemaMigrationPlan still skips when current >= expected.
         Add-DeployEvent "Explicit MigrationScript override: $explicitMigrationScript"
     }
-    foreach ($requiredMigration in @($migration002, $migration003, $migration004, $validationScript)) {
+    foreach ($requiredMigration in @($migration002, $migration003, $migration004, $migration005, $validationScript)) {
         if (-not (Test-Path -LiteralPath $requiredMigration -PathType Leaf)) {
             throw "Required schema artifact missing: $requiredMigration"
         }
@@ -420,8 +420,8 @@ try {
     $validationScript = (Resolve-Path -LiteralPath $validationScript -ErrorAction Stop).Path
     $migration002 = (Resolve-Path -LiteralPath $migration002 -ErrorAction Stop).Path
     $migration003 = (Resolve-Path -LiteralPath $migration003 -ErrorAction Stop).Path
-    $migration005 = Join-Path $licensingRoot 'database\migrations\005_certificate_operation_states.sql'
-$migration004 = (Resolve-Path -LiteralPath $migration004 -ErrorAction Stop).Path
+    $migration004 = (Resolve-Path -LiteralPath $migration004 -ErrorAction Stop).Path
+    $migration005 = (Resolve-Path -LiteralPath $migration005 -ErrorAction Stop).Path
 
     $webExe = Join-Path $PublishDir 'Nyxveil.ControlPlane.Web.exe'
     $webDll = Join-Path $PublishDir 'Nyxveil.ControlPlane.Web.dll'
@@ -510,7 +510,7 @@ $migration004 = (Resolve-Path -LiteralPath $migration004 -ErrorAction Stop).Path
     }
     & (Join-Path $PSScriptRoot 'backup-db.ps1') @backupArgs
 
-    # 4. REHEARSE RESTORE + OPTIONAL MIGRATION + V4 VALIDATION BEFORE OUTAGE.
+    # 4. REHEARSE RESTORE + OPTIONAL MIGRATION + V5 VALIDATION BEFORE OUTAGE.
     $stage = 'migration_rehearsal'
     $schemaPlan = $null
     try {
@@ -563,7 +563,7 @@ $migration004 = (Resolve-Path -LiteralPath $migration004 -ErrorAction Stop).Path
         Add-DeployEvent 'Production database already at ExpectedSchemaVersion; skipping migration apply.'
     }
 
-    # 8. VALIDATE PRODUCTION SCHEMA V4.
+    # 8. VALIDATE PRODUCTION SCHEMA V5.
     $stage = 'validate_production_schema'
     Invoke-DeploymentSql -InputFile $validationScript -DatabaseName $dbName
 

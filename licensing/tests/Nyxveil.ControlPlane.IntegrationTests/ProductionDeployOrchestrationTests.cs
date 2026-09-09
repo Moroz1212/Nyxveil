@@ -63,7 +63,7 @@ public sealed class ProductionDeployOrchestrationTests
     }
 
     [Fact]
-    public void TestSchemaV4NoOpSkipsProductionMigrationFlag()
+    public void TestSchemaV5NoOpSkipsProductionMigrationFlag()
     {
         // When already at expected schema, productionMigrationAttempted must stay false
         // so rollback does not restore an untouched database.
@@ -77,11 +77,12 @@ public sealed class ProductionDeployOrchestrationTests
     }
 
     [Fact]
-    public void TestMigrationRehearsalUsesValidateSchemaV4AndDetectsSchema()
+    public void TestMigrationRehearsalUsesValidateSchemaV5AndDetectsSchema()
     {
         Assert.Contains("Get-SchemaVersionFromDatabase", Script, StringComparison.Ordinal);
         Assert.Contains("validate_schema_v5.sql", Script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Resolve-SchemaMigrationPlan", Script, StringComparison.Ordinal);
+        Assert.Contains("CurrentSchemaVersion -lt 5", Script, StringComparison.Ordinal);
         Assert.DoesNotContain("Invoke-MigrationRehearsal -BackupPath $databaseBackup -MigrationPath",
             Script, StringComparison.Ordinal);
     }

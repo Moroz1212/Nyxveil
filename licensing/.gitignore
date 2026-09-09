@@ -10,3 +10,18 @@ appsettings.Production.json
 **/keys/
 *.pfx
 *.key
+
+# Local / CI test and temp artifacts (never ship)
+**/TestResults/
+*.trx
+*.tmp
+*.tmp.sql
+ef-baseline.tmp.sql
+logs/
+temp/
+tmp/
+work/
+.cache/
+
+# Built release artifacts stay on disk; do not track ZIP sidecars in git
+Nyxveil-ControlPlane-*-release.zip.sha256

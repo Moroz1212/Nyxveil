@@ -1,0 +1,108 @@
+name: Control Plane CI
+
+on:
+  push:
+    paths:
+      - 'licensing/**'
+      - '.github/workflows/control-plane-ci.yml'
+  pull_request:
+    paths:
+      - 'licensing/**'
+      - '.github/workflows/control-plane-ci.yml'
+
+defaults:
+  run:
+    working-directory: licensing
+
+jobs:
+  build-test-package:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: |
+          dotnet restore src/Nyxveil.ControlPlane.Web/Nyxveil.ControlPlane.Web.csproj
+          dotnet restore tests/Nyxveil.ControlPlane.UnitTests/Nyxveil.ControlPlane.UnitTests.csproj
+          dotnet restore tests/Nyxveil.ControlPlane.IntegrationTests/Nyxveil.ControlPlane.IntegrationTests.csproj
+
+      - name: Build Release
+        run: |
+          dotnet build src/Nyxveil.ControlPlane.Web/Nyxveil.ControlPlane.Web.csproj -c Release --no-restore
+          dotnet build tests/Nyxveil.ControlPlane.UnitTests/Nyxveil.ControlPlane.UnitTests.csproj -c Release --no-restore
+          dotnet build tests/Nyxveil.ControlPlane.IntegrationTests/Nyxveil.ControlPlane.IntegrationTests.csproj -c Release --no-restore
+
+      - name: Unit tests
+        run: dotnet test tests/Nyxveil.ControlPlane.UnitTests/Nyxveil.ControlPlane.UnitTests.csproj -c Release --no-build --logger "trx;LogFileName=control-plane-unit.trx"
+
+      - name: Start SQL LocalDB
+        shell: pwsh
+        run: |
+          sqllocaldb start MSSQLLocalDB
+          sqllocaldb info MSSQLLocalDB
+
+      - name: Integration tests (LocalDB)
+        env:
+          NYXVEIL_SQLTEST_SERVER: '(localdb)\MSSQLLocalDB'
+        run: dotnet test tests/Nyxveil.ControlPlane.IntegrationTests/Nyxveil.ControlPlane.IntegrationTests.csproj -c Release --no-build --logger "trx;LogFileName=control-plane-integration.trx"
+
+      - name: Publish
+        run: dotnet publish src/Nyxveil.ControlPlane.Web/Nyxveil.ControlPlane.Web.csproj -c Release -o artifacts/web
+
+      - name: Production gate (local)
+        shell: pwsh
+        run: .\scripts\production-gate.ps1 -GateMode local
+
+      - name: Pack release ZIP
+        shell: pwsh
+        run: .\scripts\pack-release.ps1 -PublishDir .\artifacts\web
+
+      - name: Validate extracted package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = (Get-Content VERSION -Raw).Trim()
+          $zip = Join-Path (Get-Location) ("Nyxveil-ControlPlane-v{0}-release.zip" -f $ver)
+          if (-not (Test-Path -LiteralPath $zip)) { throw "missing $zip" }
+          $extract = Join-Path $env:TEMP ("nyxveil-cp-ci-extract-" + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $extract | Out-Null
+          Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
+          $required = @(
+            'VERSION',
+            'publish\Nyxveil.ControlPlane.Web.dll',
+            'scripts\production-deploy.ps1',
+            'scripts\production-gate.ps1',
+            'scripts\Nyxveil.ControlPlane.Deploy.psm1',
+            'database\migrations\005_certificate_operation_states.sql',
+            'database\migrations\validate_schema_v5.sql',
+            'docs\RELEASE-1.3.2.md'
+          )
+          foreach ($rel in $required) {
+            $p = Join-Path $extract $rel
+            if (-not (Test-Path -LiteralPath $p)) { throw "extracted package missing $rel" }
+          }
+          if (Test-Path (Join-Path $extract 'ef-baseline.tmp.sql')) { throw 'package must not contain ef-baseline.tmp.sql' }
+          if (Get-ChildItem -LiteralPath $extract -Recurse -Filter '*.trx' -ErrorAction SilentlyContinue) {
+            throw 'package must not contain *.trx'
+          }
+          Push-Location $extract
+          try {
+            & .\scripts\production-gate.ps1 -GateMode local -PackageDir (Join-Path $extract 'publish')
+          } finally {
+            Pop-Location
+          }
+          Write-Host "EXTRACTED_PACKAGE_VALIDATION=PASS"
+
+      - name: Upload release ZIP
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: control-plane-release-zip
+          path: licensing/Nyxveil-ControlPlane-v*.zip
+          if-no-files-found: error

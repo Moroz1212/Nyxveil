@@ -36,7 +36,9 @@ function Test-ShouldExclude([string]$FullPath, [string]$Root) {
         if ($p -in @('bin', 'obj', 'secrets', '.git', '.vs', 'artifacts', 'publish', 'TestResults', 'logs', 'temp', 'tmp', 'work', '.cache', 'node_modules')) { return $true }
     }
     if ($rel -match '(?i)(^|[/\\])(secrets|artifacts|publish|bin|obj)([/\\]|$)') { return $true }
-    if ($rel -match '(?i)\.(pfx|dpapi|user)$') { return $true }
+    if ($rel -match '(?i)\.(pfx|dpapi|user|trx|tmp)$') { return $true }
+    if ($rel -match '(?i)\.tmp\.sql$') { return $true }
+    if ($rel -match '(?i)(^|[/\\])ef-baseline\.tmp\.sql$') { return $true }
     # Nested release zips / sha sidecars inside source tree
     if ($rel -match '(?i)Nyxveil-ControlPlane-.*\.(zip|sha256)$') { return $true }
     return $false

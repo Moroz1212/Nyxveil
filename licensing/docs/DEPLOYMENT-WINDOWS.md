@@ -28,7 +28,20 @@ Static script check:
 sqlcmd -S localhost -E -b -i .\database\create_database.sql -v DatabaseName=NyxveilControlPlane
 ```
 
+Fresh `create_database.sql` leaves **schema version 5** (EF baseline through
+`CertificateOperationStates` + operational `NyxveilSchemaVersion`).
+
+Existing schema **4** upgrades with:
+
+```powershell
+sqlcmd -S localhost -E -b -d NyxveilControlPlane -i .\database\migrations\005_certificate_operation_states.sql
+sqlcmd -S localhost -E -b -d NyxveilControlPlane -i .\database\migrations\validate_schema_v5.sql
+```
+
 Do **not** run `seed_dev.sql` in Production.
+
+`production-deploy.ps1` / `install-windows.ps1` expect **ExpectedSchemaVersion=5**.
+
 
 ### Auth matrix
 

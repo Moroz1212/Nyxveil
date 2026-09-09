@@ -81,9 +81,9 @@ public sealed class ManagementCommandConcurrencyTests
                 foreach (var id in new[] { "a", "b" })
                 {
                     db.Nodes.Add(new Node { NodeId = id, LocationId = "test-location", DisplayName = id, PublicIdentity = new byte[32],
-                        Status = NodeRuntimeStatus.Healthy, Capacity = 100, LastSeenAt = DateTime.UtcNow,
+                        Status = NodeRuntimeStatus.Healthy, Capacity = 100, LastSeenAt = DateTime.UtcNow, ConfigVersion = 1,
                         SupportsNodeCommands = true, ManagementCapabilities = "service_restart,certificate_renew,node_update,host_reboot" });
-                    db.NodeConfigs.Add(new NodeConfig { NodeId = id, Enabled = true, Capacity = 100 });
+                    db.NodeConfigs.Add(new NodeConfig { NodeId = id, Enabled = true, Capacity = 100, ConfigVersion = 1 });
                 }
                 await db.SaveChangesAsync();
             }
