@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# live-final-update.sh — self-contained CLI-first final update for nodes.
+# live-final-update.sh вЂ” self-contained CLI-first final update for nodes.
 #
 # Trust model:
 #   Authenticity = GitHub repository / GitHub Release (HTTPS download).
@@ -18,7 +18,7 @@
 set -euo pipefail
 umask 077
 
-readonly DEFAULT_VERSION="1.1.10"
+readonly DEFAULT_VERSION="1.1.11"
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 
 VERSION=""
@@ -38,13 +38,13 @@ usage() {
   cat <<'EOF'
 Usage: live-final-update.sh [options]
 
-  --version X.Y.Z   Target version (default: fetch VERSION from --base-url, else 1.1.10)
+  --version X.Y.Z   Target version (default: fetch VERSION from --base-url, else 1.1.11)
   --base-url URL    Release asset base URL (online mode)
   --local-dir DIR   Flat release directory (no network; still SHA-256 verifies)
   --verify-chain    Download/verify trust chain only; do not modify the system
   -h, --help        Show this help
 
-Trust: GitHub Release HTTPS → SHA256SUMS / manifest SHA-256 → assets.
+Trust: GitHub Release HTTPS в†’ SHA256SUMS / manifest SHA-256 в†’ assets.
 EOF
 }
 

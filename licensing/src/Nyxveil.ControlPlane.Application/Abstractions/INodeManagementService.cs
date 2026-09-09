@@ -29,6 +29,9 @@ public interface INodeManagementService
     Task<NodeDecommissionPreview> GetDecommissionPreviewAsync(string nodeId, CancellationToken cancellationToken = default);
 
     Task<NodeConfigResponse> GetAuthoritativeConfigAsync(string nodeId, CancellationToken cancellationToken = default);
+
+    /// <summary>SuperAdmin automation view of node operational flags (no secrets).</summary>
+    Task<NodeAdminStatusResponse> GetAdminStatusAsync(string nodeId, CancellationToken cancellationToken = default);
 }
 
 public sealed class NodeDecommissionPreview

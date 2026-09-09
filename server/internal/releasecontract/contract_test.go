@@ -93,9 +93,9 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 
 func TestProductVersionConsistency(t *testing.T) {
 	root := repoRoot(t)
-	want := strings.TrimSpace(readFile(t, filepath.Join(root, "VERSION")))
-	if want != "1.1.10" {
-		t.Fatalf("VERSION=%q want 1.1.10", want)
+	want := strings.TrimSpace(strings.ReplaceAll(readFile(t, filepath.Join(root, "VERSION")), "\r", ""))
+	if want != "1.1.11" {
+		t.Fatalf("VERSION=%q want 1.1.11", want)
 	}
 	if version.ServerVersion != want || version.CLIVersion != want {
 		t.Fatalf("version.go Server=%q CLI=%q want %q", version.ServerVersion, version.CLIVersion, want)
@@ -107,7 +107,9 @@ func TestProductVersionConsistency(t *testing.T) {
 	}{
 		{"internal/version/version.go", `ServerVersion\s*=\s*"` + regexp.QuoteMeta(want) + `"`},
 		{"internal/version/version.go", `CLIVersion\s*=\s*"` + regexp.QuoteMeta(want) + `"`},
-		{"installer/install.sh", `NYXVEIL_VERSION:-` + regexp.QuoteMeta(want) + `}`},
+		// install.sh must not silently pin an older default than VERSION; either
+		// exact VERSION default or dynamic stable resolution (NYXVEIL_VERSION_RESOLVE).
+		{"installer/install.sh", `(NYXVEIL_VERSION_RESOLVE|resolve_stable_server_version|NYXVEIL_VERSION:-` + regexp.QuoteMeta(want) + `})`},
 		{"scripts/live-final-update.sh", `DEFAULT_VERSION="` + regexp.QuoteMeta(want) + `"`},
 		{"scripts/bootstrap-cli-update.sh", `NYXVEIL_BOOTSTRAP_VERSION:-` + regexp.QuoteMeta(want) + `}`},
 		{"scripts/serv_wrappers.sh", `NYXVEIL_BOOTSTRAP_VERSION:-` + regexp.QuoteMeta(want) + `}`},

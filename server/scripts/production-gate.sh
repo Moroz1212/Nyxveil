@@ -158,7 +158,7 @@ finalize() {
 }
 
 print_operator_pass_summary() {
-  # Compact operator-facing summary (also asserted by update→gate contract tests).
+  # Compact operator-facing summary (also asserted by updateв†’gate contract tests).
   printf 'Version ................ PASS\n'
   case "${MODE}" in
     source)
@@ -195,7 +195,7 @@ case "${MODE}" in
   *) fail "mode" "GATE_MODE must be source|local|live" ;;
 esac
 
-EXPECTED_VERSION="${NYXVEIL_EXPECTED_VERSION:-1.1.10}"
+EXPECTED_VERSION="${NYXVEIL_EXPECTED_VERSION:-1.1.11}"
 VERSION="$(tr -d '\r[:space:]' < "${ROOT}/VERSION" 2>/dev/null || true)"
 if [[ -z "${VERSION}" ]]; then
   # Installed layout: prefer share VERSION; fall back to binary --version output later.
@@ -335,7 +335,9 @@ grep -q 'nyxveil-update.service' "${POLKIT_RULE}" || fail "polkit_update_unit" "
 if grep -Eqi 'org\.freedesktop\.systemd1\.manage-units.*\*|unit === "\*"' "${POLKIT_RULE}"; then
   fail "polkit_broad" "polkit must not authorize arbitrary units"
 fi
-if command -v systemctl >/dev/null 2>&1; then
+# Only require systemd to load the unit when checking the live system path.
+if [[ "${UPDATE_UNIT}" == "/etc/systemd/system/nyxveil-update.service" ]] \
+  && command -v systemctl >/dev/null 2>&1; then
   systemctl cat nyxveil-update.service >/dev/null 2>&1 ||
     fail "update_unit_systemd" "systemd does not see nyxveil-update.service (daemon-reload?)"
 fi

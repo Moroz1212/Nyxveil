@@ -12,11 +12,18 @@
 # Local --binary-dir / --skip-download skips remote verify.
 set -euo pipefail
 
-readonly NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.10}"
+# Capture operator/test override BEFORE any defaulting. Never silently pin an
+# older hardcoded version when NYXVEIL_VERSION is unset for remote installs.
+NYXVEIL_VERSION_ENV_OVERRIDE=""
+if [[ "${NYXVEIL_VERSION+x}" == "x" ]]; then
+  NYXVEIL_VERSION_ENV_OVERRIDE="${NYXVEIL_VERSION}"
+fi
+NYXVEIL_VERSION=""
 readonly GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 readonly DEFAULT_VPN_SUBNET="10.66.0.0/24"
 readonly MIN_RAM_MB_WARN=700
 readonly MIN_DISK_MB=200
+readonly GITHUB_RELEASE_RESOLVE_TIMEOUT_SEC="${NYXVEIL_GITHUB_RESOLVE_TIMEOUT_SEC:-30}"
 
 # Paths (overridden under NYXVEIL_INSTALL_MOCK=1)
 ETC_DIR="/etc/nyxveil"
@@ -123,6 +130,14 @@ Usage: install.sh [options]
   --non-interactive            Fail instead of prompting
   -h, --help                   Show this help
 
+Version selection:
+  NYXVEIL_VERSION=X.Y.Z        Exact override (operator / test harness); used as-is
+  Remote install (no override) resolve_stable_server_version → latest GitHub Release
+                               tag server-vX.Y.Z (draft=false, prerelease=false) from
+                               NYXVEIL_GITHUB_REPO (default Moroz1212/Nyxveil)
+  --binary-dir / --skip-download without override: read VERSION beside binary-dir / share
+  Never silently defaults to a pinned older release when env is unset for remote installs.
+
 Pinned production example (42mou.ru):
   sudo bash install.sh --control-plane https://42mou.ru:8443 \
     --control-plane-ca-file /path/to/cp-ca.pem \
@@ -131,7 +146,102 @@ Pinned production example (42mou.ru):
 Examples:
   curl -fsSL https://raw.githubusercontent.com/Moroz1212/Nyxveil/main/server/installer/install.sh | sudo bash
   sudo ./install.sh --binary-dir ./dist/linux-amd64 --skip-download
+  NYXVEIL_VERSION=1.1.11 sudo ./install.sh --binary-dir ./dist/linux-amd64 --skip-download
 EOF
+}
+
+# resolve_stable_server_version returns the newest stable server-vX.Y.Z release
+# version (no prerelease suffix) from GitHub Releases for GITHUB_REPO.
+resolve_stable_server_version() {
+  local url raw ver
+  url="https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=40"
+  raw="$(curl -fsSL --connect-timeout 10 --max-time "${GITHUB_RELEASE_RESOLVE_TIMEOUT_SEC}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "${url}")" || die "failed to list GitHub releases for ${GITHUB_REPO} (timeout ${GITHUB_RELEASE_RESOLVE_TIMEOUT_SEC}s)"
+
+  ver=""
+  if command -v jq >/dev/null 2>&1; then
+    ver="$(printf '%s' "${raw}" | jq -r '
+      [.[]
+        | select(.draft == false and .prerelease == false)
+        | .tag_name
+        | select(test("^server-v[0-9]+\\.[0-9]+\\.[0-9]+$"))
+        | sub("^server-v"; "")
+      ] | .[0] // empty')"
+  fi
+
+  if [[ -z "${ver}" || "${ver}" == "null" ]]; then
+    local py=""
+    if command -v python3 >/dev/null 2>&1 && python3 -c 'import json' >/dev/null 2>&1; then
+      py=python3
+    elif command -v python >/dev/null 2>&1 && python -c 'import json' >/dev/null 2>&1; then
+      py=python
+    fi
+    if [[ -n "${py}" ]]; then
+      ver="$(NYXVEIL_RELEASES_JSON="${raw}" "${py}" - <<'PY'
+import json, os, re
+data = json.loads(os.environ.get("NYXVEIL_RELEASES_JSON") or "[]")
+pat = re.compile(r"^server-v(\d+\.\d+\.\d+)$")
+for rel in data:
+    if rel.get("draft") or rel.get("prerelease"):
+        continue
+    m = pat.match(str(rel.get("tag_name") or ""))
+    if m:
+        print(m.group(1))
+        break
+PY
+)"
+    fi
+  fi
+
+  if [[ -z "${ver}" || "${ver}" == "null" ]]; then
+    # Conservative text fallback (GitHub returns newest-first). Skip objects marked
+    # draft/prerelease true; accept only exact server-vX.Y.Z tags.
+    ver="$(printf '%s' "${raw}" | tr '}' '\n' | while IFS= read -r obj; do
+      printf '%s' "${obj}" | grep -Eq '"draft"[[:space:]]*:[[:space:]]*true' && continue
+      printf '%s' "${obj}" | grep -Eq '"prerelease"[[:space:]]*:[[:space:]]*true' && continue
+      tag="$(printf '%s' "${obj}" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"server-v[0-9]+\.[0-9]+\.[0-9]+"' | head -n1 || true)"
+      [[ -n "${tag}" ]] || continue
+      printf '%s\n' "${tag}" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1
+      break
+    done)"
+  fi
+
+  [[ -n "${ver}" && "${ver}" != "null" ]] || die "no stable server-vX.Y.Z release found for ${GITHUB_REPO}"
+  printf '%s\n' "${ver}"
+}
+
+resolve_installer_version() {
+  if [[ -n "${NYXVEIL_VERSION_ENV_OVERRIDE}" ]]; then
+    NYXVEIL_VERSION="${NYXVEIL_VERSION_ENV_OVERRIDE}"
+    log "using NYXVEIL_VERSION from environment: ${NYXVEIL_VERSION}"
+    return 0
+  fi
+
+  if [[ -n "${BINARY_DIR}" || "${SKIP_DOWNLOAD}" -eq 1 ]]; then
+    local ver_file="" cand
+    if [[ -n "${BINARY_DIR}" ]]; then
+      for cand in \
+        "${BINARY_DIR}/VERSION" \
+        "${BINARY_DIR}/../VERSION" \
+        "${BINARY_DIR}/share/nyxveil/VERSION" \
+        "${BINARY_DIR}/../share/nyxveil/VERSION"; do
+        if [[ -f "${cand}" ]]; then
+          ver_file="${cand}"
+          break
+        fi
+      done
+    fi
+    [[ -n "${ver_file}" ]] || die "NYXVEIL_VERSION unset for local --binary-dir/--skip-download; set NYXVEIL_VERSION or provide a VERSION file beside the binary dir"
+    NYXVEIL_VERSION="$(tr -d '\r[:space:]' < "${ver_file}")"
+    [[ -n "${NYXVEIL_VERSION}" ]] || die "empty VERSION file: ${ver_file}"
+    log "using local candidate version from ${ver_file}: ${NYXVEIL_VERSION}"
+    return 0
+  fi
+
+  NYXVEIL_VERSION="$(resolve_stable_server_version)"
+  log "resolved latest stable server release (NYXVEIL_VERSION_RESOLVE): ${NYXVEIL_VERSION}"
 }
 
 parse_args() {
@@ -1506,6 +1616,7 @@ main() {
 
   parse_args "$@"
   init_paths
+  resolve_installer_version
   require_root
   check_os
   check_systemd

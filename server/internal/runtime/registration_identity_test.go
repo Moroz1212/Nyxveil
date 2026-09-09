@@ -102,14 +102,7 @@ func TestRetryAfterLocalFailureUsesSameNodeIdentity(t *testing.T) {
 		var req controlplane.RegisterRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		pk := base64.StdEncoding.EncodeToString(req.PublicKey)
-		if req.BootstrapToken != "" {
-			sawBootstrap++
-			firstPubKey = pk
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"node_id":"n1","registered":true,"config_version":1,"config":{"node_id":"n1","location_id":"hel-1","enabled":true,"capacity":1,"config_version":1,"updated_at":"garbage"}}`))
-			return
-		}
+		// Prefer PoP when present: repair/retry sends bootstrap+PoP after identity commit.
 		if req.NodeToken != "" {
 			sawPoP++
 			secondPubKey = pk
@@ -122,6 +115,14 @@ func TestRetryAfterLocalFailureUsesSameNodeIdentity(t *testing.T) {
 					UpdatedAt: controlplane.APITime{},
 				},
 			})
+			return
+		}
+		if req.BootstrapToken != "" {
+			sawBootstrap++
+			firstPubKey = pk
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"node_id":"n1","registered":true,"config_version":1,"config":{"node_id":"n1","location_id":"hel-1","enabled":true,"capacity":1,"config_version":1,"updated_at":"garbage"}}`))
 			return
 		}
 		http.Error(w, "expected bootstrap or pop", 400)

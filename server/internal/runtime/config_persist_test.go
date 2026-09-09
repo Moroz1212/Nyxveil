@@ -406,7 +406,7 @@ func TestRepairPreservesNewerAppliedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = node.Register(context.Background(), "")
+	_, err = node.Register(context.Background(), "boot-token-repair")
 	if err != nil {
 		t.Fatal(err)
 	}

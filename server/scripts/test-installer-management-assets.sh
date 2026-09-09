@@ -70,7 +70,7 @@ append_evil_asset() {
   local src="$1" dest="$2" name="$3"
   if command -v jq >/dev/null 2>&1; then
     jq --arg n "${name}" --arg sha "${MOCK_SHA}" \
-      '.assets += [{"name":$n,"sha256":$sha,"url":"https://example.invalid/"+$n,"destination":"/usr/local/sbin/"+$n,"mode":"0755","required":true}]' \
+      '.assets += [{"name":$n,"sha256":$sha,"url":("https://example.invalid/"+$n),"destination":("/usr/local/sbin/"+$n),"mode":"0755","required":true}]' \
       "${src}" > "${dest}"
     return
   fi
@@ -110,7 +110,7 @@ write_asset() {
 # Build a canonical 8-asset unsigned manifest (production destinations).
 write_full_manifest() {
   local out="$1"
-  local version="${2:-1.1.10}"
+  local version="${2:-1.1.11}"
   local arch="${3:-linux/amd64}"
   cat > "${out}" <<EOF
 {
@@ -210,7 +210,7 @@ else
   if grep -qi 'rollback complete' /tmp/nyxveil-bad9-out.txt && [[ ! -f "${MOCK9}/etc/systemd/system/nyxveil-update.service" ]]; then
     pass "rollback cleared update service"
   elif grep -qi 'rollback complete' /tmp/nyxveil-bad9-out.txt; then
-    # Asset order: management assets are 7/8, evil is 9 — so 7/8 installed then fail on 9, rollback should remove.
+    # Asset order: management assets are 7/8, evil is 9 вЂ” so 7/8 installed then fail on 9, rollback should remove.
     if [[ -f "${MOCK9}/etc/systemd/system/nyxveil-update.service" ]]; then
       fail "update service left behind after rollback"
     fi

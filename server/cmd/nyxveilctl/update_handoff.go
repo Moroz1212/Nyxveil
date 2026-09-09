@@ -195,7 +195,8 @@ func runUpdateResume(args []string) error {
 }
 
 func performPostUpdateVerification(tx *updateTransaction) bool {
-	if runtime.GOOS == "windows" {
+	// Windows and HTTP control-socket harnesses (CI/unit tests) have no systemd unit.
+	if runtime.GOOS == "windows" || strings.TrimSpace(os.Getenv("NYXVEIL_CONTROL_HTTP")) != "" {
 		if err := assertVersionsMatchTarget(tx.TargetVersion); err != nil {
 			fmt.Printf("update_success=false reason=version_mismatch detail=%v\n", err)
 			return false

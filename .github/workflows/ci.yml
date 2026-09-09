@@ -13,7 +13,31 @@ jobs:
         with:
           go-version: '1.24'
       - name: Format check
-        run: test -z "$(gofmt -l .)"
+        # Protocol Core under ./core is Frozen (hash-locked via server THIRD_PARTY_CORE /
+        # third_party/nvp). Do not rewrite it with gofmt. Server first-party formatting is
+        # enforced by server-ci.yml. Root CI only guards other first-party trees if present.
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find . -name '*.go' \
+            ! -path './core/*' \
+            ! -path '*/third_party/*' \
+            ! -path '*/dist/*' \
+            ! -path '*/vendor/*' \
+            ! -path './.git/*' \
+            ! -path './clients/*' \
+            ! -path './licensing/*' \
+            ! -path './server/*' \
+            | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "Format check: no mutable first-party Go outside Frozen Core / server / clients"
+            exit 0
+          fi
+          unfmt="$(gofmt -l "${files[@]}")"
+          if [ -n "${unfmt}" ]; then
+            echo "unformatted:"
+            echo "${unfmt}"
+            exit 1
+          fi
       - name: Vet
         run: go vet ./core/...
       - name: Test

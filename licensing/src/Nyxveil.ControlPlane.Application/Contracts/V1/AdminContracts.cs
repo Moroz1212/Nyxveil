@@ -171,6 +171,50 @@ public sealed class IssueTicketCommand
     public byte[] DevicePublicKey { get; set; } = Array.Empty<byte>();
 }
 
+public sealed class NodeAdminStatusResponse
+{
+    [JsonPropertyName("node_id")]
+    public string NodeId { get; set; } = string.Empty;
+
+    [JsonPropertyName("location_id")]
+    public string LocationId { get; set; } = string.Empty;
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; }
+
+    [JsonPropertyName("draining")]
+    public bool Draining { get; set; }
+
+    [JsonPropertyName("maintenance_mode")]
+    public bool MaintenanceMode { get; set; }
+
+    [JsonPropertyName("healthy")]
+    public bool Healthy { get; set; }
+
+    [JsonPropertyName("accepting")]
+    public bool Accepting { get; set; }
+
+    [JsonPropertyName("online")]
+    public bool Online { get; set; }
+
+    [JsonPropertyName("last_seen_at")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTime? LastSeenAt { get; set; }
+
+    [JsonPropertyName("current_sessions")]
+    public int CurrentSessions { get; set; }
+
+    [JsonPropertyName("reported_server_version")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReportedServerVersion { get; set; }
+
+    [JsonPropertyName("config_version")]
+    public long ConfigVersion { get; set; }
+
+    [JsonPropertyName("lifecycle_state")]
+    public string LifecycleState { get; set; } = string.Empty;
+}
+
 public sealed class DeviceListItemDto
 {
     [JsonPropertyName("device_id")]

@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Nyxveil.ControlPlane.Application.Abstractions;
 using Nyxveil.ControlPlane.Application.Common;
@@ -16,6 +18,13 @@ public sealed class NodeCommandService : INodeCommandService
     public static readonly TimeSpan RebootRunningTtl = TimeSpan.FromMinutes(45);
     public static readonly TimeSpan UpdateRunningTtl = TimeSpan.FromMinutes(60);
     public static readonly TimeSpan HeartbeatFreshness = TimeSpan.FromMinutes(5);
+    /// <summary>
+    /// Bounded wait for CurrentSessions==0 after setting Draining=true before update proceeds.
+    /// If sessions remain after this window, update continues (sessions may be disrupted) and
+    /// drain_timed_out is recorded on the command payload — existing soft disruption policy.
+    /// </summary>
+    public static readonly TimeSpan UpdateDrainWait = TimeSpan.FromSeconds(120);
+    public static readonly TimeSpan UpdateDrainPoll = TimeSpan.FromSeconds(2);
 
     private static readonly NodeCommandType[] DisruptiveTypes =
     [
@@ -205,6 +214,9 @@ public sealed class NodeCommandService : INodeCommandService
         var now = _clock.UtcNow;
         if (command.Status == NodeCommandStatus.Claimed)
         {
+            if (command.Type == NodeCommandType.UpdateNodeLatest)
+                await PrepareUpdateDrainAsync(command, nodeId, cancellationToken).ConfigureAwait(false);
+
             command.Status = NodeCommandStatus.Running;
             command.StartedAt = now;
             var runningTtl = command.Type switch
@@ -286,6 +298,13 @@ public sealed class NodeCommandService : INodeCommandService
 
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
+        if (command.Type == NodeCommandType.UpdateNodeLatest
+            && command.Status is NodeCommandStatus.Succeeded or NodeCommandStatus.Failed)
+        {
+            await RestoreAdminStateFromPayloadAsync(command, nodeId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         if (command.Status is NodeCommandStatus.Succeeded or NodeCommandStatus.Failed
             or NodeCommandStatus.Accepted)
         {
@@ -326,6 +345,166 @@ public sealed class NodeCommandService : INodeCommandService
         }
 
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task PrepareUpdateDrainAsync(
+        NodeCommand command,
+        string nodeId,
+        CancellationToken cancellationToken)
+    {
+        var node = await _db.Nodes.FirstAsync(n => n.NodeId == nodeId, cancellationToken)
+            .ConfigureAwait(false);
+        var cfg = await _db.NodeConfigs.FirstAsync(c => c.NodeId == nodeId, cancellationToken)
+            .ConfigureAwait(false);
+
+        var beforeEnabled = cfg.Enabled;
+        var beforeDraining = cfg.Draining;
+        var beforeMaintenance = cfg.MaintenanceMode;
+
+        MergePayloadAdminSnapshot(command, beforeEnabled, beforeDraining, beforeMaintenance, drainTimedOut: false);
+
+        // Stop accepting new sessions; do not blindly clear prior manual drain/maintenance.
+        cfg.Draining = true;
+        node.Draining = true;
+        cfg.ConfigVersion = checked(cfg.ConfigVersion + 1);
+        cfg.UpdatedAt = _clock.UtcNow;
+        node.ConfigVersion = cfg.ConfigVersion;
+        node.UpdatedAt = cfg.UpdatedAt;
+        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        var deadline = _clock.UtcNow.Add(UpdateDrainWait);
+        var timedOut = false;
+        while (node.CurrentSessions > 0)
+        {
+            if (_clock.UtcNow >= deadline)
+            {
+                timedOut = true;
+                break;
+            }
+
+            var clockBeforeDelay = _clock.UtcNow;
+            await Task.Delay(UpdateDrainPoll, cancellationToken).ConfigureAwait(false);
+            await _db.Entry(node).ReloadAsync(cancellationToken).ConfigureAwait(false);
+            if (node.CurrentSessions <= 0)
+                break;
+            // Unit tests use FakeClock (does not advance during Delay). Avoid hanging:
+            // treat frozen clock as immediate drain-timeout evaluation.
+            if (_clock.UtcNow <= clockBeforeDelay)
+            {
+                timedOut = true;
+                break;
+            }
+        }
+
+        if (timedOut)
+            MergePayloadAdminSnapshot(command, beforeEnabled, beforeDraining, beforeMaintenance, drainTimedOut: true);
+
+        await _audit.WriteAsync(new AuditWriteRequest
+        {
+            Actor = nodeId,
+            Action = "node.command.update.drain",
+            EntityType = "NodeCommand",
+            EntityId = command.Id.ToString("N"),
+            Detail =
+                $"{{\"sessions\":{node.CurrentSessions},\"drain_timed_out\":{(timedOut ? "true" : "false")},\"before_enabled\":{(beforeEnabled ? "true" : "false")},\"before_draining\":{(beforeDraining ? "true" : "false")},\"before_maintenance\":{(beforeMaintenance ? "true" : "false")}}}"
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task RestoreAdminStateFromPayloadAsync(
+        NodeCommand command,
+        string nodeId,
+        CancellationToken cancellationToken)
+    {
+        if (!TryReadAdminSnapshot(command.PayloadJson, out var enabled, out var draining, out var maintenance))
+            return;
+
+        var node = await _db.Nodes.FirstOrDefaultAsync(n => n.NodeId == nodeId, cancellationToken)
+            .ConfigureAwait(false);
+        var cfg = await _db.NodeConfigs.FirstOrDefaultAsync(c => c.NodeId == nodeId, cancellationToken)
+            .ConfigureAwait(false);
+        if (node is null || cfg is null)
+            return;
+
+        cfg.Enabled = enabled;
+        cfg.Draining = draining;
+        cfg.MaintenanceMode = maintenance;
+        node.Enabled = enabled;
+        node.Draining = draining;
+        cfg.ConfigVersion = checked(cfg.ConfigVersion + 1);
+        cfg.UpdatedAt = _clock.UtcNow;
+        node.ConfigVersion = cfg.ConfigVersion;
+        node.UpdatedAt = cfg.UpdatedAt;
+        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        await _audit.WriteAsync(new AuditWriteRequest
+        {
+            Actor = nodeId,
+            Action = "node.command.update.restore_admin_state",
+            EntityType = "NodeCommand",
+            EntityId = command.Id.ToString("N"),
+            Detail =
+                $"{{\"enabled\":{(enabled ? "true" : "false")},\"draining\":{(draining ? "true" : "false")},\"maintenance_mode\":{(maintenance ? "true" : "false")}}}"
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void MergePayloadAdminSnapshot(
+        NodeCommand command,
+        bool enabled,
+        bool draining,
+        bool maintenance,
+        bool drainTimedOut)
+    {
+        JsonObject root;
+        try
+        {
+            root = string.IsNullOrWhiteSpace(command.PayloadJson)
+                ? new JsonObject()
+                : JsonNode.Parse(command.PayloadJson)?.AsObject() ?? new JsonObject();
+        }
+        catch (JsonException)
+        {
+            root = new JsonObject();
+        }
+
+        root["admin_state_before"] = new JsonObject
+        {
+            ["enabled"] = enabled,
+            ["draining"] = draining,
+            ["maintenance_mode"] = maintenance
+        };
+        root["drain_timed_out"] = drainTimedOut;
+        command.PayloadJson = root.ToJsonString();
+    }
+
+    public static bool TryReadAdminSnapshot(
+        string? payloadJson,
+        out bool enabled,
+        out bool draining,
+        out bool maintenance)
+    {
+        enabled = true;
+        draining = false;
+        maintenance = false;
+        if (string.IsNullOrWhiteSpace(payloadJson))
+            return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(payloadJson);
+            if (!doc.RootElement.TryGetProperty("admin_state_before", out var before)
+                || before.ValueKind != JsonValueKind.Object)
+                return false;
+            if (before.TryGetProperty("enabled", out var e) && e.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                enabled = e.GetBoolean();
+            if (before.TryGetProperty("draining", out var d) && d.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                draining = d.GetBoolean();
+            if (before.TryGetProperty("maintenance_mode", out var m) && m.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                maintenance = m.GetBoolean();
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private async Task AssertLocationDisruptionAllowedAsync(

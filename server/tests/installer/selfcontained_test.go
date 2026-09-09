@@ -20,6 +20,12 @@ func TestInstallerManagementAssetsContract(t *testing.T) {
 	runInstallerBashScript(t, "scripts/test-installer-management-assets.sh")
 }
 
+// TestInstallerVersionResolution covers env override, local VERSION, and
+// resolve_stable_server_version (mocked curl; no network).
+func TestInstallerVersionResolution(t *testing.T) {
+	runInstallerBashScript(t, "scripts/test-installer-version-resolution.sh")
+}
+
 func runInstallerBashScript(t *testing.T, rel string) {
 	t.Helper()
 	root := findServerRoot(t)

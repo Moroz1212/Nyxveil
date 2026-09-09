@@ -24,7 +24,16 @@ jobs:
           go-version: '1.24'
           cache-dependency-path: server/go.sum
       - name: Format check
-        run: test -z "$(gofmt -l .)"
+        # Frozen Core under third_party/nvp is hash-locked — do not rewrite with gofmt.
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find . -name '*.go' ! -path './third_party/*' ! -path './dist/*' | sort)
+          unfmt="$(gofmt -l "${files[@]}")"
+          if [ -n "${unfmt}" ]; then
+            echo "unformatted:"
+            echo "${unfmt}"
+            exit 1
+          fi
       - name: Vet
         run: go vet ./...
       - name: Test

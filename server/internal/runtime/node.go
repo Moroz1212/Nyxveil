@@ -228,7 +228,7 @@ func (n *Node) mergeAppliedIntoLocalLocked(cfg controlplane.NodeConfig) {
 
 // Register bootstraps or re-registers the node with Control Plane.
 func (n *Node) Register(ctx context.Context, bootstrapToken string) (*controlplane.RegisterResponse, error) {
-	return n.register(ctx, bootstrapToken, nil)
+	return n.register(ctx, bootstrapToken, nil, true)
 }
 
 // RegisterWithSPKI advertises an explicitly supplied staged SPKI without
@@ -237,10 +237,10 @@ func (n *Node) RegisterWithSPKI(ctx context.Context, spkiPin []byte) (*controlpl
 	if len(spkiPin) == 0 {
 		return nil, errors.New("runtime: SPKI override is empty")
 	}
-	return n.register(ctx, "", append([]byte(nil), spkiPin...))
+	return n.register(ctx, "", append([]byte(nil), spkiPin...), false)
 }
 
-func (n *Node) register(ctx context.Context, bootstrapToken string, spkiOverride []byte) (*controlplane.RegisterResponse, error) {
+func (n *Node) register(ctx context.Context, bootstrapToken string, spkiOverride []byte, requireBootstrap bool) (*controlplane.RegisterResponse, error) {
 	n.mu.RLock()
 	cfg := *n.local
 	key := n.key
@@ -267,14 +267,21 @@ func (n *Node) register(ctx context.Context, bootstrapToken string, spkiOverride
 	if cfg.ServerName == "" && cfg.PublicHost != "" {
 		req.ServerName = cfg.PublicHost
 	}
-	// Explicit registration always requires a bootstrap token (fresh install and repair).
+	// Operator Register always requires a bootstrap token (fresh install and repair).
 	// Existing local key additionally proves possession via NodeToken (PoP).
-	if strings.TrimSpace(bootstrapToken) == "" {
+	// RegisterWithSPKI (internal) may omit bootstrap when identity is already committed.
+	token := strings.TrimSpace(bootstrapToken)
+	if requireBootstrap && token == "" {
 		return nil, errors.New("runtime: bootstrap token required for registration")
 	}
-	req.BootstrapToken = bootstrapToken
+	if token != "" {
+		req.BootstrapToken = token
+	}
 	if !freshKey {
 		req.NodeToken = nodeauth.SignCoreNodeToken(cfg.NodeID, key.Private, time.Now().Unix())
+	}
+	if req.BootstrapToken == "" && req.NodeToken == "" {
+		return nil, errors.New("runtime: bootstrap token required for registration")
 	}
 
 	if len(spkiOverride) > 0 {

@@ -105,6 +105,20 @@ func TestProcessImmediatePostUpdateGateCPReachable(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(share, "THIRD_PARTY_CORE.md"), []byte(third), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	unitSrc := filepath.Join(root, "systemd", "nyxveil-update.service")
+	polkitSrc := filepath.Join(root, "systemd", "50-nyxveil-management.rules")
+	unitDst := filepath.Join(share, "nyxveil-update.service")
+	polkitDst := filepath.Join(share, "50-nyxveil-management.rules")
+	for _, p := range []struct{ src, dst string }{{unitSrc, unitDst}, {polkitSrc, polkitDst}} {
+		raw, err := os.ReadFile(p.src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p.dst, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	installedGate := filepath.Join(scripts, "production-gate.sh")
 	rawGate, err := os.ReadFile(gateSrc)
 	if err != nil {
@@ -176,6 +190,8 @@ func TestProcessImmediatePostUpdateGateCPReachable(t *testing.T) {
 		"NYXVEIL_EXPECTED_VERSION="+version.ServerVersion,
 		"NYXVEIL_TLS_CERT="+filepath.Join(state, "tls.crt"),
 		"NYXVEIL_TLS_KEY="+filepath.Join(state, "tls.key"),
+		"NYXVEIL_UPDATE_UNIT="+unitDst,
+		"NYXVEIL_POLKIT_RULE="+polkitDst,
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

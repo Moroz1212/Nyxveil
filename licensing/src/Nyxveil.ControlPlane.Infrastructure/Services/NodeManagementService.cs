@@ -108,6 +108,52 @@ public sealed class NodeManagementService : INodeManagementService
         return ToResponse(cfg);
     }
 
+    public async Task<NodeAdminStatusResponse> GetAdminStatusAsync(
+        string nodeId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(nodeId))
+            throw new ValidationException("node_id is required");
+
+        var node = await _db.Nodes.AsNoTracking()
+            .FirstOrDefaultAsync(n => n.NodeId == nodeId, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new NotFoundException("node not found");
+        var cfg = await _db.NodeConfigs.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.NodeId == nodeId, cancellationToken)
+            .ConfigureAwait(false);
+
+        var maintenance = cfg?.MaintenanceMode ?? false;
+        var draining = node.Draining || (cfg?.Draining ?? false);
+        var enabled = node.Enabled && (cfg?.Enabled ?? true);
+        var now = _clock.UtcNow;
+        var online = node.LastSeenAt is not null
+                     && now - node.LastSeenAt.Value <= NodeCommandService.HeartbeatFreshness;
+        var healthy = node.Status == NodeRuntimeStatus.Healthy && online;
+        var accepting = enabled && !draining && !maintenance
+                        && node.LifecycleState == NodeLifecycleState.Active
+                        && healthy;
+
+        return new NodeAdminStatusResponse
+        {
+            NodeId = node.NodeId,
+            LocationId = node.LocationId,
+            Enabled = enabled,
+            Draining = draining,
+            MaintenanceMode = maintenance,
+            Healthy = healthy,
+            Accepting = accepting,
+            Online = online,
+            LastSeenAt = node.LastSeenAt,
+            CurrentSessions = node.CurrentSessions,
+            ReportedServerVersion = string.IsNullOrWhiteSpace(node.ReportedServerVersion)
+                ? node.ServerVersion
+                : node.ReportedServerVersion,
+            ConfigVersion = node.ConfigVersion,
+            LifecycleState = node.LifecycleState.ToString()
+        };
+    }
+
     public async Task<NodeDecommissionPreview> GetDecommissionPreviewAsync(
         string nodeId,
         CancellationToken cancellationToken = default)

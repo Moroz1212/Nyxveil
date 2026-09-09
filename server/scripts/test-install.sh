@@ -37,6 +37,7 @@ required=(
   scripts/test-install.sh
   scripts/test-curl-installer.sh
   scripts/test-installer-management-assets.sh
+  scripts/test-installer-version-resolution.sh
   scripts/test-post-registration-identity.sh
   scripts/serv_wrappers.sh
   README.md
