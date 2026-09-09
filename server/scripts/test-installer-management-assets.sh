@@ -136,6 +136,8 @@ run_remote_mock() {
   local mock_root="$1"
   local manifest="$2"
   shift 2
+  # Pin version so mocks never call live GitHub Releases API (rate-limit / 403).
+  NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.11}" \
   NYXVEIL_INSTALL_MOCK=1 \
   NYXVEIL_INSTALL_MOCK_ROOT="${mock_root}" \
   NYXVEIL_INSTALL_MOCK_MANIFEST="${manifest}" \

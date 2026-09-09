@@ -172,8 +172,12 @@ rm -f "${PIPE_OUT}"
 
 echo "== mock fail-closed: incomplete remote download manifest =="
 MOCK_ROOT2="$(mktemp -d /tmp/nyxveil-mock-root2.XXXXXX)"
+INCOMPLETE_MANIFEST="$(mktemp /tmp/nyxveil-incomplete-manifest.XXXXXX.json)"
+printf '%s\n' '{"version":"1.1.11","arch":"linux/amd64"}' > "${INCOMPLETE_MANIFEST}"
 set +e
+NYXVEIL_VERSION=1.1.11 \
 NYXVEIL_INSTALL_MOCK=1 NYXVEIL_INSTALL_MOCK_ROOT="${MOCK_ROOT2}" \
+NYXVEIL_INSTALL_MOCK_MANIFEST="${INCOMPLETE_MANIFEST}" \
   bash "${TMP}/alone/install.sh" \
     --control-plane https://example.test \
     --location hel-1 \
@@ -184,12 +188,13 @@ NYXVEIL_INSTALL_MOCK=1 NYXVEIL_INSTALL_MOCK_ROOT="${MOCK_ROOT2}" \
     >/tmp/nyxveil-unsigned-out.txt 2>&1
 rc=$?
 set -e
+rm -f "${INCOMPLETE_MANIFEST}"
 if [[ "${rc}" -ne 0 ]]; then
   pass "incomplete remote manifest download dies (rc=${rc})"
 else
   fail "incomplete remote manifest should fail closed"
 fi
-if grep -qiE 'missing fields|sha256|fail-closed|invalid|checksum|manifest' /tmp/nyxveil-unsigned-out.txt; then
+if grep -qiE 'missing fields|sha256|fail-closed|invalid|checksum|manifest|asset' /tmp/nyxveil-unsigned-out.txt; then
   pass "error mentions manifest/integrity failure"
 else
   fail "expected manifest/integrity error in output"
