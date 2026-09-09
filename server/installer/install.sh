@@ -55,8 +55,8 @@ STARTED_SERVICE=0
 BACKUP_DIR=""
 PRESERVE_NODE_ID=""
 PRESERVE_HAD_KEY=0
-REPAIR_MODE=0
 REGISTRATION_COMMITTED=0
+BOOTSTRAP_STDIN=0
 
 # Canonical release-manifest destinations (always Unix production paths).
 readonly WANT_SERVER_DEST="/usr/local/sbin/nyxveil-server"
@@ -103,6 +103,7 @@ Usage: install.sh [options]
   --location ID                Location ID
   --name NAME                  Display name
   --bootstrap-token TOKEN      One-time registration token (never written to disk)
+  --bootstrap-stdin            Read bootstrap token from stdin (one line; never logged)
   --public-host HOST           Public hostname for endpoints (required in production)
   --public-ip IP               Public IPv4 (used if --public-host omitted)
   --tls-port PORT              TLS listen port (default 443)
@@ -140,6 +141,7 @@ parse_args() {
       --location) LOCATION_ID="${2:-}"; shift 2 ;;
       --name) DISPLAY_NAME="${2:-}"; shift 2 ;;
       --bootstrap-token) BOOTSTRAP_TOKEN="${2:-}"; shift 2 ;;
+      --bootstrap-stdin) BOOTSTRAP_STDIN=1; shift ;;
       --public-host) PUBLIC_HOST="${2:-}"; shift 2 ;;
       --public-ip) PUBLIC_IP="${2:-}"; shift 2 ;;
       --tls-port) TLS_PORT="${2:-}"; shift 2 ;;
@@ -305,7 +307,6 @@ prompt_if_empty() {
 detect_repair() {
   PRESERVE_NODE_ID=""
   PRESERVE_HAD_KEY=0
-  REPAIR_MODE=0
   REGISTRATION_COMMITTED=0
   if [[ -f "${CONFIG_FILE}" ]]; then
     PRESERVE_NODE_ID="$(sed -n 's/.*"node_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${CONFIG_FILE}" | head -n1 || true)"
@@ -318,8 +319,7 @@ detect_repair() {
     log "repair mode: preserving node_id=${PRESERVE_NODE_ID}"
   fi
   if [[ -f "${NODE_KEY}" && -n "${PRESERVE_NODE_ID}" ]]; then
-    REPAIR_MODE=1
-    log "repair mode: node.key + node_id present — bootstrap token not required (PoP re-register)"
+    log "repair mode: node.key + node_id present — identity preserved; bootstrap token still required"
   fi
 }
 
@@ -328,12 +328,18 @@ gather_inputs() {
   prompt_if_empty LOCATION_ID "Location ID"
   prompt_if_empty DISPLAY_NAME "Node display name"
 
-  if [[ "${REPAIR_MODE}" -eq 0 ]]; then
-    prompt_if_empty BOOTSTRAP_TOKEN "Bootstrap token" 1
-    [[ -n "${BOOTSTRAP_TOKEN}" ]] || die "bootstrap token required"
+  if [[ "${BOOTSTRAP_STDIN}" -eq 1 ]]; then
+    if [[ -n "${BOOTSTRAP_TOKEN}" ]]; then
+      die "use either --bootstrap-token or --bootstrap-stdin, not both"
+    fi
+    # One line from stdin; never echo/log the value. Prefer a real FD (not curl|bash script body).
+    if ! IFS= read -r BOOTSTRAP_TOKEN; then
+      die "failed to read bootstrap token from stdin (--bootstrap-stdin)"
+    fi
   else
-    log "skipping bootstrap prompt (repair / PoP)"
+    prompt_if_empty BOOTSTRAP_TOKEN "Bootstrap token" 1
   fi
+  [[ -n "${BOOTSTRAP_TOKEN}" ]] || die "bootstrap token required"
 
   [[ -n "${CONTROL_PLANE}" ]] || die "control plane URL required"
   [[ -n "${LOCATION_ID}" ]] || die "location ID required"
@@ -1303,31 +1309,33 @@ generate_identity_and_register() {
     chmod 0644 "${PINNED_CA_DEST}"
   fi
 
-  log "registering with Control Plane as user nyxveilвЂ¦"
+  if [[ -n "${TLS_DOMAIN}" ]]; then
+    log "PHASE 08 TLS/ACME PREPARE (domain=${TLS_DOMAIN}; ACME HTTP-01 may run inside register)"
+  fi
+
+  log "PHASE 09 CONTROL PLANE REGISTRATION"
+  log "registering with Control Plane as user nyxveil…"
   local reg_flags=(--config "${CONFIG_FILE}" --register-stdin)
   if [[ "${TEST_SELF_SIGNED}" -eq 1 ]]; then
     reg_flags+=(--test-mode)
   fi
-  if [[ "${REPAIR_MODE}" -eq 1 ]]; then
-    # Empty bootstrap: Register uses PoP NodeToken when node.key already exists.
-    if ! printf '\n' | run_as_nyxveil "${BIN_DIR}/nyxveil-server" "${reg_flags[@]}"; then
-      if [[ -f "${NODE_KEY}" ]]; then
-        PRESERVE_HAD_KEY=1
-        warn "repair registration failed but node.key exists вЂ” preserving identity (Control Plane may already know this node)"
-      fi
-      die "Control Plane repair re-registration (PoP) failed вЂ” keep node.key; retry with same identity/PoP"
-    fi
+  local reg_rc=0
+  if command -v timeout >/dev/null 2>&1; then
+    # Bound ACME + register HTTP (600s). Token is piped via stdin; never logged.
+    printf '%s\n' "${BOOTSTRAP_TOKEN}" | timeout 600 run_as_nyxveil "${BIN_DIR}/nyxveil-server" "${reg_flags[@]}" || reg_rc=$?
   else
-    if ! printf '%s\n' "${BOOTSTRAP_TOKEN}" | run_as_nyxveil "${BIN_DIR}/nyxveil-server" "${reg_flags[@]}"; then
-      # HTTP 200 + local decode/persist failure still leaves a CP-side node + consumed bootstrap.
-      # Never delete the freshly written node.key on rollback вЂ” retry must use PoP.
-      if [[ -f "${NODE_KEY}" ]]; then
-        PRESERVE_HAD_KEY=1
-        warn "registration failed locally but node.key exists вЂ” Control Plane may already have registered this node"
-        warn "preserving ${NODE_KEY}; retry with the SAME node_id/public key (PoP), do not mint a new identity"
-      fi
-      die "Control Plane registration failed вЂ” if CP accepted the node, keep node.key and retry with PoP (empty bootstrap)"
+    log "timeout command not available; register runs without wall-clock bound (ACME+register may hang)"
+    printf '%s\n' "${BOOTSTRAP_TOKEN}" | run_as_nyxveil "${BIN_DIR}/nyxveil-server" "${reg_flags[@]}" || reg_rc=$?
+  fi
+  if [[ "${reg_rc}" -ne 0 ]]; then
+    # HTTP 200 + local decode/persist failure still leaves a CP-side node + consumed bootstrap.
+    # Never delete the freshly written node.key on rollback — retry must keep the same identity.
+    if [[ -f "${NODE_KEY}" ]]; then
+      PRESERVE_HAD_KEY=1
+      warn "registration failed locally but node.key exists — Control Plane may already have registered this node"
+      warn "preserving ${NODE_KEY}; retry with the SAME node_id/public key and a new bootstrap token"
     fi
+    die "Control Plane registration failed — if CP accepted the node, keep node.key and retry with same identity + bootstrap token"
   fi
   fix_state_ownership
   BOOTSTRAP_TOKEN=""

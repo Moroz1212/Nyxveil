@@ -80,8 +80,10 @@ func (n *Node) commandPollLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if !n.cpOK.Load() {
+				n.completePendingUpdate(ctx)
 				continue
 			}
+			n.completePendingUpdate(ctx)
 			n.pollAndExecuteCommand(ctx)
 		}
 	}
@@ -139,7 +141,7 @@ func (n *Node) pollAndExecuteCommand(ctx context.Context) {
 	case "RebootHost":
 		n.executeRebootHost(ctx, cmd.ID)
 	case "UpdateNodeLatest":
-		n.executeUpdateNodeLatest(ctx, cmd.ID)
+		n.executeUpdateNodeLatest(ctx, cmd)
 	default:
 		n.reportCommandFailure(ctx, cmd.ID, "unsupported", fmt.Sprintf("unsupported command type %q", cmd.Type))
 	}

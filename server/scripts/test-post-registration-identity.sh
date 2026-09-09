@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Post-registration identity preservation + PoP repair (mock installer).
+# Post-registration identity preservation + repair reinstall (mock installer).
+# Repair preserves node.key/node_id but still requires a bootstrap token.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -112,21 +113,38 @@ else
   fail "node_id missing in preserved server.json"
 fi
 
-echo "== next installer repair: PoP, no bootstrap, same node_id =="
+echo "== next installer repair: requires bootstrap, same node_id =="
 set +e
-run_mock "${MOCK_POST}" >"${TMP}/repair.out" 2>&1
+run_mock "${MOCK_POST}" >"${TMP}/repair-noboot.out" 2>&1
+rc=$?
+set -e
+if [[ "${rc}" -ne 0 ]] && grep -qi 'bootstrap token required\|missing required value: BOOTSTRAP_TOKEN' "${TMP}/repair-noboot.out"; then
+  pass "repair install rejects missing bootstrap token"
+else
+  fail "repair install must require bootstrap token"
+  cat "${TMP}/repair-noboot.out" >&2 || true
+fi
+if ! grep -qi 'bootstrap token not required\|skipping bootstrap prompt' "${TMP}/repair-noboot.out"; then
+  pass "repair path no longer skips bootstrap"
+else
+  fail "repair still claims bootstrap is optional"
+  cat "${TMP}/repair-noboot.out" >&2 || true
+fi
+
+set +e
+run_mock "${MOCK_POST}" --bootstrap-token "tok-repair" >"${TMP}/repair.out" 2>&1
 rc=$?
 set -e
 if [[ "${rc}" -eq 0 ]]; then
-  pass "repair install exit 0 without bootstrap token"
+  pass "repair install exit 0 with bootstrap token"
 else
-  fail "repair install should succeed without bootstrap"
+  fail "repair install should succeed with bootstrap"
   cat "${TMP}/repair.out" >&2 || true
 fi
-if grep -qi 'bootstrap token not required' "${TMP}/repair.out" || grep -qi 'skipping bootstrap prompt' "${TMP}/repair.out"; then
-  pass "bootstrap token not required for repair"
+if grep -qi 'identity preserved; bootstrap token still required\|preserving node_id=' "${TMP}/repair.out"; then
+  pass "repair preserves identity and still requires bootstrap"
 else
-  fail "repair did not enter PoP / skip-bootstrap path"
+  fail "repair did not log identity preservation"
   cat "${TMP}/repair.out" >&2 || true
 fi
 NODE_ID2="$(sed -n 's/.*"node_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${MOCK_POST}/etc/nyxveil/server.json" | head -n1 || true)"

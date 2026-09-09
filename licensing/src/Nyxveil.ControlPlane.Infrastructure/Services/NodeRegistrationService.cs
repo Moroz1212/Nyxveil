@@ -67,11 +67,14 @@ public sealed class NodeRegistrationService : INodeRegistrationService
             if (!string.Equals(existing.LocationId, location.LocationId, StringComparison.Ordinal))
                 throw new ForbiddenException("node cannot change assigned location_id");
 
-            // Existing node: require PoP of registered credential key. No bootstrap reset,
-            // no public key replace, no new bearer secret.
+            // Explicit installer registration always requires a fresh bootstrap token,
+            // even for an already-registered node. PoP proves possession of node.key.
+            if (string.IsNullOrWhiteSpace(request.BootstrapToken))
+                throw new UnauthorizedException("bootstrap_token required");
             if (string.IsNullOrWhiteSpace(request.NodeToken))
                 throw new ForbiddenException("existing node requires proof-of-possession");
 
+            // PoP / identity checks MUST run before bootstrap consumption.
             await _nodeAuth.VerifyCoreNodeTokenV1Async(existing.NodeId, request.NodeToken.Trim(), cancellationToken)
                 .ConfigureAwait(false);
 
@@ -81,9 +84,17 @@ public sealed class NodeRegistrationService : INodeRegistrationService
             if (cred is not null && !cred.PublicKey.AsSpan().SequenceEqual(request.PublicKey))
                 throw new ForbiddenException("node public key cannot be replaced via registration");
 
+            await using var repairTx = await _db.Database.BeginTransactionAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            await FindAndConsumeBootstrapAsync(request.BootstrapToken, location, cancellationToken)
+                .ConfigureAwait(false);
+
             // Refresh mutable node-advertised metadata (catalog projection fields).
             // Admin-owned fields (Enabled/TestOnly/Draining/LocationId/identity) stay unchanged.
             await ApplyExistingNodeAdvertisementAsync(existing, request, cancellationToken).ConfigureAwait(false);
+
+            await repairTx.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             var cfg = await GetConfigAsync(existing.NodeId, cancellationToken).ConfigureAwait(false);
             return new NodeRegisterResponse

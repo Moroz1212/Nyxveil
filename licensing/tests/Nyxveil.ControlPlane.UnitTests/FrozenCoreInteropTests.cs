@@ -319,11 +319,33 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
         var req = NewNodeRequest(boot.BootstrapToken, "node-pop");
         await _fx.Nodes.RegisterWithBootstrapAsync(req);
 
-        var retry = NewNodeRequest(boot.BootstrapToken, "node-pop");
+        // Fresh bootstrap present, but PoP omitted — must fail before consumption.
+        var repairBoot = await CreateBootstrapAsync();
+        var retry = NewNodeRequest(repairBoot.BootstrapToken, "node-pop");
         retry.PublicIdentity = req.PublicIdentity;
         retry.PublicKey = req.PublicKey;
         await Assert.ThrowsAsync<ForbiddenException>(() =>
             _fx.Nodes.RegisterWithBootstrapAsync(retry));
+        Assert.Equal(0, (await _fx.Db.BootstrapTokens.SingleAsync(t => t.BootstrapId == repairBoot.BootstrapId)).UsedCount);
+    }
+
+    [Fact]
+    public async Task TestExistingNodeCannotReregisterWithoutBootstrapToken()
+    {
+        var boot = await CreateBootstrapAsync();
+        var (seed, pub) = GenerateEd25519();
+        var req = NewNodeRequest(boot.BootstrapToken, "node-pop-boot");
+        req.PublicKey = pub;
+        await _fx.Nodes.RegisterWithBootstrapAsync(req);
+
+        var retry = NewNodeRequest(string.Empty, "node-pop-boot");
+        retry.BootstrapToken = null!;
+        retry.PublicIdentity = req.PublicIdentity;
+        retry.PublicKey = req.PublicKey;
+        retry.NodeToken = CoreNodeToken.Sign(req.NodeId, seed, _fx.Clock.UtcNow);
+        var ex = await Assert.ThrowsAsync<UnauthorizedException>(() =>
+            _fx.Nodes.RegisterWithBootstrapAsync(retry));
+        Assert.Equal("bootstrap_token required", ex.Message);
     }
 
     [Fact]
@@ -335,12 +357,14 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
         req.PublicKey = pub;
         var first = await _fx.Nodes.RegisterWithBootstrapAsync(req);
 
-        var retry = NewNodeRequest(boot.BootstrapToken, "node-key");
+        var repairBoot = await CreateBootstrapAsync();
+        var retry = NewNodeRequest(repairBoot.BootstrapToken, "node-key");
         retry.PublicIdentity = req.PublicIdentity;
         retry.PublicKey = ControlPlaneTestFixture.RandomKey32();
         retry.NodeToken = CoreNodeToken.Sign(req.NodeId, seed, _fx.Clock.UtcNow);
 
         await Assert.ThrowsAsync<ForbiddenException>(() => _fx.Nodes.RegisterWithBootstrapAsync(retry));
+        Assert.Equal(0, (await _fx.Db.BootstrapTokens.SingleAsync(t => t.BootstrapId == repairBoot.BootstrapId)).UsedCount);
     }
 
     [Fact]
@@ -352,7 +376,8 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
         var originalVerifier = (await _fx.Db.NodeCredentials.SingleAsync(c => c.NodeId == "node-takeover"))
             .NodeAuthSecretVerifier;
 
-        var retry = NewNodeRequest(boot.BootstrapToken, "node-takeover");
+        var repairBoot = await CreateBootstrapAsync();
+        var retry = NewNodeRequest(repairBoot.BootstrapToken, "node-takeover");
         retry.PublicIdentity = req.PublicIdentity;
         retry.PublicKey = req.PublicKey;
         await Assert.ThrowsAsync<ForbiddenException>(() =>
@@ -361,6 +386,7 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
         var after = await _fx.Db.NodeCredentials.SingleAsync(c => c.NodeId == "node-takeover");
         Assert.Equal(originalVerifier, after.NodeAuthSecretVerifier);
         Assert.False(string.IsNullOrEmpty(first.NodeToken));
+        Assert.Equal(0, (await _fx.Db.BootstrapTokens.SingleAsync(t => t.BootstrapId == repairBoot.BootstrapId)).UsedCount);
     }
 
     [Fact]
@@ -372,7 +398,8 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
         req.PublicKey = pub;
         var first = await _fx.Nodes.RegisterWithBootstrapAsync(req);
 
-        var retry = NewNodeRequest(boot.BootstrapToken, "node-retry");
+        var repairBoot = await CreateBootstrapAsync();
+        var retry = NewNodeRequest(repairBoot.BootstrapToken, "node-retry");
         retry.PublicIdentity = req.PublicIdentity;
         retry.PublicKey = req.PublicKey;
         retry.NodeToken = CoreNodeToken.Sign(req.NodeId, seed, _fx.Clock.UtcNow);
@@ -381,6 +408,8 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
         Assert.True(second.Registered);
         Assert.Equal(string.Empty, second.NodeToken);
         Assert.Equal(1, await _fx.Db.Nodes.CountAsync(n => n.NodeId == "node-retry"));
+        Assert.Equal(1, (await _fx.Db.BootstrapTokens.SingleAsync(t => t.BootstrapId == boot.BootstrapId)).UsedCount);
+        Assert.Equal(1, (await _fx.Db.BootstrapTokens.SingleAsync(t => t.BootstrapId == repairBoot.BootstrapId)).UsedCount);
     }
 
     [Fact]
@@ -399,9 +428,12 @@ public sealed class FrozenCoreInteropTests : IAsyncDisposable
         var req = NewNodeRequest(boot.BootstrapToken, "node-id");
         await _fx.Nodes.RegisterWithBootstrapAsync(req);
 
-        var other = NewNodeRequest(boot.BootstrapToken, "node-id");
+        // Identity conflict is checked before bootstrap consumption; fresh token still present.
+        var repairBoot = await CreateBootstrapAsync();
+        var other = NewNodeRequest(repairBoot.BootstrapToken, "node-id");
         other.PublicIdentity = ControlPlaneTestFixture.RandomKey32();
         await Assert.ThrowsAsync<ConflictException>(() => _fx.Nodes.RegisterWithBootstrapAsync(other));
+        Assert.Equal(0, (await _fx.Db.BootstrapTokens.SingleAsync(t => t.BootstrapId == repairBoot.BootstrapId)).UsedCount);
     }
 
     [Fact]

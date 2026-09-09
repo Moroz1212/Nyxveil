@@ -296,7 +296,8 @@ public sealed class ControlPlaneServiceTests : IAsyncDisposable
         var first = await _fx.Nodes.RegisterWithBootstrapAsync(req);
         Assert.False(string.IsNullOrWhiteSpace(first.NodeToken));
 
-        var retry = NewNodeRequest(boot.BootstrapToken, "node-idem");
+        var repairBoot = await CreateBootstrapAsync(maxUses: 1);
+        var retry = NewNodeRequest(repairBoot.BootstrapToken, "node-idem");
         retry.PublicIdentity = identity;
         retry.PublicKey = pk;
         retry.NodeToken = Nyxveil.ControlPlane.Infrastructure.Security.CoreNodeToken.Sign(req.NodeId, seed, _fx.Clock.UtcNow);
@@ -306,7 +307,8 @@ public sealed class ControlPlaneServiceTests : IAsyncDisposable
         Assert.True(second.Registered);
         Assert.Equal(string.Empty, second.NodeToken);
         Assert.Equal(1, await _fx.Db.Nodes.CountAsync());
-        Assert.Equal(1, (await _fx.Db.BootstrapTokens.SingleAsync()).UsedCount);
+        Assert.Equal(1, (await _fx.Db.BootstrapTokens.SingleAsync(t => t.BootstrapId == boot.BootstrapId)).UsedCount);
+        Assert.Equal(1, (await _fx.Db.BootstrapTokens.SingleAsync(t => t.BootstrapId == repairBoot.BootstrapId)).UsedCount);
     }
 
     [Fact]

@@ -21,7 +21,7 @@ function Record([string]$name, [string]$status, [string]$detail) {
 
 try {
     $version = (Get-Content (Join-Path $root 'VERSION') -Raw).Trim()
-    Record 'baseline' $(if ($version -eq '1.3.1') {'PASS'} else {'FAIL'}) "version=$version mode=$GateMode"
+    Record 'baseline' $(if ($version -eq '1.3.2') {'PASS'} else {'FAIL'}) "version=$version mode=$GateMode"
 
     $required = @(
         'VERSION',
@@ -32,7 +32,7 @@ try {
         'database\migrations\validate_schema_v2.sql',
         'database\migrations\validate_schema_v3.sql',
         'database\migrations\validate_schema_v4.sql',
-        'docs\RELEASE-1.3.1.md'
+        'docs\RELEASE-1.3.2.md'
     )
     if ($PackageDir) {
         $required += 'Nyxveil.ControlPlane.Web.dll'

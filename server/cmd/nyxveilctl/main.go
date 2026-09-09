@@ -210,11 +210,35 @@ func resolveManifestURL(args []string) (string, error) {
 	if len(args) >= 1 && strings.TrimSpace(args[0]) != "" {
 		return strings.TrimSpace(args[0]), nil
 	}
+	// Prefer Control Plane-pinned target from durable update marker (remote UpdateNodeLatest).
+	for _, dir := range []string{filepath.Dir(paths.CommandsState()), filepath.Dir(paths.NodeKey())} {
+		if pinned, ok := readPinnedUpdateTarget(dir); ok {
+			return updater.ManifestURLForVersion(pinned), nil
+		}
+	}
 	cfgPath := paths.ServerConfig()
 	if cfg, err := localconfig.Load(cfgPath); err == nil && strings.TrimSpace(cfg.UpdateURL) != "" {
 		return strings.TrimSpace(cfg.UpdateURL), nil
 	}
 	return updater.DefaultManifestURL(), nil
+}
+
+func readPinnedUpdateTarget(stateDir string) (string, bool) {
+	raw, err := os.ReadFile(filepath.Join(stateDir, "management", "update-command.json"))
+	if err != nil {
+		return "", false
+	}
+	var m struct {
+		TargetVersion string `json:"target_version"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return "", false
+	}
+	v := strings.TrimSpace(strings.TrimPrefix(m.TargetVersion, "v"))
+	if v == "" {
+		return "", false
+	}
+	return v, true
 }
 
 func runBootstrapCLI(args []string) error {

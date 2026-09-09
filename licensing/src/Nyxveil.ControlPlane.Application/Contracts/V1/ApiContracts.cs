@@ -245,7 +245,7 @@ public sealed class RevocationListResponse
 public sealed class VersionResponse
 {
     [JsonPropertyName("control_plane_version")]
-    public string ControlPlaneVersion { get; set; } = "1.3.1";
+    public string ControlPlaneVersion { get; set; } = "1.3.2";
 
     [JsonPropertyName("min_protocol_version")]
     public ushort MinProtocolVersion { get; set; } = 1;
@@ -283,6 +283,14 @@ public sealed class NodeCommandDto
     [JsonPropertyName("payload_json")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? PayloadJson { get; set; }
+
+    [JsonPropertyName("previous_version")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PreviousVersion { get; set; }
+
+    [JsonPropertyName("target_version")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TargetVersion { get; set; }
 }
 
 public sealed class NodeCommandResultRequest

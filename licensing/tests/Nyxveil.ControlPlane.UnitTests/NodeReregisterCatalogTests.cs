@@ -23,7 +23,7 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
         var (seed, _, req) = await RegisterAsync("node-ver");
         Assert.Equal("1.0.1", (await _fx.Db.Nodes.SingleAsync(n => n.NodeId == "node-ver")).ServerVersion);
 
-        var retry = ClonePoP(req, seed);
+        var retry = await CloneBootstrapPoPAsync(req, seed);
         retry.ServerVersion = "1.0.10";
         await _fx.Nodes.RegisterWithBootstrapAsync(retry);
 
@@ -34,7 +34,7 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
     public async Task TestExistingNodeRegistrationUpdatesServerName()
     {
         var (seed, _, req) = await RegisterAsync("node-sn");
-        var retry = ClonePoP(req, seed);
+        var retry = await CloneBootstrapPoPAsync(req, seed);
         retry.ServerName = "fi-hel-01.nyxveil.ru";
         await _fx.Nodes.RegisterWithBootstrapAsync(retry);
 
@@ -46,7 +46,7 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
     {
         var (seed, _, req) = await RegisterAsync("node-spki");
         var newPin = ControlPlaneTestFixture.RandomKey32();
-        var retry = ClonePoP(req, seed);
+        var retry = await CloneBootstrapPoPAsync(req, seed);
         retry.SpkiPin = newPin;
         await _fx.Nodes.RegisterWithBootstrapAsync(retry);
 
@@ -57,7 +57,7 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
     public async Task TestExistingNodeRegistrationPreservesNodeId()
     {
         var (seed, _, req) = await RegisterAsync("node-keep-id");
-        var retry = ClonePoP(req, seed);
+        var retry = await CloneBootstrapPoPAsync(req, seed);
         retry.ServerVersion = "9.9.9";
         var resp = await _fx.Nodes.RegisterWithBootstrapAsync(retry);
         Assert.Equal("node-keep-id", resp.NodeId);
@@ -69,7 +69,7 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
     {
         var (seed, _, req) = await RegisterAsync("node-keep-loc");
         var before = await _fx.Db.Nodes.SingleAsync(n => n.NodeId == "node-keep-loc");
-        var retry = ClonePoP(req, seed);
+        var retry = await CloneBootstrapPoPAsync(req, seed);
         retry.ServerName = "fi-hel-01.nyxveil.ru";
         await _fx.Nodes.RegisterWithBootstrapAsync(retry);
         var after = await _fx.Db.Nodes.SingleAsync(n => n.NodeId == "node-keep-loc");
@@ -84,7 +84,7 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
         Assert.True(before.Enabled);
         Assert.False(before.TestOnly);
 
-        var retry = ClonePoP(req, seed);
+        var retry = await CloneBootstrapPoPAsync(req, seed);
         retry.TestOnly = true;
         retry.ServerVersion = "1.0.10";
         await _fx.Nodes.RegisterWithBootstrapAsync(retry);
@@ -101,7 +101,7 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
     public async Task TestExistingNodeCannotChangeLocationId()
     {
         var (seed, _, req) = await RegisterAsync("node-move");
-        var retry = ClonePoP(req, seed);
+        var retry = await CloneBootstrapPoPAsync(req, seed);
         retry.LocationId = _fx.LocationIdB;
         await Assert.ThrowsAsync<ForbiddenException>(() => _fx.Nodes.RegisterWithBootstrapAsync(retry));
         Assert.Equal(_fx.LocationId, (await _fx.Db.Nodes.SingleAsync(n => n.NodeId == "node-move")).LocationId);
@@ -139,7 +139,7 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
     public async Task TestCatalogUsesLatestNodeRegistrationMetadata()
     {
         var (seed, _, req) = await RegisterAsync("node-cat-meta");
-        var retry = ClonePoP(req, seed);
+        var retry = await CloneBootstrapPoPAsync(req, seed);
         retry.ServerVersion = "1.0.10";
         retry.ServerName = "fi-hel-01.nyxveil.ru";
         await _fx.Nodes.RegisterWithBootstrapAsync(retry);
@@ -156,7 +156,7 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
     {
         var (seed, _, req) = await RegisterAsync("node-cat-spki");
         var pin = Convert.FromHexString("63855191aadfe5c14ac84483720625e45925d5423881aa3171f5c531576c4488");
-        var retry = ClonePoP(req, seed);
+        var retry = await CloneBootstrapPoPAsync(req, seed);
         retry.SpkiPin = pin;
         await _fx.Nodes.RegisterWithBootstrapAsync(retry);
 
@@ -172,7 +172,7 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
     {
         var (seed, _, req) = await RegisterAsync("node-self-spki");
         var pin = Convert.FromHexString("f3855191aadfe5c14ac84483720625e45925d5423881aa3171f5c531576c4488");
-        var retry = ClonePoP(req, seed);
+        var retry = await CloneBootstrapPoPAsync(req, seed);
         retry.SpkiPin = pin;
         await _fx.Nodes.RegisterWithBootstrapAsync(retry);
 
@@ -191,7 +191,7 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
     public async Task TestCatalogUsesTLSFQDNAsServerName()
     {
         var (seed, _, req) = await RegisterAsync("node-fqdn");
-        var retry = ClonePoP(req, seed);
+        var retry = await CloneBootstrapPoPAsync(req, seed);
         retry.ServerName = "fi-hel-01.nyxveil.ru";
         retry.Endpoints =
         [
@@ -236,7 +236,7 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
         var before = await _fx.Catalog.GetSignedCatalogForCallerAsync(null, token);
         Assert.Equal("1.0.1", Assert.Single(before.Catalog.Nodes, n => n.NodeId == "node-nocache").ServerVersion);
 
-        var retry = ClonePoP(req, seed);
+        var retry = await CloneBootstrapPoPAsync(req, seed);
         retry.ServerVersion = "1.0.10";
         await _fx.Nodes.RegisterWithBootstrapAsync(retry);
 
@@ -249,7 +249,7 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
     public async Task TestCatalogSignatureValidAfterNodeMetadataUpdate()
     {
         var (seed, _, req) = await RegisterAsync("node-sig");
-        var retry = ClonePoP(req, seed);
+        var retry = await CloneBootstrapPoPAsync(req, seed);
         retry.ServerVersion = "1.0.10";
         retry.ServerName = "fi-hel-01.nyxveil.ru";
         await _fx.Nodes.RegisterWithBootstrapAsync(retry);
@@ -269,7 +269,7 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
     public async Task TestSameNodeReregisterDoesNotCreateDuplicateNode()
     {
         var (seed, _, req) = await RegisterAsync("node-once");
-        var retry = ClonePoP(req, seed);
+        var retry = await CloneBootstrapPoPAsync(req, seed);
         retry.ServerVersion = "1.0.10";
         await _fx.Nodes.RegisterWithBootstrapAsync(retry);
         Assert.Equal(1, await _fx.Db.Nodes.CountAsync(n => n.NodeId == "node-once"));
@@ -299,29 +299,34 @@ public sealed class NodeReregisterCatalogTests : IAsyncDisposable
         return (seed, pub, req);
     }
 
-    private NodeRegisterRequest ClonePoP(NodeRegisterRequest original, byte[] seed) => new()
+    private async Task<NodeRegisterRequest> CloneBootstrapPoPAsync(NodeRegisterRequest original, byte[] seed)
     {
-        NodeId = original.NodeId,
-        LocationId = original.LocationId,
-        DisplayName = original.DisplayName,
-        PublicIdentity = original.PublicIdentity,
-        PublicKey = original.PublicKey,
-        ServerName = original.ServerName,
-        SpkiPin = original.SpkiPin,
-        ProtocolVersion = original.ProtocolVersion,
-        ServerVersion = original.ServerVersion,
-        Capacity = original.Capacity,
-        TestOnly = original.TestOnly,
-        Endpoints = original.Endpoints.Select(e => new NodeEndpointDto
+        var boot = await CreateBootstrapAsync();
+        return new()
         {
-            Host = e.Host,
-            Port = e.Port,
-            AddressFamily = e.AddressFamily,
-            Priority = e.Priority,
-            Enabled = e.Enabled
-        }).ToList(),
-        NodeToken = CoreNodeToken.Sign(original.NodeId, seed, _fx.Clock.UtcNow)
-    };
+            BootstrapToken = boot.BootstrapToken,
+            NodeId = original.NodeId,
+            LocationId = original.LocationId,
+            DisplayName = original.DisplayName,
+            PublicIdentity = original.PublicIdentity,
+            PublicKey = original.PublicKey,
+            ServerName = original.ServerName,
+            SpkiPin = original.SpkiPin,
+            ProtocolVersion = original.ProtocolVersion,
+            ServerVersion = original.ServerVersion,
+            Capacity = original.Capacity,
+            TestOnly = original.TestOnly,
+            Endpoints = original.Endpoints.Select(e => new NodeEndpointDto
+            {
+                Host = e.Host,
+                Port = e.Port,
+                AddressFamily = e.AddressFamily,
+                Priority = e.Priority,
+                Enabled = e.Enabled
+            }).ToList(),
+            NodeToken = CoreNodeToken.Sign(original.NodeId, seed, _fx.Clock.UtcNow)
+        };
+    }
 
     private Task<CreateBootstrapTokenResponse> CreateBootstrapAsync(int maxUses = 3) =>
         _fx.Bootstrap.CreateAsync(new CreateBootstrapTokenRequest

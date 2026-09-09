@@ -82,6 +82,8 @@ public sealed class NodeCommandsController : ControllerBase
         IssuedAt = command.IssuedAt,
         ExpiresAt = command.ExpiresAt,
         CorrelationId = command.CorrelationId,
-        PayloadJson = command.PayloadJson
+        PayloadJson = command.PayloadJson,
+        PreviousVersion = command.PreviousVersion,
+        TargetVersion = command.TargetVersion
     };
 }

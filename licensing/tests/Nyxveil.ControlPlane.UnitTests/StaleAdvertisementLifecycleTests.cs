@@ -74,9 +74,17 @@ public sealed class StaleAdvertisementLifecycleTests : IAsyncDisposable
         var beforeCred = (await _fx.Db.NodeCredentials.SingleAsync(c => c.NodeId == nodeId)).PublicKey.ToArray();
         var beforeLoc = before.LocationId;
 
+        var repairBoot = await _fx.Bootstrap.CreateAsync(new CreateBootstrapTokenRequest
+        {
+            ExpiresAt = _fx.Clock.UtcNow.AddHours(1),
+            MaxUses = 1,
+            CreatedBy = "test",
+            AllowedLocation = _fx.LocationId
+        });
         var newSpki = Convert.FromBase64String("Y4VRkarf5cFKyESDcgYl5Fkl1UI4gaoxcfXFMVdsRIg=");
         var retry = new NodeRegisterRequest
         {
+            BootstrapToken = repairBoot.BootstrapToken,
             NodeId = nodeId,
             LocationId = _fx.LocationId,
             DisplayName = "fi-hel-01",
@@ -134,17 +142,29 @@ public sealed class StaleAdvertisementLifecycleTests : IAsyncDisposable
     {
         var (seed, pub, req) = await RegisterAsync("node-bad-pop");
         var other = GenerateEd25519().Seed;
-        var retry = Clone(req, other);
+        var retry = await CloneWithFreshBootstrapAsync(req, other);
         retry.ServerVersion = "9.9.9";
         await Assert.ThrowsAsync<UnauthorizedException>(() => _fx.Nodes.RegisterWithBootstrapAsync(retry));
         Assert.Equal("1.0.1", (await _fx.Db.Nodes.SingleAsync(n => n.NodeId == "node-bad-pop")).ServerVersion);
     }
 
     [Fact]
+    public async Task PopOnlyRetryWithoutBootstrap_IsRejected()
+    {
+        var (seed, _, req) = await RegisterAsync("node-no-boot");
+        var retry = ClonePoPOnly(req, seed);
+        retry.ServerVersion = "9.9.9";
+        var ex = await Assert.ThrowsAsync<UnauthorizedException>(() => _fx.Nodes.RegisterWithBootstrapAsync(retry));
+        Assert.Equal("bootstrap_token required", ex.Message);
+        Assert.Equal("1.0.1", (await _fx.Db.Nodes.SingleAsync(n => n.NodeId == "node-no-boot")).ServerVersion);
+    }
+
+    [Fact]
     public async Task DifferentPublicIdentity_IsRejected()
     {
         var (seed, _, req) = await RegisterAsync("node-bad-id");
-        var retry = Clone(req, seed);
+        // Identity conflict is checked before bootstrap; omit bootstrap intentionally.
+        var retry = ClonePoPOnly(req, seed);
         retry.PublicIdentity = ControlPlaneTestFixture.RandomKey32();
         retry.ServerVersion = "9.9.9";
         await Assert.ThrowsAsync<ConflictException>(() => _fx.Nodes.RegisterWithBootstrapAsync(retry));
@@ -154,7 +174,8 @@ public sealed class StaleAdvertisementLifecycleTests : IAsyncDisposable
     public async Task LocationChangeAttempt_IsRejected()
     {
         var (seed, _, req) = await RegisterAsync("node-bad-loc");
-        var retry = Clone(req, seed);
+        // Location check runs before bootstrap; omit bootstrap intentionally.
+        var retry = ClonePoPOnly(req, seed);
         retry.LocationId = _fx.LocationIdB;
         await Assert.ThrowsAsync<ForbiddenException>(() => _fx.Nodes.RegisterWithBootstrapAsync(retry));
     }
@@ -163,7 +184,7 @@ public sealed class StaleAdvertisementLifecycleTests : IAsyncDisposable
     public async Task CredentialReplacement_IsRejected()
     {
         var (seed, _, req) = await RegisterAsync("node-bad-cred");
-        var retry = Clone(req, seed);
+        var retry = await CloneWithFreshBootstrapAsync(req, seed);
         retry.PublicKey = ControlPlaneTestFixture.RandomKey32();
         retry.ServerVersion = "9.9.9";
         await Assert.ThrowsAsync<ForbiddenException>(() => _fx.Nodes.RegisterWithBootstrapAsync(retry));
@@ -178,7 +199,8 @@ public sealed class StaleAdvertisementLifecycleTests : IAsyncDisposable
         var node = await _fx.Db.Nodes.SingleAsync(n => n.NodeId == req.NodeId);
         node.LifecycleState = state;
         await _fx.Db.SaveChangesAsync();
-        var retry = Clone(req, seed);
+        // Lifecycle check runs before bootstrap; omit bootstrap intentionally.
+        var retry = ClonePoPOnly(req, seed);
         retry.ServerVersion = "9.9.9";
         await Assert.ThrowsAsync<ForbiddenException>(() => _fx.Nodes.RegisterWithBootstrapAsync(retry));
     }
@@ -214,7 +236,7 @@ public sealed class StaleAdvertisementLifecycleTests : IAsyncDisposable
         return (seed, pub, req);
     }
 
-    private NodeRegisterRequest Clone(NodeRegisterRequest original, byte[] seed) => new()
+    private NodeRegisterRequest ClonePoPOnly(NodeRegisterRequest original, byte[] seed) => new()
     {
         NodeId = original.NodeId,
         LocationId = original.LocationId,
@@ -230,6 +252,19 @@ public sealed class StaleAdvertisementLifecycleTests : IAsyncDisposable
         Endpoints = original.Endpoints.ToList(),
         NodeToken = CoreNodeToken.Sign(original.NodeId, seed, _fx.Clock.UtcNow)
     };
+
+    private async Task<NodeRegisterRequest> CloneWithFreshBootstrapAsync(NodeRegisterRequest original, byte[] seed)
+    {
+        var boot = await _fx.Bootstrap.CreateAsync(new CreateBootstrapTokenRequest
+        {
+            ExpiresAt = _fx.Clock.UtcNow.AddHours(1),
+            MaxUses = 1,
+            CreatedBy = "test"
+        });
+        var retry = ClonePoPOnly(original, seed);
+        retry.BootstrapToken = boot.BootstrapToken;
+        return retry;
+    }
 
     private async Task<string> CreateLicenseTokenAsync()
     {

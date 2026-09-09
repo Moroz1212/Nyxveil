@@ -19,7 +19,17 @@ public sealed class NodeCommandServiceTests : IAsyncDisposable
         _commands = new NodeCommandService(
             _fx.Db,
             _fx.Clock,
-            _fx.Scope.ServiceProvider.GetRequiredService<IAuditService>());
+            _fx.Scope.ServiceProvider.GetRequiredService<IAuditService>(),
+            new FakeServerReleaseService
+            {
+                Info = new ServerReleaseInfo
+                {
+                    LatestVersion = "1.1.11",
+                    ReleaseTag = "server-v1.1.11",
+                    SourceStatus = "ok",
+                    LastCheckedAt = DateTimeOffset.UtcNow
+                }
+            });
     }
 
     public async ValueTask DisposeAsync() => await _fx.DisposeAsync();
@@ -191,6 +201,50 @@ public sealed class NodeCommandServiceTests : IAsyncDisposable
             Endpoints = [new NodeEndpointDto { Host = nodeId + ".example", Port = 443, Enabled = true }]
         };
         await _fx.Nodes.RegisterWithBootstrapAsync(request);
+        await EnsureHealthySiblingAsync();
+        MarkHealthy(nodeId);
+        await _fx.Db.SaveChangesAsync();
         return request;
+    }
+
+    private async Task EnsureHealthySiblingAsync()
+    {
+        const string siblingId = "cmd-loc-sibling";
+        if (await _fx.Db.Nodes.AnyAsync(n => n.NodeId == siblingId))
+        {
+            MarkHealthy(siblingId);
+            return;
+        }
+
+        var bootstrap = await _fx.Bootstrap.CreateAsync(new CreateBootstrapTokenRequest
+        {
+            ExpiresAt = _fx.Clock.UtcNow.AddHours(1),
+            MaxUses = 1,
+            CreatedBy = "test"
+        });
+        await _fx.Nodes.RegisterWithBootstrapAsync(new NodeRegisterRequest
+        {
+            BootstrapToken = bootstrap.BootstrapToken,
+            NodeId = siblingId,
+            LocationId = _fx.LocationId,
+            DisplayName = siblingId,
+            PublicIdentity = ControlPlaneTestFixture.RandomKey32(),
+            PublicKey = ControlPlaneTestFixture.RandomKey32(),
+            ProtocolVersion = 1,
+            ServerVersion = "1.1.0",
+            Capacity = 10,
+            Endpoints = [new NodeEndpointDto { Host = "sibling.example", Port = 443, Enabled = true }]
+        });
+        MarkHealthy(siblingId);
+    }
+
+    private void MarkHealthy(string nodeId)
+    {
+        var node = _fx.Db.Nodes.Single(n => n.NodeId == nodeId);
+        node.Status = NodeRuntimeStatus.Healthy;
+        node.Enabled = true;
+        node.Draining = false;
+        node.LastSeenAt = _fx.Clock.UtcNow;
+        node.LifecycleState = NodeLifecycleState.Active;
     }
 }

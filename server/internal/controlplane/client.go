@@ -154,14 +154,16 @@ type HeartbeatRequest struct {
 
 // NodeCommand is GET /api/v1/node/commands/next (snake_case matches Control Plane DTO).
 type NodeCommand struct {
-	ID            string  `json:"id"`
-	NodeID        string  `json:"node_id"`
-	Type          string  `json:"type"`
-	Status        string  `json:"status"`
-	IssuedAt      APITime `json:"issued_at"`
-	ExpiresAt     APITime `json:"expires_at"`
-	CorrelationID string  `json:"correlation_id"`
-	PayloadJSON   *string `json:"payload_json,omitempty"`
+	ID              string  `json:"id"`
+	NodeID          string  `json:"node_id"`
+	Type            string  `json:"type"`
+	Status          string  `json:"status"`
+	IssuedAt        APITime `json:"issued_at"`
+	ExpiresAt       APITime `json:"expires_at"`
+	CorrelationID   string  `json:"correlation_id"`
+	PayloadJSON     *string `json:"payload_json,omitempty"`
+	PreviousVersion string  `json:"previous_version,omitempty"`
+	TargetVersion   string  `json:"target_version,omitempty"`
 }
 
 // NodeCommandResultRequest is POST /api/v1/node/commands/{id}/result body.

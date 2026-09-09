@@ -267,20 +267,19 @@ func (n *Node) register(ctx context.Context, bootstrapToken string, spkiOverride
 	if cfg.ServerName == "" && cfg.PublicHost != "" {
 		req.ServerName = cfg.PublicHost
 	}
-	// Existing node (pre-existing key): PoP via NodeToken; omit BootstrapToken.
-	// Fresh key this process: BootstrapToken required.
+	// Explicit registration always requires a bootstrap token (fresh install and repair).
+	// Existing local key additionally proves possession via NodeToken (PoP).
+	if strings.TrimSpace(bootstrapToken) == "" {
+		return nil, errors.New("runtime: bootstrap token required for registration")
+	}
+	req.BootstrapToken = bootstrapToken
 	if !freshKey {
 		req.NodeToken = nodeauth.SignCoreNodeToken(cfg.NodeID, key.Private, time.Now().Unix())
-	} else {
-		if strings.TrimSpace(bootstrapToken) == "" {
-			return nil, errors.New("runtime: bootstrap token required for fresh registration")
-		}
-		req.BootstrapToken = bootstrapToken
 	}
 
 	if len(spkiOverride) > 0 {
 		req.SPKIPin = append([]byte(nil), spkiOverride...)
-	} else if cert, err := n.loadTLSCert(cfg); err == nil {
+	} else if cert, err := n.loadTLSCert(ctx, cfg); err == nil {
 		if pin, err := SPKIPinSHA256(cert); err == nil {
 			req.SPKIPin = pin
 		}
@@ -415,7 +414,7 @@ func (n *Node) Start(parent context.Context) error {
 	cfg := *n.local
 	n.mu.RUnlock()
 
-	cert, err := n.loadTLSCert(cfg)
+	cert, err := n.loadTLSCert(ctx, cfg)
 	if err != nil {
 		n.running.Store(false)
 		cancel()
@@ -1124,7 +1123,7 @@ func (n *Node) ensureECHKeys(cfg localconfig.File) error {
 	return nil
 }
 
-func (n *Node) loadTLSCert(cfg localconfig.File) (tls.Certificate, error) {
+func (n *Node) loadTLSCert(ctx context.Context, cfg localconfig.File) (tls.Certificate, error) {
 	certFile := cfg.TLSCertFile
 	keyFile := cfg.TLSKeyFile
 	if certFile == "" {
@@ -1136,8 +1135,13 @@ func (n *Node) loadTLSCert(cfg localconfig.File) (tls.Certificate, error) {
 	dest := nodetls.Paths{CertFile: certFile, KeyFile: keyFile}
 
 	if domain := strings.TrimSpace(cfg.ACMEDomain); domain != "" {
-		cert, _, _, pinChanged, err := n.issueACME(context.Background(), cfg)
+		acmeCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		defer cancel()
+		cert, _, _, pinChanged, err := n.issueACME(acmeCtx, cfg)
 		if err != nil {
+			if errors.Is(acmeCtx.Err(), context.DeadlineExceeded) {
+				return tls.Certificate{}, fmt.Errorf("runtime: ACME TLS for %s timed out: %w", domain, err)
+			}
 			return tls.Certificate{}, fmt.Errorf("runtime: ACME TLS for %s: %w", domain, err)
 		}
 		if pinChanged {

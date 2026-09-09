@@ -4,17 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/nyxveil/server/internal/controlplane"
+	"github.com/nyxveil/server/internal/filemeta"
 	"github.com/nyxveil/server/internal/paths"
 	"github.com/nyxveil/server/internal/updater"
 	"github.com/nyxveil/server/internal/version"
@@ -25,27 +24,35 @@ const (
 	updateMarkerName  = "update-command.json"
 )
 
-var serverReleaseTag = regexp.MustCompile(`(?i)^server-v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$`)
-
 type updateMarker struct {
 	CommandID       string `json:"command_id"`
 	PreviousVersion string `json:"previous_version"`
 	TargetVersion   string `json:"target_version"`
 	Phase           string `json:"phase"`
 	StartedAt       string `json:"started_at"`
+	LastUpdatedAt   string `json:"last_updated_at,omitempty"`
+	ResultPending   bool   `json:"result_pending,omitempty"`
+	ResultSuccess   bool   `json:"result_success,omitempty"`
+	ResultCode      string `json:"result_code,omitempty"`
+	ResultMessage   string `json:"result_message,omitempty"`
 }
 
-func (n *Node) executeUpdateNodeLatest(ctx context.Context, commandID string) {
+func (n *Node) executeUpdateNodeLatest(ctx context.Context, cmd *controlplane.NodeCommand) {
+	if cmd == nil {
+		return
+	}
+	commandID := cmd.ID
 	prev := version.ServerVersion
 	log.Printf("runtime: update %s phase=CheckingLatest", commandID)
 
-	latest, err := resolveLatestStableServerVersion(ctx)
-	if err != nil {
-		n.reportCommandFailure(ctx, commandID, "latest_failed", err.Error())
+	target := strings.TrimSpace(strings.TrimPrefix(cmd.TargetVersion, "v"))
+	if target == "" {
+		n.reportCommandFailure(ctx, commandID, "target_missing",
+			"UpdateNodeLatest requires pinned target_version from Control Plane")
 		return
 	}
 
-	cmp, err := compareSemVer(prev, latest)
+	cmp, err := compareSemVer(prev, target)
 	if err != nil {
 		n.reportCommandFailure(ctx, commandID, "version_parse", err.Error())
 		return
@@ -55,67 +62,30 @@ func (n *Node) executeUpdateNodeLatest(ctx context.Context, commandID string) {
 		return
 	}
 	if cmp > 0 {
-		n.reportCommandSuccess(ctx, commandID, "ahead", "Node version is newer than latest published release")
+		n.reportCommandSuccess(ctx, commandID, "ahead",
+			"Node version is newer than pinned target; downgrade blocked")
 		return
 	}
 
-	n.writeUpdateMarker(updateMarker{
+	if err := n.writeUpdateMarker(updateMarker{
 		CommandID:       commandID,
 		PreviousVersion: prev,
-		TargetVersion:   latest,
+		TargetVersion:   target,
 		Phase:           "Downloading",
 		StartedAt:       time.Now().UTC().Format(time.RFC3339),
-	})
-
-	if err := startUpdateUnit(); err == nil {
-		log.Printf("runtime: update %s started %s", commandID, nyxveilUpdateUnit)
+		LastUpdatedAt:   time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		n.reportCommandFailure(ctx, commandID, "marker_write", err.Error())
 		return
 	}
 
-	log.Printf("runtime: update %s phase=Verifying (in-process fallback)", commandID)
-	manifestURL := updater.ManifestURLForVersion(latest)
-	data, err := downloadBytes(ctx, manifestURL)
-	if err != nil {
-		n.clearUpdateMarker()
-		n.reportCommandFailure(ctx, commandID, "manifest_download", err.Error())
+	if err := startUpdateUnit(); err != nil {
+		_ = n.clearUpdateMarker()
+		n.reportCommandFailure(ctx, commandID, "update_unit_failed",
+			"nyxveil-update.service required for remote update: "+err.Error())
 		return
 	}
-	mani, err := updater.ParseManifest(data)
-	if err != nil {
-		n.clearUpdateMarker()
-		n.reportCommandFailure(ctx, commandID, "manifest_verify", err.Error())
-		return
-	}
-	if strings.TrimPrefix(strings.TrimSpace(mani.Version), "v") != strings.TrimPrefix(latest, "v") {
-		n.clearUpdateMarker()
-		n.reportCommandFailure(ctx, commandID, "version_mismatch", "manifest version does not match latest")
-		return
-	}
-
-	log.Printf("runtime: update %s phase=Installing", commandID)
-	binPath, err := os.Executable()
-	if err != nil {
-		binPath = os.Args[0]
-	}
-	u := &updater.Updater{
-		HTTP:       &http.Client{Timeout: 5 * time.Minute},
-		BinaryPath: binPath,
-		StateDir:   filepath.Dir(paths.CommandsState()),
-	}
-	if err := u.Apply(mani, nil); err != nil {
-		n.clearUpdateMarker()
-		n.reportCommandFailure(ctx, commandID, "apply_failed", err.Error())
-		return
-	}
-
-	n.writeUpdateMarker(updateMarker{
-		CommandID:       commandID,
-		PreviousVersion: prev,
-		TargetVersion:   latest,
-		Phase:           "Restarting",
-		StartedAt:       time.Now().UTC().Format(time.RFC3339),
-	})
-	_ = systemdRestartService(nyxveilServiceUnit)
+	log.Printf("runtime: update %s started %s target=%s", commandID, nyxveilUpdateUnit, target)
 }
 
 func (n *Node) completePendingUpdate(ctx context.Context) {
@@ -123,85 +93,64 @@ func (n *Node) completePendingUpdate(ctx context.Context) {
 	if !ok || strings.TrimSpace(m.CommandID) == "" {
 		return
 	}
+
+	if m.ResultPending {
+		req := controlplane.NodeCommandResultRequest{
+			Success:       m.ResultSuccess,
+			ResultCode:    m.ResultCode,
+			ResultMessage: m.ResultMessage,
+		}
+		if err := n.cp.ReportCommandResult(ctx, m.CommandID, req); err != nil {
+			log.Printf("runtime: update result retry %s: %v", m.CommandID, err)
+			return
+		}
+		_ = n.clearUpdateMarker()
+		return
+	}
+
 	cur := version.ServerVersion
 	target := strings.TrimPrefix(strings.TrimSpace(m.TargetVersion), "v")
 	got := strings.TrimPrefix(strings.TrimSpace(cur), "v")
-	if got == target {
-		n.reportCommandSuccess(ctx, m.CommandID, "updated", "Runtime version confirmed: "+cur)
-		n.clearUpdateMarker()
+	if got != target {
+		n.finishUpdateLocal(ctx, m, false, "version_not_confirmed",
+			fmt.Sprintf("expected %s got %s", m.TargetVersion, cur))
 		return
 	}
-	n.reportCommandFailure(ctx, m.CommandID, "version_not_confirmed",
-		fmt.Sprintf("expected %s got %s", m.TargetVersion, cur))
-	n.clearUpdateMarker()
+
+	st := n.Status()
+	st.Healthy = st.ComputeHealthy()
+	if !st.Healthy {
+		n.finishUpdateLocal(ctx, m, false, "health_failed",
+			"runtime unhealthy after update (cp/tun/ticket keys/datapath)")
+		return
+	}
+
+	n.finishUpdateLocal(ctx, m, true, "updated", "Runtime version and health confirmed: "+cur)
+}
+
+func (n *Node) finishUpdateLocal(ctx context.Context, m updateMarker, success bool, code, message string) {
+	m.ResultPending = true
+	m.ResultSuccess = success
+	m.ResultCode = code
+	m.ResultMessage = message
+	m.Phase = "ResultPending"
+	m.LastUpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := n.writeUpdateMarker(m); err != nil {
+		log.Printf("runtime: update marker result write: %v", err)
+	}
+	n.completePendingUpdate(ctx)
 }
 
 func startUpdateUnit() error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("update unit unsupported on %s", runtime.GOOS)
 	}
-	cmd := exec.Command("systemctl", "start", nyxveilUpdateUnit)
+	cmd := exec.Command("systemctl", "start", "--no-block", nyxveilUpdateUnit)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
-}
-
-func resolveLatestStableServerVersion(ctx context.Context) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		"https://api.github.com/repos/Moroz1212/Nyxveil/releases?per_page=40", nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "nyxveil-server")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("github releases: %s", resp.Status)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return "", err
-	}
-	var releases []struct {
-		TagName    string `json:"tag_name"`
-		Draft      bool   `json:"draft"`
-		Prerelease bool   `json:"prerelease"`
-	}
-	if err := json.Unmarshal(body, &releases); err != nil {
-		return "", err
-	}
-	var best string
-	for _, r := range releases {
-		if r.Draft || r.Prerelease {
-			continue
-		}
-		m := serverReleaseTag.FindStringSubmatch(strings.TrimSpace(r.TagName))
-		if len(m) != 2 {
-			continue
-		}
-		ver := m[1]
-		if strings.Contains(ver, "-") {
-			continue
-		}
-		if best == "" {
-			best = ver
-			continue
-		}
-		cmp, err := compareSemVer(ver, best)
-		if err == nil && cmp > 0 {
-			best = ver
-		}
-	}
-	if best == "" {
-		return "", fmt.Errorf("no stable server-v release found")
-	}
-	return best, nil
 }
 
 func compareSemVer(a, b string) (int, error) {
@@ -244,22 +193,6 @@ func parseSemVerParts(v string) ([3]int, error) {
 	return out, nil
 }
 
-func downloadBytes(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("download %s: %s", url, resp.Status)
-	}
-	return io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-}
-
 func (n *Node) updateMarkerPath() string {
 	base := filepath.Dir(paths.CommandsState())
 	if n.opts.KeyPath != "" {
@@ -268,11 +201,16 @@ func (n *Node) updateMarkerPath() string {
 	return filepath.Join(base, "management", updateMarkerName)
 }
 
-func (n *Node) writeUpdateMarker(m updateMarker) {
+func (n *Node) writeUpdateMarker(m updateMarker) error {
 	path := n.updateMarkerPath()
-	_ = os.MkdirAll(filepath.Dir(path), 0o700)
-	raw, _ := json.MarshalIndent(m, "", "  ")
-	_ = os.WriteFile(path, raw, 0o600)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return filemeta.AtomicWrite(path, raw, 0o600, -1, -1)
 }
 
 func (n *Node) readUpdateMarker() (updateMarker, bool) {
@@ -287,6 +225,33 @@ func (n *Node) readUpdateMarker() (updateMarker, bool) {
 	return m, true
 }
 
-func (n *Node) clearUpdateMarker() {
-	_ = os.Remove(n.updateMarkerPath())
+func (n *Node) clearUpdateMarker() error {
+	err := os.Remove(n.updateMarkerPath())
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// ReadPinnedUpdateTarget exposes the durable marker target for nyxveilctl update.
+func ReadPinnedUpdateTarget(stateDir string) (string, bool) {
+	path := filepath.Join(stateDir, "management", updateMarkerName)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var m updateMarker
+	if json.Unmarshal(raw, &m) != nil {
+		return "", false
+	}
+	v := strings.TrimSpace(strings.TrimPrefix(m.TargetVersion, "v"))
+	if v == "" {
+		return "", false
+	}
+	return v, true
+}
+
+// ManifestURLForPinnedTarget builds the fixed-repo manifest URL for a pinned version.
+func ManifestURLForPinnedTarget(ver string) string {
+	return updater.ManifestURLForVersion(ver)
 }
