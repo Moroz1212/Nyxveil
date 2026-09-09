@@ -514,11 +514,12 @@ else
   record CP_CONNECTION FAIL "no status"
 fi
 
-# Identity after restart
+# Identity after restart — node_id lives in server.json (not a separate state file).
 NODE_ID_BEFORE=""
 NODE_KEY_HASH_BEFORE=""
-if [[ -f /var/lib/nyxveil/node_id ]]; then
-  NODE_ID_BEFORE="$(tr -d '\r[:space:]' </var/lib/nyxveil/node_id)"
+SERVER_JSON="${SERVER_JSON:-/etc/nyxveil/server.json}"
+if [[ -f "${SERVER_JSON}" ]]; then
+  NODE_ID_BEFORE="$(sed -n 's/.*"node_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${SERVER_JSON}" | head -n1 || true)"
 fi
 if [[ -f /var/lib/nyxveil/node.key ]]; then
   if command -v sha256sum >/dev/null 2>&1; then
@@ -538,8 +539,8 @@ systemctl restart nyxveil-server.service
 sleep 3
 NODE_ID_AFTER=""
 NODE_KEY_HASH_AFTER=""
-if [[ -f /var/lib/nyxveil/node_id ]]; then
-  NODE_ID_AFTER="$(tr -d '\r[:space:]' </var/lib/nyxveil/node_id)"
+if [[ -f "${SERVER_JSON}" ]]; then
+  NODE_ID_AFTER="$(sed -n 's/.*"node_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${SERVER_JSON}" | head -n1 || true)"
 fi
 if [[ -f /var/lib/nyxveil/node.key ]] && command -v sha256sum >/dev/null 2>&1; then
   NODE_KEY_HASH_AFTER="$(sha256sum /var/lib/nyxveil/node.key | awk '{print $1}')"
@@ -561,13 +562,24 @@ else
   record RESTART_TEST FAIL "unhealthy after restart"
 fi
 
-# TLS files
-TLS_CERT=/etc/nyxveil/tls.crt
-TLS_KEY=/etc/nyxveil/tls.key
-if [[ -f "${TLS_CERT}" && -f "${TLS_KEY}" ]]; then
+# TLS files — canonical production paths from server.json (fallback: /var/lib/nyxveil).
+TLS_CERT="/var/lib/nyxveil/tls.crt"
+TLS_KEY="/var/lib/nyxveil/tls.key"
+if [[ -f "${SERVER_JSON:-/etc/nyxveil/server.json}" ]]; then
+  cfg_cert="$(sed -n 's/.*"tls_cert_file"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${SERVER_JSON:-/etc/nyxveil/server.json}" | head -n1 || true)"
+  cfg_key="$(sed -n 's/.*"tls_key_file"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${SERVER_JSON:-/etc/nyxveil/server.json}" | head -n1 || true)"
+  [[ -n "${cfg_cert}" ]] && TLS_CERT="${cfg_cert}"
+  [[ -n "${cfg_key}" ]] && TLS_KEY="${cfg_key}"
+fi
+if [[ "${TLS_CERT}" == /etc/nyxveil/tls.crt || "${TLS_KEY}" == /etc/nyxveil/tls.key ]]; then
+  record TLS_FILES FAIL "tls paths must not use /etc/nyxveil (got cert=${TLS_CERT} key=${TLS_KEY})"
+  record TLS_PARSE NOT_EXECUTED "bad path"
+  record TLS_SAN NOT_EXECUTED "bad path"
+  record TLS_EXPIRY NOT_EXECUTED "bad path"
+elif [[ -f "${TLS_CERT}" && -f "${TLS_KEY}" ]]; then
   km="$(stat -c '%a' "${TLS_KEY}" 2>/dev/null || echo "?")"
   if [[ "${km}" == "600" || "${km}" == "0600" ]]; then
-    record TLS_FILES PASS "tls.crt+tls.key key_mode=${km}"
+    record TLS_FILES PASS "tls.crt+tls.key key_mode=${km} cert=${TLS_CERT}"
   else
     record TLS_FILES FAIL "tls.key mode=${km}"
   fi
@@ -597,7 +609,7 @@ if [[ -f "${TLS_CERT}" && -f "${TLS_KEY}" ]]; then
     record TLS_EXPIRY SKIP "openssl not available"
   fi
 else
-  record TLS_FILES FAIL "tls.crt/tls.key missing"
+  record TLS_FILES FAIL "missing cert=${TLS_CERT} key=${TLS_KEY}"
   record TLS_PARSE NOT_EXECUTED "no cert"
   record TLS_SAN NOT_EXECUTED "no cert"
   record TLS_EXPIRY NOT_EXECUTED "no cert"

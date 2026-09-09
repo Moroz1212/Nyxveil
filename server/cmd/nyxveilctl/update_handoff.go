@@ -34,6 +34,7 @@ type updateTransaction struct {
 	OwnerPID          int                           `json:"owner_pid"`
 	CreatedAt         time.Time                     `json:"created_at"`
 	ProcessCLIAtStart string                        `json:"process_cli_at_start"`
+	PreviousVersion   string                        `json:"previous_version,omitempty"`
 }
 
 const (
@@ -49,8 +50,9 @@ const (
 
 // Test hooks (overridable).
 var (
-	rollbackEnforceTLS   = filemeta.EnforceRuntimeTLS
-	rollbackVerifyHealth = func(pre health.Baseline, seconds int) (health.RollbackResult, bool) {
+	rollbackEnforceTLS      = filemeta.EnforceRuntimeTLS
+	rollbackConfirmPrevious = assertVersionsMatchTarget
+	rollbackVerifyHealth    = func(pre health.Baseline, seconds int) (health.RollbackResult, bool) {
 		return verifyRollbackHealth(pre, seconds)
 	}
 )
@@ -316,6 +318,17 @@ func rollbackAcrossHandoff(tx *updateTransaction) error {
 	} else {
 		fmt.Printf("rollback_complete=true baseline_restored=true\n")
 	}
+
+	prev := strings.TrimSpace(tx.PreviousVersion)
+	if prev == "" {
+		fmt.Printf("rollback_complete=false reason=previous_version_unknown\n")
+		return markRollbackFailed(tx, fmt.Errorf("previous version confirmation failed: previous version unknown"))
+	}
+	if err := rollbackConfirmPrevious(prev); err != nil {
+		fmt.Printf("rollback_complete=false reason=previous_version_mismatch detail=%v\n", err)
+		return markRollbackFailed(tx, fmt.Errorf("previous version confirmation failed: %w", err))
+	}
+	fmt.Printf("rollback_previous_version_confirmed=%s\n", prev)
 
 	tx.Phase = txPhaseRolledBackHealthy
 	if err := writeUpdateTransaction(tx); err != nil {

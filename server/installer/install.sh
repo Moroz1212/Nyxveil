@@ -908,9 +908,14 @@ verify_release_manifest() {
 http_get() {
   local url="$1"
   local dest="$2"
+  local connect_timeout="${NYXVEIL_HTTP_CONNECT_TIMEOUT_SEC:-10}"
+  local max_time="${NYXVEIL_HTTP_MAX_TIME_SEC:-120}"
+  local attempts="${NYXVEIL_HTTP_RETRIES:-3}"
+  local delay=2
+  local i=1
   if [[ "${MOCK}" -eq 1 ]]; then
     if [[ "${url}" == *release-manifest* ]]; then
-      # Unsigned by default вЂ” exercises fail-closed unless test supplies a file.
+      # Unsigned by default — exercises fail-closed unless test supplies a file.
       if [[ -n "${NYXVEIL_INSTALL_MOCK_MANIFEST:-}" && -f "${NYXVEIL_INSTALL_MOCK_MANIFEST}" ]]; then
         cp -a "${NYXVEIL_INSTALL_MOCK_MANIFEST}" "${dest}"
       else
@@ -923,7 +928,26 @@ EOF
     printf 'mock-binary\n' > "${dest}"
     return 0
   fi
-  curl -fsSL -o "${dest}" "${url}" || die "download failed: ${url}"
+  rm -f "${dest}" "${dest}.partial"
+  while [[ "${i}" -le "${attempts}" ]]; do
+    if curl -fsSL --connect-timeout "${connect_timeout}" --max-time "${max_time}" \
+         -o "${dest}.partial" "${url}"; then
+      mv -f "${dest}.partial" "${dest}"
+      return 0
+    fi
+    rm -f "${dest}.partial"
+    if [[ "${i}" -ge "${attempts}" ]]; then
+      break
+    fi
+    warn "download attempt ${i}/${attempts} failed for ${url}; retrying in ${delay}s"
+    sleep "${delay}"
+    delay=$((delay * 2))
+    if [[ "${delay}" -gt 30 ]]; then
+      delay=30
+    fi
+    i=$((i + 1))
+  done
+  die "download failed after ${attempts} attempt(s) (connect-timeout=${connect_timeout}s max-time=${max_time}s): ${url}"
 }
 
 download_or_copy_binaries() {

@@ -49,11 +49,16 @@ func TestRealSelfUpdateOldProcessDoesNotFailCliVersion(t *testing.T) {
 	buildCtlWithVersion(t, root, oldCtl, oldProcess)
 	buildCtlWithVersion(t, root, newCtl, want)
 	buildServerWithVersion(t, root, serverBin, want)
+	oldServer := filepath.Join(bin, "nyxveil-server-old")
+	if runtime.GOOS == "windows" {
+		oldServer += ".exe"
+	}
+	buildServerWithVersion(t, root, oldServer, oldProcess)
 
 	if err := copyFileBytes(oldCtl, filepath.Join(state, "nyxveilctl.prev")); err != nil {
 		t.Fatal(err)
 	}
-	if err := copyFileBytes(serverBin, filepath.Join(state, "nyxveil-server.prev")); err != nil {
+	if err := copyFileBytes(oldServer, filepath.Join(state, "nyxveil-server.prev")); err != nil {
 		t.Fatal(err)
 	}
 	_ = os.WriteFile(filepath.Join(share, "VERSION"), []byte(want+"\n"), 0o644)
@@ -102,6 +107,7 @@ echo "RESULT=PASS"
 	tx := &updateTransaction{
 		ID:                "test-tx-1",
 		TargetVersion:     want,
+		PreviousVersion:   oldProcess,
 		ServerPath:        serverBin,
 		CtlPath:           newCtl,
 		CtlPrev:           filepath.Join(state, "nyxveilctl.prev"),
@@ -289,20 +295,24 @@ func TestRollbackAcrossHandoffHealthyPath(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(state, "nyxveil-server.prev"), []byte("OLD"), 0o755)
 	_ = os.WriteFile(filepath.Join(state, "nyxveilctl.prev"), []byte("OLDCTL"), 0o755)
 
+	tx := &updateTransaction{
+		ID:              "rb-healthy",
+		TargetVersion:   "9.9.9",
+		PreviousVersion: "1.1.10",
+		ServerPath:      server,
+		CtlPath:         ctl,
+		CtlPrev:         filepath.Join(state, "nyxveilctl.prev"),
+		PreBaseline:     health.Baseline{DataplaneOK: true, Running: true, Accepting: true},
+		Phase:           txPhaseResuming,
+		CreatedAt:       time.Now().UTC(),
+	}
 	oldTLS := rollbackEnforceTLS
 	rollbackEnforceTLS = func(string) error { return nil }
 	t.Cleanup(func() { rollbackEnforceTLS = oldTLS })
+	oldConfirm := rollbackConfirmPrevious
+	rollbackConfirmPrevious = func(string) error { return nil }
+	t.Cleanup(func() { rollbackConfirmPrevious = oldConfirm })
 
-	tx := &updateTransaction{
-		ID:            "rb-healthy",
-		TargetVersion: "9.9.9",
-		ServerPath:    server,
-		CtlPath:       ctl,
-		CtlPrev:       filepath.Join(state, "nyxveilctl.prev"),
-		PreBaseline:   health.Baseline{DataplaneOK: true, Running: true, Accepting: true},
-		Phase:         txPhaseResuming,
-		CreatedAt:     time.Now().UTC(),
-	}
 	err := rollbackAcrossHandoff(tx)
 	if err == nil {
 		t.Fatal("expected error return after healthy rollback")
@@ -321,6 +331,9 @@ func TestRollbackAcrossHandoffHealthyPath(t *testing.T) {
 	if string(got) != "OLD" {
 		t.Fatalf("server not rolled back: %q", got)
 	}
+	// Windows may lock recently rewritten binaries during TempDir cleanup.
+	_ = os.RemoveAll(bin)
+	_ = os.RemoveAll(state)
 }
 
 func TestRollbackAcrossHandoffBinaryFailure(t *testing.T) {
@@ -339,14 +352,15 @@ func TestRollbackAcrossHandoffBinaryFailure(t *testing.T) {
 	// Intentionally omit *.prev so RollbackInstalled fails.
 
 	tx := &updateTransaction{
-		ID:            "rb-fail",
-		TargetVersion: "9.9.9",
-		ServerPath:    server,
-		CtlPath:       ctl,
-		CtlPrev:       filepath.Join(state, "nyxveilctl.prev"),
-		PreBaseline:   health.Baseline{Running: true},
-		Phase:         txPhaseResuming,
-		CreatedAt:     time.Now().UTC(),
+		ID:              "rb-fail",
+		TargetVersion:   "9.9.9",
+		PreviousVersion: "1.1.10",
+		ServerPath:      server,
+		CtlPath:         ctl,
+		CtlPrev:         filepath.Join(state, "nyxveilctl.prev"),
+		PreBaseline:     health.Baseline{Running: true},
+		Phase:           txPhaseResuming,
+		CreatedAt:       time.Now().UTC(),
 	}
 	err := rollbackAcrossHandoff(tx)
 	if err == nil {
@@ -362,6 +376,8 @@ func TestRollbackAcrossHandoffBinaryFailure(t *testing.T) {
 	if loaded.Phase != txPhaseRollbackFailed {
 		t.Fatalf("phase=%q want %q", loaded.Phase, txPhaseRollbackFailed)
 	}
+	_ = os.RemoveAll(bin)
+	_ = os.RemoveAll(state)
 }
 
 func TestHandoffPostCheckTreatsPhases(t *testing.T) {

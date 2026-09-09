@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 )
 
@@ -28,34 +27,12 @@ func TestInstallerVersionResolution(t *testing.T) {
 
 func runInstallerBashScript(t *testing.T, rel string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		// Authoritative installer bash gates run on Linux Server CI (and via scripts/test-*.sh).
+		t.Skip("installer bash contract tests require Linux")
+	}
 	root := findServerRoot(t)
 	script := filepath.Join(root, filepath.FromSlash(rel))
-
-	if runtime.GOOS == "windows" {
-		if wslOK() {
-			wslRoot := windowsToWSLPath(root)
-			cmd := exec.Command("wsl", "-e", "bash", "-lc", "cd '"+wslRoot+"' && bash "+rel)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("wsl %s: %v\n%s", rel, err, out)
-			}
-			t.Log(string(out))
-			return
-		}
-		bash, err := exec.LookPath("bash")
-		if err != nil {
-			t.Skip("windows without working WSL/bash: run " + rel + " on Linux")
-		}
-		cmd := exec.Command(bash, script)
-		cmd.Dir = root
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git-bash %s: %v\n%s", rel, err, out)
-		}
-		t.Log(string(out))
-		return
-	}
-
 	cmd := exec.Command("bash", script)
 	cmd.Dir = root
 	out, err := cmd.CombinedOutput()
@@ -63,22 +40,6 @@ func runInstallerBashScript(t *testing.T, rel string) {
 		t.Fatalf("%s: %v\n%s", rel, err, out)
 	}
 	t.Log(string(out))
-}
-
-func wslOK() bool {
-	if _, err := exec.LookPath("wsl"); err != nil {
-		return false
-	}
-	return exec.Command("wsl", "-e", "true").Run() == nil
-}
-
-func windowsToWSLPath(p string) string {
-	p = filepath.ToSlash(p)
-	if len(p) >= 2 && p[1] == ':' {
-		drive := strings.ToLower(string(p[0]))
-		return "/mnt/" + drive + p[2:]
-	}
-	return p
 }
 
 func findServerRoot(t *testing.T) string {

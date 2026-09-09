@@ -1251,6 +1251,16 @@ func (n *Node) acmeRenewLoop(ctx context.Context) {
 }
 
 func (n *Node) issueACME(ctx context.Context, cfg localconfig.File) (cert tls.Certificate, prevPin, newPin []byte, pinChanged bool, err error) {
+	return n.issueACMEWithOptions(ctx, cfg, false)
+}
+
+// issueACMEForced performs ACME issuance even when the live leaf is still outside
+// the automatic renewal window (explicit RenewCertificate remote command).
+func (n *Node) issueACMEForced(ctx context.Context, cfg localconfig.File) (cert tls.Certificate, prevPin, newPin []byte, pinChanged bool, err error) {
+	return n.issueACMEWithOptions(ctx, cfg, true)
+}
+
+func (n *Node) issueACMEWithOptions(ctx context.Context, cfg localconfig.File, force bool) (cert tls.Certificate, prevPin, newPin []byte, pinChanged bool, err error) {
 	certFile := cfg.TLSCertFile
 	keyFile := cfg.TLSKeyFile
 	if certFile == "" {
@@ -1268,11 +1278,12 @@ func (n *Node) issueACME(ctx context.Context, cfg localconfig.File) (cert tls.Ce
 	live := nodetls.Paths{CertFile: certFile, KeyFile: keyFile}
 	// Reuse a still-fresh live leaf that covers acme_domain — do not open a new
 	// ACME order on every register/start cycle (fresh install + first daemon start).
+	// Explicit RenewCertificate sets force=true to skip this short-circuit.
 	validateLive := n.validateStagedTLS
 	if validateLive == nil {
 		validateLive = configure.ValidateLeafForDomain
 	}
-	if nodetls.Exists(live) && validateLive(certFile, keyFile, domain, time.Now()) == nil {
+	if !force && nodetls.Exists(live) && validateLive(certFile, keyFile, domain, time.Now()) == nil {
 		existing, loadErr := nodetls.Load(live)
 		if loadErr == nil && len(existing.Certificate) > 0 {
 			leaf, parseErr := x509.ParseCertificate(existing.Certificate[0])

@@ -137,8 +137,8 @@ type HeartbeatRequest struct {
 	CertThumbprint         string   `json:"cert_thumbprint,omitempty"`
 	ACMEAutoRenew          *bool    `json:"acme_auto_renew,omitempty"`
 	LastRenewalAttempt     string   `json:"last_renewal_attempt,omitempty"`
-	LastSuccessfulRenewal  string   `json:"last_successful_renewal,omitempty"`
-	NextPlannedRenewal     string   `json:"next_planned_renewal,omitempty"`
+	LastSuccessfulRenewal  string   `json:"last_renewal_success,omitempty"`
+	NextPlannedRenewal     string   `json:"last_renewal_next,omitempty"`
 	LastRenewalError       string   `json:"last_renewal_error,omitempty"`
 	TUNReady               *bool    `json:"tun_ready,omitempty"`
 	TLSOK                  *bool    `json:"tls_ok,omitempty"`

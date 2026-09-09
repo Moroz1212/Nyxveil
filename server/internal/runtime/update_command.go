@@ -47,6 +47,9 @@ func (n *Node) executeUpdateNodeLatest(ctx context.Context, cmd *controlplane.No
 
 	target := strings.TrimSpace(strings.TrimPrefix(cmd.TargetVersion, "v"))
 	if target == "" {
+		if !n.commandStore.TryMarkExecuted(commandID) {
+			return
+		}
 		n.reportCommandFailure(ctx, commandID, "target_missing",
 			"UpdateNodeLatest requires pinned target_version from Control Plane")
 		return
@@ -54,19 +57,29 @@ func (n *Node) executeUpdateNodeLatest(ctx context.Context, cmd *controlplane.No
 
 	cmp, err := compareSemVer(prev, target)
 	if err != nil {
+		if !n.commandStore.TryMarkExecuted(commandID) {
+			return
+		}
 		n.reportCommandFailure(ctx, commandID, "version_parse", err.Error())
 		return
 	}
 	if cmp == 0 {
+		if !n.commandStore.TryMarkExecuted(commandID) {
+			return
+		}
 		n.reportCommandSuccess(ctx, commandID, "already_current", "Already up to date: "+prev)
 		return
 	}
 	if cmp > 0 {
+		if !n.commandStore.TryMarkExecuted(commandID) {
+			return
+		}
 		n.reportCommandSuccess(ctx, commandID, "ahead",
 			"Node version is newer than pinned target; downgrade blocked")
 		return
 	}
 
+	// Durable update marker BEFORE MarkExecuted — crash recovery needs TargetVersion.
 	if err := n.writeUpdateMarker(updateMarker{
 		CommandID:       commandID,
 		PreviousVersion: prev,
@@ -76,6 +89,9 @@ func (n *Node) executeUpdateNodeLatest(ctx context.Context, cmd *controlplane.No
 		LastUpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 	}); err != nil {
 		n.reportCommandFailure(ctx, commandID, "marker_write", err.Error())
+		return
+	}
+	if !n.commandStore.TryMarkExecuted(commandID) {
 		return
 	}
 
@@ -118,7 +134,8 @@ func (n *Node) completePendingUpdate(ctx context.Context) {
 
 	switch {
 	case got == prev && st.Healthy:
-		n.finishUpdateLocal(ctx, m, true, "rolled_back_healthy",
+		// Update failed; previous release restored and proven healthy.
+		n.finishUpdateLocal(ctx, m, false, "rolled_back_healthy",
 			"Runtime rolled back and healthy at previous version: "+cur)
 	case got == target && st.Healthy:
 		n.finishUpdateLocal(ctx, m, true, "updated_healthy",
@@ -212,7 +229,13 @@ func (n *Node) writeUpdateMarker(m updateMarker) error {
 	if err != nil {
 		return err
 	}
-	return filemeta.AtomicWrite(path, raw, 0o600, -1, -1)
+	// Crash-sensitive journal: DurableWrite (fsync temp + rename + dir fsync).
+	if err := filemeta.DurableWrite(path, raw, 0o600); err != nil {
+		return err
+	}
+	uid, gid, _ := filemeta.LookupServiceIDs()
+	_ = filemeta.ApplyOwnerMode(path, uid, gid, 0o600)
+	return nil
 }
 
 func (n *Node) readUpdateMarker() (updateMarker, bool) {

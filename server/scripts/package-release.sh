@@ -25,6 +25,7 @@ REQUIRED_UPLOADS=(
   nyxveilctl-linux-arm64
   nyxveil-catalog-verify-linux-arm64
   production-gate.sh
+  install.sh
   nyxveil-update.service
   50-nyxveil-management.rules
   VERSION
@@ -44,6 +45,7 @@ HASHED_UPLOADS=(
   nyxveilctl-linux-arm64
   nyxveil-catalog-verify-linux-arm64
   production-gate.sh
+  install.sh
   nyxveil-update.service
   50-nyxveil-management.rules
   VERSION
@@ -120,6 +122,11 @@ bash "${ROOT}/scripts/normalize-shell-lf.sh" "${ROOT}/scripts/production-gate.sh
 cp -a "${ROOT}/scripts/production-gate.sh" "${DIST}/production-gate.sh"
 chmod 0755 "${DIST}/production-gate.sh"
 bash "${ROOT}/scripts/normalize-shell-lf.sh" "${DIST}/production-gate.sh"
+# Version-pinned production installer (GitHub Release asset; not floating main raw URL).
+bash "${ROOT}/scripts/normalize-shell-lf.sh" "${ROOT}/installer/install.sh"
+cp -a "${ROOT}/installer/install.sh" "${DIST}/install.sh"
+chmod 0755 "${DIST}/install.sh"
+bash "${ROOT}/scripts/normalize-shell-lf.sh" "${DIST}/install.sh"
 cp -a "${ROOT}/systemd/nyxveil-update.service" "${DIST}/nyxveil-update.service"
 cp -a "${ROOT}/systemd/50-nyxveil-management.rules" "${DIST}/50-nyxveil-management.rules"
 chmod 0644 "${DIST}/nyxveil-update.service" "${DIST}/50-nyxveil-management.rules"
@@ -186,6 +193,7 @@ bash "${ROOT}/scripts/normalize-shell-lf.sh" \
   "${DIST}/bootstrap-cli-update.sh" \
   "${DIST}/live-final-update.sh" \
   "${DIST}/production-gate.sh" \
+  "${DIST}/install.sh" \
   "${DIST}/nyxveil-update.service" \
   "${DIST}/50-nyxveil-management.rules"
 bash "${ROOT}/scripts/assert-no-crlf.sh" \
@@ -195,6 +203,7 @@ bash "${ROOT}/scripts/assert-no-crlf.sh" \
   "${DIST}/bootstrap-cli-update.sh" \
   "${DIST}/live-final-update.sh" \
   "${DIST}/production-gate.sh" \
+  "${DIST}/install.sh" \
   "${DIST}/nyxveil-update.service" \
   "${DIST}/50-nyxveil-management.rules" \
   "${DIST}/linux-amd64/scripts" "${DIST}/linux-arm64/scripts" \
@@ -222,6 +231,7 @@ Canonical release assets (exact names):
   nyxveilctl-linux-{amd64,arm64}
   nyxveil-catalog-verify-linux-{amd64,arm64}
   production-gate.sh
+  install.sh
   nyxveil-update.service
   50-nyxveil-management.rules
   VERSION
@@ -230,6 +240,12 @@ Canonical release assets (exact names):
   bootstrap-cli-update.sh
   live-final-update.sh
   SHA256SUMS
+
+Version-pinned clean install (preferred over floating main raw URL):
+  BASE=https://github.com/Moroz1212/Nyxveil/releases/download/server-v${VERSION}
+  curl -fsSLO "\$BASE/install.sh" "\$BASE/SHA256SUMS" && \\
+  tr -d '\\r' < SHA256SUMS | grep -E ' [*]?install.sh\$' | sha256sum -c - && \\
+  chmod 0755 install.sh && sudo ./install.sh ...
 
 After update, production gate MUST exist at:
   /usr/local/share/nyxveil/scripts/production-gate.sh

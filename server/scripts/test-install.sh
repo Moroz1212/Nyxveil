@@ -40,8 +40,11 @@ required=(
   scripts/test-installer-version-resolution.sh
   scripts/test-bounded-runuser-timeout.sh
   scripts/test-remote-update-gate-contract.sh
+  scripts/test-remote-cert-renewal-gate-contract.sh
+  scripts/test-bounded-http-get.sh
   scripts/test-post-registration-identity.sh
   scripts/remote-update-location-gate.sh
+  scripts/remote-certificate-renewal-gate.sh
   scripts/clean-host-install-gate.sh
   scripts/serv_wrappers.sh
   README.md
@@ -100,6 +103,21 @@ check "unit no /etc write path" \
   bash -c '! grep -E "ReadWritePaths=.* /etc/nyxveil" systemd/nyxveil-server.service'
 check "embedded wrappers include update" \
   grep -q 'version config configure update uninstall' installer/install.sh
+
+check "bounded http_get connect-timeout" \
+  grep -q 'NYXVEIL_HTTP_CONNECT_TIMEOUT_SEC' installer/install.sh
+check "bounded http_get max-time" \
+  grep -q 'NYXVEIL_HTTP_MAX_TIME_SEC' installer/install.sh
+check "package ships versioned install.sh" \
+  grep -q 'install.sh' scripts/package-release.sh
+check "verify-release requires install.sh" \
+  grep -q 'install.sh' scripts/verify-release.sh
+check "clean-host gate reads server.json node_id" \
+  bash -c '! grep -q /var/lib/nyxveil/node_id scripts/clean-host-install-gate.sh'
+check "clean-host gate no /etc/nyxveil/tls.crt default" \
+  bash -c '! grep -E "TLS_CERT=/?\"?/etc/nyxveil/tls.crt" scripts/clean-host-install-gate.sh'
+check "remote cert renewal gate exists" \
+  test -f scripts/remote-certificate-renewal-gate.sh
 
 echo "== LF line endings (shell scripts) =="
 if command -v file >/dev/null 2>&1; then

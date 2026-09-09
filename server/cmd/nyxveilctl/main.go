@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -382,6 +383,7 @@ func runUpdate(args []string) error {
 			OwnerPID:          os.Getpid(),
 			CreatedAt:         time.Now().UTC(),
 			ProcessCLIAtStart: version.CLIVersion,
+			PreviousVersion:   version.ServerVersion,
 		}
 		if err := writeUpdateTransaction(tx); err != nil {
 			fmt.Printf("update_success=false reason=transaction_journal detail=%v\n", err)
@@ -475,10 +477,17 @@ func execInstalledProductionGate() error {
 	if err != nil {
 		return fmt.Errorf("bash required to run production gate: %w", err)
 	}
-	cmd := exec.Command(bash, gate)
+	raw, err := os.ReadFile(gate)
+	if err != nil {
+		return fmt.Errorf("read production gate: %w", err)
+	}
+	// Windows checkouts may ship CRLF; shebang + \r yields "No such file or directory".
+	raw = bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+	raw = bytes.ReplaceAll(raw, []byte("\r"), []byte("\n"))
+	cmd := exec.Command(bash, "-s", "--", gate)
+	cmd.Stdin = bytes.NewReader(raw)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
 	env := append([]string{}, os.Environ()...)
 	env = append(env, "GATE_MODE="+mode)
 	cmd.Env = env

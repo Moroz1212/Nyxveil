@@ -27,6 +27,7 @@ for arch in amd64 arm64; do
 done
 
 [[ -x "${DIST}/production-gate.sh" ]] || die "production-gate.sh is not executable"
+[[ -x "${DIST}/install.sh" ]] || die "install.sh is not executable"
 [[ -f "${DIST}/nyxveil-update.service" ]] || die "nyxveil-update.service missing"
 [[ -f "${DIST}/50-nyxveil-management.rules" ]] || die "50-nyxveil-management.rules missing"
 [[ -x "${DIST}/bootstrap-cli-update.sh" ]] || die "bootstrap-cli-update.sh is missing or not executable"
@@ -34,6 +35,7 @@ done
 bash -n "${DIST}/bootstrap-cli-update.sh"
 bash -n "${DIST}/live-final-update.sh"
 bash -n "${DIST}/production-gate.sh"
+bash -n "${DIST}/install.sh"
 
 bash "${ROOT}/scripts/assert-no-crlf.sh" \
   "${DIST}/VERSION" \
@@ -42,6 +44,7 @@ bash "${ROOT}/scripts/assert-no-crlf.sh" \
   "${DIST}/bootstrap-cli-update.sh" \
   "${DIST}/live-final-update.sh" \
   "${DIST}/production-gate.sh" \
+  "${DIST}/install.sh" \
   "${DIST}/nyxveil-update.service" \
   "${DIST}/50-nyxveil-management.rules"
 

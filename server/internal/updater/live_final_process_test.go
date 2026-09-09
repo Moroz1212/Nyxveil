@@ -1,6 +1,7 @@
 package updater_test
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -61,7 +62,7 @@ func TestMissingVersionFailsBeforeModification(t *testing.T) {
 	if err != nil {
 		t.Skip("bash required")
 	}
-	cmd := exec.Command(bash, dst, "--base-url", base)
+	cmd := exec.Command(bash, msysPath(dst), "--base-url", base)
 	cmd.Dir = work
 	cmd.Env = liveFinalEnv(t, "NYXVEIL_BIN_DIR="+bin)
 	if out, err := cmd.CombinedOutput(); err == nil {
@@ -87,7 +88,7 @@ func TestMissingBootstrapFailsBeforeModification(t *testing.T) {
 	if err != nil {
 		t.Skip("bash required")
 	}
-	cmd := exec.Command(bash, dst, "--base-url", fx.base)
+	cmd := exec.Command(bash, msysPath(dst), "--base-url", fx.base)
 	cmd.Dir = work
 	cmd.Env = liveFinalEnv(t, "NYXVEIL_BIN_DIR="+bin)
 	if out, err := cmd.CombinedOutput(); err == nil {
@@ -117,7 +118,7 @@ func TestTamperedBootstrapFails(t *testing.T) {
 	if err != nil {
 		t.Skip("bash required")
 	}
-	cmd := exec.Command(bash, dst, "--base-url", fx.base, "--verify-chain")
+	cmd := exec.Command(bash, msysPath(dst), "--base-url", fx.base, "--verify-chain")
 	cmd.Dir = work
 	cmd.Env = liveFinalEnv(t, "NYXVEIL_BIN_DIR="+bin)
 	if out, err := cmd.CombinedOutput(); err == nil {
@@ -149,7 +150,7 @@ func TestTamperedCtlFails(t *testing.T) {
 	if err != nil {
 		t.Skip("bash required")
 	}
-	cmd := exec.Command(bash, dst, "--base-url", fx.base)
+	cmd := exec.Command(bash, msysPath(dst), "--base-url", fx.base)
 	cmd.Dir = work
 	cmd.Env = liveFinalEnv(t,
 		"NYXVEIL_BIN_DIR="+bin,
@@ -194,6 +195,11 @@ func liveFinalEnv(t *testing.T, extra ...string) []string {
 
 func runLiveFinalProcessFixture(t *testing.T, opts fixtureOpts) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		// Git Bash/WSL curl and Windows Go httptest loopback are not reliably shared.
+		// Linux Server CI is the authoritative live-final process gate.
+		t.Skip("live-final process fixtures require Linux")
+	}
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash required")
 	}
@@ -227,7 +233,19 @@ func runLiveFinalProcessFixture(t *testing.T, opts fixtureOpts) {
 		args = append(args, "--verify-chain")
 	}
 
-	cmd := exec.Command("bash", args...)
+	scriptArgs := args[1:] // drop script path; feed script via stdin (Windows path/WSL-safe).
+	raw, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+	raw = bytes.ReplaceAll(raw, []byte("\r"), []byte("\n"))
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash required")
+	}
+	cmd := exec.Command(bash, append([]string{"-s", "--"}, scriptArgs...)...)
+	cmd.Stdin = bytes.NewReader(raw)
 	cmd.Dir = work
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
@@ -545,12 +563,19 @@ func copyFile(t *testing.T, src, dst string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Normalize CRLF for shell scripts copied onto Windows.
-	if strings.HasSuffix(src, ".sh") {
-		b = []byte(strings.ReplaceAll(string(b), "\r\n", "\n"))
-		b = []byte(strings.ReplaceAll(string(b), "\r", ""))
+	if strings.HasSuffix(strings.ToLower(dst), ".sh") || strings.HasSuffix(strings.ToLower(src), ".sh") {
+		b = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+		b = bytes.ReplaceAll(b, []byte("\r"), []byte("\n"))
 	}
 	if err := os.WriteFile(dst, b, 0o755); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func msysPath(p string) string {
+	p = filepath.ToSlash(p)
+	if runtime.GOOS != "windows" || len(p) < 2 || p[1] != ':' {
+		return p
+	}
+	return "/" + strings.ToLower(string(p[0])) + p[2:]
 }

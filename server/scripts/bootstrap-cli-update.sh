@@ -88,7 +88,7 @@ if [[ -n "${MANIFEST_FILE}" ]]; then
   cp -a "${MANIFEST_FILE}" "${MANIFEST}"
 else
   log "fetching ${BASE_URL}/release-manifest-linux-${ARCH}.json"
-  curl -fsSL "${BASE_URL}/release-manifest-linux-${ARCH}.json" -o "${MANIFEST}" \
+  curl -fsSL --connect-timeout 10 --max-time 120 "${BASE_URL}/release-manifest-linux-${ARCH}.json" -o "${MANIFEST}" \
     || die "manifest download failed"
 fi
 
@@ -110,7 +110,7 @@ if [[ -n "${CTL_FILE}" ]]; then
   cp -a "${CTL_FILE}" "${NEW_CTL}"
 else
   log "fetching nyxveilctl asset"
-  curl -fsSL "${CTL_URL}" -o "${NEW_CTL}" || die "ctl download failed (old CLI left intact)"
+  curl -fsSL --connect-timeout 10 --max-time 300 "${CTL_URL}" -o "${NEW_CTL}" || die "ctl download failed (old CLI left intact)"
 fi
 GOT_SHA="$(sha256sum "${NEW_CTL}" | awk '{print $1}')"
 [[ "${GOT_SHA}" == "${CTL_SHA}" ]] || die "sha256 mismatch for nyxveilctl (old CLI left intact)"

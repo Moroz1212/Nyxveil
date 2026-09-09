@@ -52,6 +52,10 @@ jobs:
         run: bash scripts/test-bounded-runuser-timeout.sh
       - name: Remote update gate API contract
         run: bash scripts/test-remote-update-gate-contract.sh
+      - name: Remote certificate renewal gate contract
+        run: bash scripts/test-remote-cert-renewal-gate-contract.sh
+      - name: Bounded installer HTTP downloads
+        run: bash scripts/test-bounded-http-get.sh
       - name: Race tests (Linux)
         run: go test -race -timeout 300s ./internal/runtime ./internal/updater ./internal/listeners ./internal/netcfg
 
@@ -68,6 +72,8 @@ jobs:
         run: bash scripts/build-release.sh
       - name: Package release (unsigned manifests)
         run: bash scripts/package-release.sh
+      - name: Verify release
+        run: bash scripts/verify-release.sh
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -75,6 +81,8 @@ jobs:
           path: |
             server/dist/bin/**
             server/dist/release/SHA256SUMS
+            server/dist/release/UPLOAD-LIST-server-v*.txt
+            server/dist/release/install.sh
             server/dist/release/release-manifest-linux-*.json
             server/dist/release/nyxveil-*-linux-*
             server/dist/release/*.tar.gz

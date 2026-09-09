@@ -30,6 +30,7 @@ REQUIRED=(
   nyxveilctl-linux-arm64
   nyxveil-catalog-verify-linux-arm64
   production-gate.sh
+  install.sh
   nyxveil-update.service
   50-nyxveil-management.rules
   VERSION
@@ -50,6 +51,7 @@ HASHED=(
   nyxveilctl-linux-arm64
   nyxveil-catalog-verify-linux-arm64
   production-gate.sh
+  install.sh
   nyxveil-update.service
   50-nyxveil-management.rules
   VERSION
@@ -99,6 +101,7 @@ bash "${ROOT}/scripts/assert-no-crlf.sh" \
   "${DIST}/bootstrap-cli-update.sh" \
   "${DIST}/live-final-update.sh" \
   "${DIST}/production-gate.sh" \
+  "${DIST}/install.sh" \
   "${DIST}/nyxveil-update.service" \
   "${DIST}/50-nyxveil-management.rules" \
   "${DIST}/linux-amd64/scripts" \
@@ -112,6 +115,10 @@ bash "${ROOT}/scripts/assert-no-crlf.sh" \
 echo "==> production-gate.sh parses under bash and is executable"
 [[ -x "${DIST}/production-gate.sh" ]] || die "production-gate.sh must be executable"
 bash -n "${DIST}/production-gate.sh"
+
+echo "==> install.sh parses under bash and is executable"
+[[ -x "${DIST}/install.sh" ]] || die "install.sh must be executable"
+bash -n "${DIST}/install.sh"
 
 echo "==> bootstrap-cli-update.sh parses under bash"
 bash -n "${DIST}/bootstrap-cli-update.sh"
