@@ -56,23 +56,23 @@ fi
 
 echo "== trailing newline check =="
 for man in "${AMD64}" "${ARM64}"; do
-  out="$(mktemp)"
-  bash "${INSTALLER}" --dump-canonical "${man}" > "${out}"
-  len="$(wc -c < "${out}" | tr -d ' ')"
-  last="$(tail -c 1 "${out}" | od -An -tx1 | tr -d ' \n')"
-  if [[ "${last}" == "0a" ]]; then
-    fail "TRAILING NEWLINE present in canonical for ${man}"
-  else
-    pass "no trailing LF for $(basename "${man}") (len=${len} last=0x${last})"
+  # Unsigned GitHub-trust model: manifests are consumed as published file bytes
+  # (no Ed25519 canonicalization / --dump-canonical).
+  if [[ ! -s "${man}" ]]; then
+    fail "manifest empty: ${man}"
+    continue
   fi
-  rm -f "${out}"
+  last="$(tail -c 1 "${man}" | od -An -tx1 | tr -d ' \n')"
+  # Published JSON may end with LF; that is fine for ParseManifest. We only
+  # assert the file is non-empty and readable.
+  pass "manifest readable $(basename "${man}") (last=0x${last:-00})"
 done
 
-echo "== Go ParseManifest + shell↔Go byte equality =="
-if go test -timeout 60s -run 'TestProductionManifestsParseAndMatchKnownAMD64SHA|TestShellCanonicalBytesMatchGo|TestShellVerifyProductionManifests' ./internal/updater/; then
-  pass "SHELL ↔ GO CANONICAL BYTES / Go ParseManifest"
+echo "== Go ParseManifest + published SHA pin =="
+if go test -timeout 60s -run 'TestProductionManifestsParseAndMatchKnownAMD64SHA' ./internal/updater/; then
+  pass "GO ParseManifest / published SHA pin"
 else
-  fail "SHELL ↔ GO CANONICAL BYTES"
+  fail "GO ParseManifest / published SHA pin"
 fi
 
 echo "== curl pipe BASH_SOURCE =="
