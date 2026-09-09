@@ -58,6 +58,8 @@ func ApplyNyxveilFirewall(opts FirewallOpts) error {
 	if out, err := exec.Command("nft", "-f", opts.NFTFile).CombinedOutput(); err != nil {
 		return fmt.Errorf("configure: nft -f %s: %w (%s)", opts.NFTFile, err, strings.TrimSpace(string(out)))
 	}
+	// Unit restart also loads the file; conf must contain `destroy table` so
+	// ExecStart cannot accumulate duplicate rules.
 	return reloadFirewallUnit()
 }
 

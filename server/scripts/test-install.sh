@@ -39,10 +39,14 @@ required=(
   scripts/test-installer-management-assets.sh
   scripts/test-installer-version-resolution.sh
   scripts/test-bounded-runuser-timeout.sh
+  scripts/test-acme-privileged-bind.sh
+  scripts/test-nftables-idempotency.sh
+  scripts/assert-release-bytes-identity.sh
   scripts/test-remote-update-gate-contract.sh
   scripts/test-remote-cert-renewal-gate-contract.sh
   scripts/test-bounded-http-get.sh
   scripts/test-post-registration-identity.sh
+  scripts/test-clean-host-gate-contract.sh
   scripts/remote-update-location-gate.sh
   scripts/remote-certificate-renewal-gate.sh
   scripts/clean-host-install-gate.sh

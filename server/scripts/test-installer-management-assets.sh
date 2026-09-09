@@ -110,7 +110,7 @@ write_asset() {
 # Build a canonical 8-asset unsigned manifest (production destinations).
 write_full_manifest() {
   local out="$1"
-  local version="${2:-1.1.11}"
+  local version="${2:-1.1.12}"
   local arch="${3:-linux/amd64}"
   cat > "${out}" <<EOF
 {
@@ -137,7 +137,7 @@ run_remote_mock() {
   local manifest="$2"
   shift 2
   # Pin version so mocks never call live GitHub Releases API (rate-limit / 403).
-  NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.11}" \
+  NYXVEIL_VERSION="${NYXVEIL_VERSION:-1.1.12}" \
   NYXVEIL_INSTALL_MOCK=1 \
   NYXVEIL_INSTALL_MOCK_ROOT="${mock_root}" \
   NYXVEIL_INSTALL_MOCK_MANIFEST="${manifest}" \

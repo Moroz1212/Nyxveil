@@ -199,7 +199,7 @@ case "${MODE}" in
   *) fail "mode" "GATE_MODE must be source|local|live" ;;
 esac
 
-EXPECTED_VERSION="${NYXVEIL_EXPECTED_VERSION:-1.1.11}"
+EXPECTED_VERSION="${NYXVEIL_EXPECTED_VERSION:-1.1.12}"
 SHARE_DIR="${NYXVEIL_SHARE_DIR:-/usr/local/share/nyxveil}"
 SHARE_VERSION_FILE="${NYXVEIL_SHARE_VERSION:-${SHARE_DIR}/VERSION}"
 VERSION="$(tr -d '\r[:space:]' < "${ROOT}/VERSION" 2>/dev/null || true)"

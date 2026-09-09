@@ -32,16 +32,22 @@ else
   fail "run_as_nyxveil_bounded missing"
 fi
 
-# Production shape must be: runuser/setpriv OUTER, timeout wraps REAL executable.
-if grep -qE 'runuser -u nyxveil -- timeout -k' "${INSTALLER}"; then
-  pass "runuser -u nyxveil -- timeout -k … executable pattern"
+# Production shape: transient CAP_NET_BIND_SERVICE via systemd-run or setpriv;
+# timeout wraps the REAL executable; never uncapped runuser for bounded register.
+if grep -q 'AmbientCapabilities=CAP_NET_BIND_SERVICE' "${INSTALLER}"; then
+  pass "systemd-run AmbientCapabilities for registration"
 else
-  fail "missing runuser -u nyxveil -- timeout -k pattern"
+  fail "missing AmbientCapabilities registration path"
 fi
-if grep -qE 'setpriv --reuid=nyxveil' "${INSTALLER}" && grep -qE 'timeout -k' "${INSTALLER}"; then
-  pass "setpriv + timeout -k fallback present"
+if grep -qE 'runuser -u nyxveil -- timeout -k' "${INSTALLER}"; then
+  fail "uncapped runuser+timeout still used for bounded registration"
 else
-  fail "missing setpriv / timeout -k fallback"
+  pass "no uncapped runuser+timeout for bounded registration"
+fi
+if grep -qE 'setpriv --reuid=nyxveil' "${INSTALLER}" && grep -q 'ambient-caps=+net_bind_service' "${INSTALLER}"; then
+  pass "setpriv ambient-caps fallback present"
+else
+  fail "missing setpriv ambient-caps fallback"
 fi
 
 TMP="$(mktemp -d /tmp/nyxveil-bounded-timeout.XXXXXX)"

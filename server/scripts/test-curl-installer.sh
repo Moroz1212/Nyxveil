@@ -173,9 +173,9 @@ rm -f "${PIPE_OUT}"
 echo "== mock fail-closed: incomplete remote download manifest =="
 MOCK_ROOT2="$(mktemp -d /tmp/nyxveil-mock-root2.XXXXXX)"
 INCOMPLETE_MANIFEST="$(mktemp /tmp/nyxveil-incomplete-manifest.XXXXXX.json)"
-printf '%s\n' '{"version":"1.1.11","arch":"linux/amd64"}' > "${INCOMPLETE_MANIFEST}"
+printf '%s\n' '{"version":"1.1.12","arch":"linux/amd64"}' > "${INCOMPLETE_MANIFEST}"
 set +e
-NYXVEIL_VERSION=1.1.11 \
+NYXVEIL_VERSION=1.1.12 \
 NYXVEIL_INSTALL_MOCK=1 NYXVEIL_INSTALL_MOCK_ROOT="${MOCK_ROOT2}" \
 NYXVEIL_INSTALL_MOCK_MANIFEST="${INCOMPLETE_MANIFEST}" \
   bash "${TMP}/alone/install.sh" \

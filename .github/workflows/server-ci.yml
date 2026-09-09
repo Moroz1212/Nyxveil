@@ -52,6 +52,10 @@ jobs:
         run: bash scripts/test-pinned-release-installer.sh
       - name: Bounded runuser/timeout wrapper
         run: bash scripts/test-bounded-runuser-timeout.sh
+      - name: ACME privileged bind / bootstrap secret hygiene
+        run: bash scripts/test-acme-privileged-bind.sh
+      - name: nftables idempotency
+        run: bash scripts/test-nftables-idempotency.sh
       - name: Remote update gate API contract
         run: bash scripts/test-remote-update-gate-contract.sh
       - name: Remote certificate renewal gate contract
@@ -80,6 +84,8 @@ jobs:
         run: bash scripts/verify-release.sh
       - name: Verify artifact set (UPLOAD-LIST complete)
         run: bash scripts/verify-artifact-set.sh
+      - name: Assert release bytes identity
+        run: bash scripts/assert-release-bytes-identity.sh
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

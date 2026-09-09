@@ -24,6 +24,8 @@ func RenderNyxveilNFT(opts FirewallOpts) string {
 	}
 	var b strings.Builder
 	b.WriteString("# Managed by Nyxveil configure — table inet nyxveil only\n")
+	b.WriteString("# destroy makes `nft -f` idempotent (no duplicate rules on re-apply).\n")
+	b.WriteString("destroy table inet nyxveil\n")
 	b.WriteString("table inet nyxveil {\n")
 	b.WriteString("  chain input {\n")
 	b.WriteString("    type filter hook input priority filter - 10; policy accept;\n")

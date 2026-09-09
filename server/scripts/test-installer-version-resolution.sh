@@ -50,7 +50,7 @@ printf '#!/bin/sh\necho mock-server\n' > "${BIN_DIR}/nyxveil-server"
 printf '#!/bin/sh\necho mock-ctl\n' > "${BIN_DIR}/nyxveilctl"
 printf '#!/bin/sh\necho mock-catalog-verify\n' > "${BIN_DIR}/nyxveil-catalog-verify"
 printf '#!/bin/sh\necho mock-gate\n' > "${BIN_DIR}/scripts/production-gate.sh"
-printf '1.1.11\n' > "${BIN_DIR}/VERSION"
+printf '1.1.12\n' > "${BIN_DIR}/VERSION"
 printf '# mock frozen core\n7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b\n' > "${BIN_DIR}/THIRD_PARTY_CORE.md"
 chmod +x "${BIN_DIR}/nyxveil-server" "${BIN_DIR}/nyxveilctl" \
   "${BIN_DIR}/nyxveil-catalog-verify" "${BIN_DIR}/scripts/production-gate.sh"
@@ -110,8 +110,8 @@ set +e
     run_mock_install "${TMP}/local.out"
 )
 set -e
-if grep -q 'using local candidate version from .*VERSION: 1.1.11' "${TMP}/local.out"; then
-  pass "local VERSION file resolved to 1.1.11"
+if grep -q 'using local candidate version from .*VERSION: 1.1.12' "${TMP}/local.out"; then
+  pass "local VERSION file resolved to 1.1.12"
 else
   fail "local VERSION resolution failed"
   cat "${TMP}/local.out" >&2 || true
@@ -178,13 +178,13 @@ while [[ $# -gt 0 ]]; do
     -H) shift 2 ;;
     -fsSL|-f|-s|-S|-L) shift ;;
     http*|HTTP*)
-      # Deliberately unordered: 1.1.9, 1.1.11, 1.1.10 + draft 1.1.12 + prerelease 1.1.13
+      # Deliberately unordered: 1.1.9, 1.1.12, 1.1.10 + draft 1.1.13 + prerelease 1.1.14
       payload='[
         {"tag_name":"server-v1.1.9","draft":false,"prerelease":false},
-        {"tag_name":"server-v1.1.11","draft":false,"prerelease":false},
+        {"tag_name":"server-v1.1.12","draft":false,"prerelease":false},
         {"tag_name":"server-v1.1.10","draft":false,"prerelease":false},
-        {"tag_name":"server-v1.1.12","draft":true,"prerelease":false},
-        {"tag_name":"server-v1.1.13","draft":false,"prerelease":true}
+        {"tag_name":"server-v1.1.13","draft":true,"prerelease":false},
+        {"tag_name":"server-v1.1.14","draft":false,"prerelease":true}
       ]'
       if [[ -n "${out}" ]]; then
         printf '%s\n' "${payload}" >"${out}"
@@ -214,10 +214,10 @@ EOF
 )"
 rc=$?
 set -e
-if [[ "${rc}" -eq 0 && "${resolved_max}" == "1.1.11" ]]; then
-  pass "semver MAX from unordered releases → 1.1.11"
+if [[ "${rc}" -eq 0 && "${resolved_max}" == "1.1.12" ]]; then
+  pass "semver MAX from unordered releases → 1.1.12"
 else
-  fail "semver MAX regression failed (got '${resolved_max:-}' rc=${rc}; want 1.1.11)"
+  fail "semver MAX regression failed (got '${resolved_max:-}' rc=${rc}; want 1.1.12)"
 fi
 
 if [[ "${FAIL}" -ne 0 ]]; then

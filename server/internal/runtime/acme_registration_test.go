@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nyxveil/server/internal/configure"
 	"github.com/nyxveil/server/internal/identity"
 	"github.com/nyxveil/server/internal/localconfig"
 	"github.com/nyxveil/server/internal/nodetls"
@@ -68,6 +69,13 @@ func TestPrepareACMEForRegistration_ACMEFailure(t *testing.T) {
 	if pin != nil || staged != nil {
 		t.Fatal("must not return staged material on ACME failure")
 	}
+	stageCert, stageKey := configure.StagingTLSPaths(dir)
+	if _, e := os.Stat(stageCert); e == nil {
+		t.Fatal("staged cert must be cleaned after ACME failure")
+	}
+	if _, e := os.Stat(stageKey); e == nil {
+		t.Fatal("staged key must be cleaned after ACME failure")
+	}
 }
 
 func TestAdvertiseStagedSPKI_UsesHookNotRegister(t *testing.T) {
@@ -96,6 +104,11 @@ func TestRegister_ACMEFailureAbortsBeforeCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	keyPath := filepath.Join(dir, "node.key")
+	if err := os.WriteFile(keyPath, []byte("identity-must-survive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cpCalls := 0
 	n := &Node{
 		opts: Options{TestMode: true},
 		local: &localconfig.File{
@@ -117,6 +130,10 @@ func TestRegister_ACMEFailureAbortsBeforeCP(t *testing.T) {
 		return tls.Certificate{}, nil, nil, false, errors.New("acme unavailable")
 	}
 	n.validateStagedTLS = func(string, string, string, time.Time) error { return nil }
+	n.advertiseSPKI = func(context.Context, []byte) error {
+		cpCalls++
+		return errors.New("must not advertise before successful ACME")
+	}
 
 	_, err = n.Register(context.Background(), "bootstrap-token-test")
 	if err == nil {
@@ -125,5 +142,15 @@ func TestRegister_ACMEFailureAbortsBeforeCP(t *testing.T) {
 	if !bytes.Contains([]byte(err.Error()), []byte("registration aborted")) &&
 		!bytes.Contains([]byte(err.Error()), []byte("TLS/ACME preparation failed")) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if cpCalls != 0 {
+		t.Fatalf("must abort before CP/advertise; advertise calls=%d", cpCalls)
+	}
+	raw, rerr := os.ReadFile(keyPath)
+	if rerr != nil || string(raw) != "identity-must-survive" {
+		t.Fatalf("node identity must be preserved after ACME failure: %v %q", rerr, raw)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tls.crt")); err == nil {
+		t.Fatal("must not commit live TLS on ACME failure")
 	}
 }

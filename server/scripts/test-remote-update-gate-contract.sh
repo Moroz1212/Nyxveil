@@ -46,7 +46,7 @@ cat >"${TMP}/fixture.json" <<EOF
   "online": true,
   "last_seen_at": "${NOW_UTC}",
   "current_sessions": 3,
-  "reported_server_version": "1.1.11",
+  "reported_server_version": "1.1.12",
   "config_version": 7,
   "lifecycle_state": "Active"
 }

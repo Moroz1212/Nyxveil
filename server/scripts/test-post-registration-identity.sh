@@ -21,7 +21,7 @@ printf '#!/bin/sh\necho mock-server\n' > "${BIN_DIR}/nyxveil-server"
 printf '#!/bin/sh\necho mock-ctl\n' > "${BIN_DIR}/nyxveilctl"
 printf '#!/bin/sh\necho mock-catalog-verify\n' > "${BIN_DIR}/nyxveil-catalog-verify"
 printf '#!/bin/sh\necho mock-gate\n' > "${BIN_DIR}/scripts/production-gate.sh"
-printf '1.1.11\n' > "${BIN_DIR}/VERSION"
+printf '1.1.12\n' > "${BIN_DIR}/VERSION"
 printf '# mock frozen core\n7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b\n' > "${BIN_DIR}/THIRD_PARTY_CORE.md"
 chmod +x "${BIN_DIR}/nyxveil-server" "${BIN_DIR}/nyxveilctl" \
   "${BIN_DIR}/nyxveil-catalog-verify" "${BIN_DIR}/scripts/production-gate.sh"
@@ -75,6 +75,36 @@ if ! grep -qi 'registration already committed' "${TMP}/pre.out"; then
   pass "pre-registration path did not claim committed identity"
 else
   fail "pre-registration incorrectly claimed registration committed"
+fi
+
+echo "== mid-registration (PHASE 09) failure: keep node.key, scrub tls.next =="
+MOCK_MID="${TMP}/mid"
+mkdir -p "${MOCK_MID}"
+set +e
+NYXVEIL_INSTALL_FAIL_DURING_REGISTER=1 run_mock "${MOCK_MID}" --bootstrap-token "tok-mid" \
+  >"${TMP}/mid.out" 2>&1
+rc=$?
+set -e
+if [[ "${rc}" -ne 0 ]] && grep -qi 'rollback complete\|forced failure during registration' "${TMP}/mid.out"; then
+  pass "mid-registration failure rolled back with preserve path"
+else
+  fail "mid-registration failure should preserve identity path"
+  cat "${TMP}/mid.out" >&2 || true
+fi
+if [[ -f "${MOCK_MID}/var/lib/nyxveil/node.key" ]]; then
+  pass "node.key preserved after mid-registration failure"
+else
+  fail "node.key must be preserved after ambiguous PHASE 09 failure"
+fi
+if [[ -f "${MOCK_MID}/etc/nyxveil/server.json" ]]; then
+  pass "server.json preserved after mid-registration failure"
+else
+  fail "server.json must be preserved with node.key after PHASE 09 failure"
+fi
+if [[ ! -f "${MOCK_MID}/var/lib/nyxveil/tls.next.crt" && ! -f "${MOCK_MID}/var/lib/nyxveil/tls.next.key" ]]; then
+  pass "staged tls.next.* scrubbed after mid-registration failure"
+else
+  fail "tls.next.* must be scrubbed on failed registration"
 fi
 
 echo "== post-registration health failure: identity preserved =="

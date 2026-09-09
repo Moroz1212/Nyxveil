@@ -161,7 +161,7 @@ Pinned production example (42mou.ru):
 Examples:
   curl -fsSL https://raw.githubusercontent.com/Moroz1212/Nyxveil/main/server/installer/install.sh | sudo bash
   sudo ./install.sh --binary-dir ./dist/linux-amd64 --skip-download
-  NYXVEIL_VERSION=1.1.11 sudo ./install.sh --binary-dir ./dist/linux-amd64 --skip-download
+  NYXVEIL_VERSION=1.1.12 sudo ./install.sh --binary-dir ./dist/linux-amd64 --skip-download
 EOF
 }
 
@@ -414,7 +414,7 @@ ensure_packages() {
   [[ "${MOCK}" -eq 1 ]] && return 0
   local need=()
   local p
-  for p in nftables iproute2 ca-certificates curl openssl jq; do
+  for p in nftables iproute2 ca-certificates curl openssl jq util-linux; do
     if ! pkg_installed "${p}"; then
       need+=("${p}")
     fi
@@ -749,12 +749,18 @@ rollback() {
     # Control Plane already accepted this node. Never delete local identity
     # artifacts required for PoP repair (same node_id / node.key).
     :
+  elif [[ "${PRESERVE_HAD_KEY}" -eq 1 ]]; then
+    # Partial/ambiguous registration: keep server.json + node.key so retry can
+    # re-PoP with the SAME identity. Scrub incomplete staged TLS only.
+    rm -f "${STATE_DIR}/tls.next.crt" "${STATE_DIR}/tls.next.key" 2>/dev/null || true
   elif [[ "${WROTE_CONFIG}" -eq 1 ]]; then
     if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/server.json" ]]; then
       cp -a "${BACKUP_DIR}/server.json" "${CONFIG_FILE}"
     else
       rm -f "${CONFIG_FILE}"
     fi
+    # Pre-identity failure: drop incomplete ACME staging material.
+    rm -f "${STATE_DIR}/tls.next.crt" "${STATE_DIR}/tls.next.key" 2>/dev/null || true
   fi
   if [[ "${REGISTRATION_COMMITTED}" -eq 1 || "${PRESERVE_HAD_KEY}" -eq 1 ]]; then
     # Keep node.key (and do not restore an older backup over a committed identity).
@@ -1173,7 +1179,9 @@ install_nftables() {
     acme_line=$'    tcp dport 80 ct state new accept comment "nyxveil-acme-http01"\n'
   fi
   cat > "${NFT_FILE}" <<EOF
-# Managed by Nyxveil installer вЂ” table inet nyxveil only
+# Managed by Nyxveil installer — table inet nyxveil only
+# destroy makes nft -f idempotent (no duplicate rules on re-apply / unit start).
+destroy table inet nyxveil
 table inet nyxveil {
   chain input {
     type filter hook input priority filter - 10; policy accept;
@@ -1194,13 +1202,14 @@ ${acme_line}    tcp dport ${TLS_PORT} ct state new accept comment "nyxveil-tls"
 }
 EOF
   chmod 0644 "${NFT_FILE}"
+  # File already destroys; explicit delete kept for older kernels / clarity.
   nft_cmd delete table inet nyxveil 2>/dev/null || true
   nft_cmd -f "${NFT_FILE}" || [[ "${MOCK}" -eq 1 ]]
   INSTALLED_NFT=1
-  log "applied nftables table inet nyxveil (no ruleset flush)"
+  log "applied nftables table inet nyxveil (idempotent destroy+load; no ruleset flush)"
 }
 
-# Embedded units вЂ” no resolve_unit_source / sibling systemd/ required.
+# Embedded units — no resolve_unit_source / sibling systemd/ required.
 write_firewall_unit() {
   cat > "${FIREWALL_UNIT}" <<'EOF'
 [Unit]
@@ -1213,6 +1222,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStartPre=-/usr/sbin/nft delete table inet nyxveil
 ExecStart=/usr/sbin/nft -f /etc/nftables.d/nyxveil.conf
 ExecStop=/usr/sbin/nft delete table inet nyxveil
 
@@ -1522,6 +1532,7 @@ generate_identity_and_register() {
 }
 
 # run_as_nyxveil executes a command as the runtime service user (no root TLS keys).
+# Does NOT grant CAP_NET_BIND_SERVICE — use run_as_nyxveil_bounded for ACME/register.
 run_as_nyxveil() {
   if command -v runuser >/dev/null 2>&1; then
     runuser -u nyxveil -- "$@"
@@ -1531,15 +1542,19 @@ run_as_nyxveil() {
     setpriv --reuid=nyxveil --regid=nyxveil --clear-groups -- "$@"
     return $?
   fi
-  # Fallback: su with preserved argv via env.
   local cmd
   cmd="$(printf '%q ' "$@")"
   su -s /bin/bash nyxveil -c "${cmd}"
 }
 
-# run_as_nyxveil_bounded runs an EXTERNAL executable as nyxveil under GNU timeout.
-# timeout wraps the real binary (never a shell function). Stdin is preserved for
-# bootstrap token. TERM then KILL after kill_after_sec. Fail closed if timeout/user tools missing.
+# run_as_nyxveil_bounded runs an EXTERNAL executable as nyxveil under GNU timeout,
+# with a TRANSIENT CAP_NET_BIND_SERVICE so ACME HTTP-01 can bind :80 during
+# bootstrap registration. Capabilities are process-scoped only (never setcap on
+# the binary; never lower ip_unprivileged_port_start).
+#
+# Prefer systemd-run AmbientCapabilities (Ubuntu 24.04 / systemd PID1).
+# Fallback: setpriv inheritable+ambient net_bind_service from root.
+#
 # Usage: run_as_nyxveil_bounded <sec> <kill_after_sec> <executable> [args...]
 run_as_nyxveil_bounded() {
   local sec="${1:?}"
@@ -1557,22 +1572,34 @@ run_as_nyxveil_bounded() {
     return 98
   }
 
-  # Prefer: runuser -u nyxveil -- timeout -k N SEC /path/to/binary args...
-  # so timeout's child is the real binary (process group / TERM+KILL apply correctly).
-  if command -v runuser >/dev/null 2>&1; then
-    runuser -u nyxveil -- timeout -k "${kill_after}" "${sec}" "${exe}" "$@"
+  # MOCK: no privilege drop / no caps needed.
+  if [[ "${MOCK}" -eq 1 ]]; then
+    timeout -k "${kill_after}" "${sec}" "${exe}" "$@"
     return $?
   fi
+
+  # Prefer systemd-run: AmbientCapabilities apply only to this transient unit.
+  if command -v systemd-run >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+    systemd-run --uid=nyxveil --gid=nyxveil \
+      --property=AmbientCapabilities=CAP_NET_BIND_SERVICE \
+      --property=CapabilityBoundingSet=CAP_NET_BIND_SERVICE \
+      --property=NoNewPrivileges=true \
+      --wait --pipe --collect --quiet \
+      /usr/bin/timeout -k "${kill_after}" "${sec}" "${exe}" "$@"
+    return $?
+  fi
+
+  # Fallback: setpriv keeps CAP_NET_BIND_SERVICE across uid drop (util-linux).
   if command -v setpriv >/dev/null 2>&1; then
-    setpriv --reuid=nyxveil --regid=nyxveil --clear-groups -- \
+    setpriv --reuid=nyxveil --regid=nyxveil --clear-groups \
+      --inh-caps=+net_bind_service --ambient-caps=+net_bind_service \
+      -- \
       timeout -k "${kill_after}" "${sec}" "${exe}" "$@"
     return $?
   fi
-  # Last resort: timeout wraps su (still an executable, not a bash function).
-  local cmd
-  cmd="$(printf '%q ' "${exe}" "$@")"
-  timeout -k "${kill_after}" "${sec}" su -s /bin/bash nyxveil -c "${cmd}"
-  return $?
+
+  echo "ERROR: systemd-run or setpriv required to grant transient CAP_NET_BIND_SERVICE for ACME HTTP-01 (fail closed)" >&2
+  return 96
 }
 
 # fix_state_ownership enforces service-user ownership on all private state.
@@ -1743,6 +1770,18 @@ main() {
   write_server_json
   if [[ "${NYXVEIL_INSTALL_FAIL_BEFORE_REGISTER:-0}" -eq 1 ]]; then
     die "forced failure before registration (test)"
+  fi
+  # Test-only: simulate PHASE 09 mid-registration failure after identity+staging
+  # material exists (ACME/CP ambiguity). Preserve node.key; scrub tls.next.*.
+  if [[ "${NYXVEIL_INSTALL_FAIL_DURING_REGISTER:-0}" -eq 1 ]]; then
+    mkdir -p "${STATE_DIR}"
+    chmod 0700 "${STATE_DIR}" 2>/dev/null || true
+    printf 'mock-node-key\n' > "${NODE_KEY}"
+    chmod 0600 "${NODE_KEY}" 2>/dev/null || true
+    printf 'staged\n' > "${STATE_DIR}/tls.next.crt"
+    printf 'staged\n' > "${STATE_DIR}/tls.next.key"
+    PRESERVE_HAD_KEY=1
+    die "forced failure during registration (test)"
   fi
   generate_identity_and_register
   # Test-only: simulate post-registration health/start failure without CP.

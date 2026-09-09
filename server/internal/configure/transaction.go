@@ -508,13 +508,44 @@ func runAsNyxveil(cmd *exec.Cmd) error {
 	if effectiveUID() != 0 {
 		return cmd.Run()
 	}
-	if path, err := exec.LookPath("runuser"); err == nil {
-		args := append([]string{"-u", "nyxveil", "--", cmd.Path}, cmd.Args[1:]...)
+	// Prefer systemd-run with transient CAP_NET_BIND_SERVICE for ACME HTTP-01.
+	if path, err := exec.LookPath("systemd-run"); err == nil {
+		if _, err := os.Stat("/run/systemd/system"); err == nil {
+			timeoutPath, _ := exec.LookPath("timeout")
+			inner := []string{cmd.Path}
+			inner = append(inner, cmd.Args[1:]...)
+			args := []string{
+				"--uid=nyxveil", "--gid=nyxveil",
+				"--property=AmbientCapabilities=CAP_NET_BIND_SERVICE",
+				"--property=CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
+				"--property=NoNewPrivileges=true",
+				"--wait", "--pipe", "--collect", "--quiet",
+			}
+			if timeoutPath != "" {
+				args = append(args, timeoutPath, "-k", "15", "600")
+			}
+			args = append(args, inner...)
+			c := exec.Command(path, args...)
+			c.Stdin = cmd.Stdin
+			c.Stdout = cmd.Stdout
+			c.Stderr = cmd.Stderr
+			return c.Run()
+		}
+	}
+	if path, err := exec.LookPath("setpriv"); err == nil {
+		args := []string{
+			"--reuid=nyxveil", "--regid=nyxveil", "--clear-groups",
+			"--inh-caps=+net_bind_service", "--ambient-caps=+net_bind_service",
+			"--", cmd.Path,
+		}
+		args = append(args, cmd.Args[1:]...)
 		c := exec.Command(path, args...)
 		c.Stdin = cmd.Stdin
 		c.Stdout = cmd.Stdout
 		c.Stderr = cmd.Stderr
 		return c.Run()
 	}
-	return cmd.Run()
+	// Fail closed: uncapped runuser cannot bind :80 under default
+	// ip_unprivileged_port_start=1024 (live gate blocker on Ubuntu 24.04).
+	return fmt.Errorf("configure: systemd-run or setpriv required for transient CAP_NET_BIND_SERVICE (refuse uncapped runuser)")
 }

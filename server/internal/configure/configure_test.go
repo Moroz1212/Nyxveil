@@ -131,12 +131,18 @@ func TestFirewallRenderIdempotent(t *testing.T) {
 	if a != b {
 		t.Fatal("nft render not stable")
 	}
+	if !strings.Contains(a, "destroy table inet nyxveil") {
+		t.Fatalf("missing destroy preamble for idempotent apply: %s", a)
+	}
 	if !strings.Contains(a, "nyxveil-acme-http01") || !strings.Contains(a, "tcp dport 80") {
 		t.Fatalf("missing ACME 80: %s", a)
 	}
 	c := configure.RenderNyxveilNFT(configure.FirewallOpts{Enable80: false, TLSPort: 443, QUICPort: 443})
 	if strings.Contains(c, "tcp dport 80") {
 		t.Fatal("port 80 should be absent when ACME off")
+	}
+	if !strings.Contains(c, "destroy table inet nyxveil") {
+		t.Fatal("destroy required even when ACME off")
 	}
 }
 

@@ -27,7 +27,8 @@ fi
 for needle in \
   TLS_KEY_MATCH TLS_VALIDITY SERVED_SPKI LISTENER_TCP_443 \
   TUNReady TicketKeysLoaded CPConnected IdentityPresent \
-  NotBefore NotAfter THIRD_PARTY CATALOG_VERIFY; do
+  NotBefore NotAfter THIRD_PARTY CATALOG_VERIFY \
+  ACME_PRIVILEGED_BIND NFTABLES_IDEMPOTENCY ACME_NO_PERSISTENT_SETCAP; do
   if grep -q "${needle}" "${GATE}"; then
     pass "mentions ${needle}"
   else

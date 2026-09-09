@@ -495,6 +495,92 @@ for svc in nyxveil-server.service nyxveil-firewall.service; do
   fi
 done
 
+# ACME_PRIVILEGED_BIND — OS-level proof that registration wrapper can bind :80
+# without persistent setcap / sysctl weaken. Uses the same mechanism as install.sh.
+START_PORT="$(sysctl -n net.ipv4.ip_unprivileged_port_start 2>/dev/null || echo 1024)"
+if [[ "${START_PORT}" -le 80 ]]; then
+  record ACME_PRIVILEGED_BIND FAIL "ip_unprivileged_port_start=${START_PORT} already allows :80 (cannot prove CAP_NET_BIND_SERVICE)"
+else
+  BIND_PROBE="$(mktemp /tmp/nyxveil-bind80.XXXXXX.py)"
+  cat >"${BIND_PROBE}" <<'PY'
+import socket, os, sys
+s = socket.socket()
+try:
+    s.bind(("127.0.0.1", 80))
+    print("BIND_OK uid=%s" % os.getuid())
+    sys.exit(0)
+except Exception as e:
+    print("BIND_FAIL %s" % e)
+    sys.exit(1)
+PY
+  BIND_RC=0
+  if command -v systemd-run >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+    systemd-run --uid=nyxveil --gid=nyxveil \
+      --property=AmbientCapabilities=CAP_NET_BIND_SERVICE \
+      --property=CapabilityBoundingSet=CAP_NET_BIND_SERVICE \
+      --property=NoNewPrivileges=true \
+      --wait --pipe --collect --quiet \
+      /usr/bin/python3 "${BIND_PROBE}" >/tmp/nyxveil-bind80.out 2>&1 || BIND_RC=$?
+  elif command -v setpriv >/dev/null 2>&1; then
+    setpriv --reuid=nyxveil --regid=nyxveil --clear-groups \
+      --inh-caps=+net_bind_service --ambient-caps=+net_bind_service \
+      -- /usr/bin/python3 "${BIND_PROBE}" >/tmp/nyxveil-bind80.out 2>&1 || BIND_RC=$?
+  else
+    BIND_RC=96
+    echo "no systemd-run/setpriv" >/tmp/nyxveil-bind80.out
+  fi
+  rm -f "${BIND_PROBE}"
+  if [[ "${BIND_RC}" -eq 0 ]] && grep -q BIND_OK /tmp/nyxveil-bind80.out; then
+    record ACME_PRIVILEGED_BIND PASS "transient CAP_NET_BIND_SERVICE bind :80 as nyxveil"
+  else
+    record ACME_PRIVILEGED_BIND FAIL "bind :80 failed rc=${BIND_RC} $(tr '\n' ' ' </tmp/nyxveil-bind80.out 2>/dev/null || true)"
+  fi
+fi
+# Persistent capability / sysctl must not be left behind (always recorded).
+if command -v getcap >/dev/null 2>&1; then
+  scaps="$(getcap /usr/local/sbin/nyxveil-server 2>/dev/null || true)"
+  if [[ -n "${scaps}" ]]; then
+    record ACME_NO_PERSISTENT_SETCAP FAIL "nyxveil-server has file caps: ${scaps}"
+  else
+    record ACME_NO_PERSISTENT_SETCAP PASS "no file capabilities on nyxveil-server"
+  fi
+else
+  record ACME_NO_PERSISTENT_SETCAP PASS "getcap unavailable; installer forbids setcap"
+fi
+NOW_PORT="$(sysctl -n net.ipv4.ip_unprivileged_port_start 2>/dev/null || echo 1024)"
+if [[ "${NOW_PORT}" == "${START_PORT}" ]]; then
+  record ACME_SYSCTL_UNCHANGED PASS "ip_unprivileged_port_start=${NOW_PORT}"
+else
+  record ACME_SYSCTL_UNCHANGED FAIL "sysctl changed ${START_PORT}->${NOW_PORT}"
+fi
+
+# NFTABLES_IDEMPOTENCY — re-apply managed conf 3×; each comment appears once.
+if command -v nft >/dev/null 2>&1 && [[ -f /etc/nftables.d/nyxveil.conf ]]; then
+  if ! grep -q 'destroy table inet nyxveil' /etc/nftables.d/nyxveil.conf; then
+    record NFTABLES_IDEMPOTENCY FAIL "nyxveil.conf missing destroy preamble"
+  else
+    nft -f /etc/nftables.d/nyxveil.conf 2>/tmp/nyxveil-nft1.err || true
+    nft -f /etc/nftables.d/nyxveil.conf 2>/tmp/nyxveil-nft2.err || true
+    nft -f /etc/nftables.d/nyxveil.conf 2>/tmp/nyxveil-nft3.err || true
+    DUMP="$(nft list table inet nyxveil 2>/dev/null || true)"
+    IDEM_OK=1
+    for c in nyxveil-tls nyxveil-quic nyxveil-masq; do
+      n="$(printf '%s\n' "${DUMP}" | grep -c "${c}" || true)"
+      if [[ "${n}" -ne 1 ]]; then
+        IDEM_OK=0
+        echo "duplicate-or-missing ${c} count=${n}" >>/tmp/nyxveil-nft-idem.txt
+      fi
+    done
+    if [[ "${IDEM_OK}" -eq 1 && -n "${DUMP}" ]]; then
+      record NFTABLES_IDEMPOTENCY PASS "3× nft -f → single-copy rules"
+    else
+      record NFTABLES_IDEMPOTENCY FAIL "duplicate rules after re-apply"
+    fi
+  fi
+else
+  record NFTABLES_IDEMPOTENCY FAIL "nft or nyxveil.conf missing"
+fi
+
 # Health
 if [[ -x "${CTL}" ]] && "${CTL}" health >/dev/null 2>&1; then
   record HEALTH PASS "nyxveilctl health"
@@ -842,7 +928,8 @@ for need in \
   HEALTH CP_CONNECTION RESTART_TEST TOKEN_LEAK \
   MGMT_GATE MGMT_UPDATE_UNIT MGMT_POLKIT THIRD_PARTY CATALOG_VERIFY \
   TLS_KEY_MATCH TLS_VALIDITY SERVED_SPKI_MATCH LISTENER_TCP_443 \
-  TUNReady TLSOK QUICOK BridgeOK TicketKeysLoaded CPConnected IdentityPresent Healthy; do
+  TUNReady TLSOK QUICOK BridgeOK TicketKeysLoaded CPConnected IdentityPresent Healthy \
+  ACME_PRIVILEGED_BIND ACME_NO_PERSISTENT_SETCAP ACME_SYSCTL_UNCHANGED NFTABLES_IDEMPOTENCY; do
   found=0
   for ((i = 0; i < ${#CHECK_NAMES[@]}; i++)); do
     if [[ "${CHECK_NAMES[$i]}" == "${need}" ]]; then

@@ -1,7 +1,15 @@
 name: Server Release
 
+# Publishes EXACT bytes from a successful Server CI artifact for this commit.
+# NEVER rebuilds binaries here (CI build A must equal published A).
+
 on:
   workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: Optional Server CI run ID whose artifact to publish (default: latest success for this SHA)
+        required: false
+        type: string
   push:
     tags:
       - 'server-v*'
@@ -12,6 +20,7 @@ defaults:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   release:
@@ -19,36 +28,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-          cache-dependency-path: server/go.sum
-
       - name: Assert Frozen Core SHA
         run: bash scripts/assert-frozen-core.sh
 
-      - name: Format check
-        run: test -z "$(gofmt -l .)"
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test
-        run: go test -timeout 180s ./...
-
-      - name: Race tests
-        run: go test -race -timeout 300s ./internal/updater ./internal/runtime ./internal/listeners ./internal/netcfg
-
-      - name: Wipe stale dist and rebuild
-        run: |
-          rm -rf dist
-          bash scripts/build-release.sh
-          bash scripts/package-release.sh
-          bash scripts/verify-release.sh
-
-      - name: Create GitHub Release and upload assets
+      - name: Download canonical CI artifact (no rebuild)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_RUN_ID: ${{ inputs.ci_run_id }}
         run: |
           set -euo pipefail
           VERSION="$(tr -d '[:space:]' < VERSION)"
@@ -56,12 +42,48 @@ jobs:
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             TAG="${GITHUB_REF_NAME}"
           fi
+          SHA="${GITHUB_SHA}"
+          RUN_ID="${INPUT_RUN_ID:-}"
+          if [[ -z "${RUN_ID}" ]]; then
+            RUN_ID="$(gh run list --repo "${GITHUB_REPOSITORY}" \
+              --workflow server-ci.yml --commit "${SHA}" --status success \
+              --limit 1 --json databaseId -q '.[0].databaseId')"
+          fi
+          [[ -n "${RUN_ID}" && "${RUN_ID}" != "null" ]] || {
+            echo "No successful Server CI run for commit ${SHA}"
+            echo "Push the tag only after Server CI is green, or pass ci_run_id."
+            exit 1
+          }
+          echo "Using Server CI run ${RUN_ID} for ${SHA}"
+          rm -rf dist/release
+          mkdir -p dist/release
+          gh run download "${RUN_ID}" --repo "${GITHUB_REPOSITORY}" \
+            -n nyxveil-server-binaries -D dist/release
+          echo "CI_RUN_ID=${RUN_ID}" >> "${GITHUB_ENV}"
+          echo "RELEASE_TAG=${TAG}" >> "${GITHUB_ENV}"
+
+      - name: Verify release bytes identity (CI artifact)
+        run: |
+          set -euo pipefail
+          bash scripts/verify-release.sh
+          bash scripts/verify-artifact-set.sh
+          bash scripts/assert-release-bytes-identity.sh
+          echo "RELEASE_BYTES_IDENTITY=PASS"
+
+      - name: Create GitHub Release and upload CI bytes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          TAG="${RELEASE_TAG:-server-v${VERSION}}"
           DIST=dist/release
           UPLOAD_LIST="${DIST}/UPLOAD-LIST-server-v${VERSION}.txt"
           [[ -f "${UPLOAD_LIST}" ]] || { echo "missing ${UPLOAD_LIST}"; exit 1; }
           mapfile -t BASENAMES < "${UPLOAD_LIST}"
           ASSETS=()
           for name in "${BASENAMES[@]}"; do
+            name="$(printf '%s' "${name}" | tr -d '\r')"
             [[ -n "${name}" && "${name}" == "$(basename "${name}")" ]] ||
               { echo "invalid upload basename: ${name}"; exit 1; }
             ASSETS+=("${DIST}/${name}")
@@ -69,7 +91,14 @@ jobs:
           for a in "${ASSETS[@]}"; do
             [[ -f "${a}" ]] || { echo "missing ${a}"; exit 1; }
           done
+          # Refuse --clobber of differently hashed assets: delete+recreate only when
+          # existing release assets match our SHA256SUMS, else fail closed.
           if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists — verifying asset hash identity before replace"
+            bash scripts/assert-existing-release-matches-dist.sh "${TAG}" || {
+              echo "Existing release assets differ from CI bytes; refuse silent overwrite"
+              exit 1
+            }
             gh release upload "${TAG}" "${ASSETS[@]}" --clobber
           else
             NOTES="${DIST}/NOTES.txt"
@@ -81,3 +110,4 @@ jobs:
               --title "Nyxveil Server ${TAG}" \
               ${NOTES:+--notes-file "${NOTES}"}
           fi
+          echo "Published ${TAG} from Server CI run ${CI_RUN_ID} (no rebuild)"
