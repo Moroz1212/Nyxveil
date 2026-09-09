@@ -217,7 +217,7 @@ private final class PacketInbox {
     func close() { lock.lock(); closed = true; packets = []; bytes = 0; lock.unlock() }
 }
 
-private final class SettingsGate {
+private final class SettingsGate: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
     init(_ continuation: CheckedContinuation<Void, Error>) { self.continuation = continuation }

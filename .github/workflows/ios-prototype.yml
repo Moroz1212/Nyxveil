@@ -45,6 +45,14 @@ jobs:
             build 2>&1 | tee .build/xcode-build.log
       - name: Package explicitly unsigned IPA
         run: bash scripts/package-unsigned.sh
+      - name: Swift contract tests on simulator
+        run: |
+          set -euo pipefail
+          DEVICE_ID="$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for group in d["devices"].values() for x in group if x["name"].startswith("iPhone")))')"
+          xcodebuild -project Nyxveil.xcodeproj -scheme Nyxveil \
+            -configuration Debug -sdk iphonesimulator -destination "id=$DEVICE_ID" \
+            -derivedDataPath .build/tests CODE_SIGNING_ALLOWED=NO \
+            test 2>&1 | tee .build/swift-tests.log
       - name: Upload unsigned build and provenance
         id: package
         uses: actions/upload-artifact@v4

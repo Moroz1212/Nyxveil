@@ -41,7 +41,7 @@ for(const t of targets) {
     phases.push(ref(t+'EmbedShared'));
   }
   for(const cfg of ['Debug','Release']) {
-    const settings={PRODUCT_NAME:'$(TARGET_NAME)',SWIFT_VERSION:'5.0',CODE_SIGN_STYLE:'Automatic',
+    const settings={PRODUCT_NAME:'$(TARGET_NAME)',SWIFT_VERSION:'5.0',CODE_SIGN_STYLE:'Automatic',CURRENT_PROJECT_VERSION:'1',MARKETING_VERSION:'0.1.0',
       PRODUCT_BUNDLE_IDENTIFIER:t==='Nyxveil'?'$(APP_BUNDLE_IDENTIFIER)':t==='NyxveilTunnel'?'$(TUNNEL_BUNDLE_IDENTIFIER)':`$(APP_BUNDLE_IDENTIFIER).${t==='NyxveilShared'?'shared':'tests'}`,
       GENERATE_INFOPLIST_FILE:'YES',SKIP_INSTALL:t==='Nyxveil'?'NO':'YES',
       LD_RUNPATH_SEARCH_PATHS:['$(inherited)','@executable_path/Frameworks','@executable_path/../../Frameworks','@loader_path/Frameworks'],
@@ -50,7 +50,7 @@ for(const t of targets) {
       settings.INFOPLIST_FILE=`${t}/Info.plist`;
       settings.CODE_SIGN_ENTITLEMENTS=`${t}/${t}.entitlements`;
     }
-    if(t==='Nyxveil') { settings.INFOPLIST_KEY_UILaunchScreen_Generation='YES'; settings.INFOPLIST_KEY_UISupportedInterfaceOrientations='UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight'; }
+    if(t==='Nyxveil') { settings.INFOPLIST_KEY_UILaunchScreen_Generation='YES'; settings.INFOPLIST_KEY_UISupportedInterfaceOrientations='UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight'; }
     if(t==='NyxveilShared') { settings.DEFINES_MODULE='YES'; settings.INSTALL_PATH='$(LOCAL_LIBRARY_DIR)/Frameworks'; settings.OTHER_LDFLAGS=['$(inherited)','-lresolv']; }
     add(t+cfg,{isa:'XCBuildConfiguration',name:cfg,buildSettings:settings});
   }

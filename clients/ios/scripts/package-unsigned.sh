@@ -7,10 +7,12 @@ EXT="$APP/PlugIns/NyxveilTunnel.appex"
 SHARED="$APP/Frameworks/NyxveilShared.framework"
 for binary in "$APP/Nyxveil" "$EXT/NyxveilTunnel" "$SHARED/NyxveilShared"; do
   test -s "$binary"
-  xcrun lipo -verify_arch arm64 "$binary"
+  xcrun lipo "$binary" -verify_arch arm64
 done
 plutil -lint "$APP/Info.plist" "$EXT/Info.plist" "$SHARED/Info.plist"
 test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT/Info.plist")" = 'com.apple.networkextension.packet-tunnel'
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = '1'
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT/Info.plist")" = '1'
 mkdir -p .build/output
 # Unique staging directory; no recursive deletion of build outputs.
 STAGE="$(mktemp -d "$ROOT/.build/package.XXXXXX")"

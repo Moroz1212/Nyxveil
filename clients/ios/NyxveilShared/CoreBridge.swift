@@ -1,6 +1,7 @@
 import Foundation
 
-public final class CoreBridge {
+// Calls cross queues intentionally: the Go engine locks its state; writes use queue.
+public final class CoreBridge: @unchecked Sendable {
     private let core: NVCore
     private let queue = DispatchQueue(label: "nyxveil.nvp.send")
     public init(packet: @escaping (Data) -> Void, failure: @escaping (String) -> Void) {
