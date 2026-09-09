@@ -19,8 +19,9 @@ type commandStateFile struct {
 }
 
 type rebootPendingRecord struct {
-	CommandID string `json:"command_id"`
-	PreBootID string `json:"pre_boot_id"`
+	CommandID  string `json:"command_id"`
+	PreBootID  string `json:"pre_boot_id"`
+	ReturnedAt string `json:"returned_at,omitempty"`
 }
 
 type restartPendingRecord struct {
@@ -77,7 +78,6 @@ func (s *commandDedupeStore) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	// Crash-sensitive command journal — DurableWrite required.
 	if err := filemeta.DurableWrite(s.path, raw, 0o600); err != nil {
 		return err
 	}
@@ -95,15 +95,12 @@ func (s *commandDedupeStore) containsExecuted(id string) bool {
 	return false
 }
 
-// WasExecuted reports whether commandID was already recorded as executed.
 func (s *commandDedupeStore) WasExecuted(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.containsExecuted(id)
 }
 
-// TryMarkExecuted records a command as executed once. Returns false when already recorded.
-// Returns false also when durable journal write fails (fail closed — do not execute).
 func (s *commandDedupeStore) TryMarkExecuted(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -134,7 +131,22 @@ func (s *commandDedupeStore) addRebootPending(commandID, preBootID string) error
 	return s.saveLocked()
 }
 
-func (s *commandDedupeStore) removeRebootPending(commandID string) {
+func (s *commandDedupeStore) markRebootReturned(commandID, returnedAt string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, rec := range s.data.RebootPending {
+		if rec.CommandID == commandID {
+			if s.data.RebootPending[i].ReturnedAt == "" {
+				s.data.RebootPending[i].ReturnedAt = returnedAt
+				return s.saveLocked()
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+func (s *commandDedupeStore) removeRebootPending(commandID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := s.data.RebootPending[:0]
@@ -144,7 +156,7 @@ func (s *commandDedupeStore) removeRebootPending(commandID string) {
 		}
 	}
 	s.data.RebootPending = out
-	_ = s.saveLocked()
+	return s.saveLocked()
 }
 
 func (s *commandDedupeStore) rebootPending() []rebootPendingRecord {
@@ -171,7 +183,7 @@ func (s *commandDedupeStore) addRestartPending(commandID, startedAt string) erro
 	return s.saveLocked()
 }
 
-func (s *commandDedupeStore) removeRestartPending(commandID string) {
+func (s *commandDedupeStore) removeRestartPending(commandID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := s.data.RestartPending[:0]
@@ -181,7 +193,7 @@ func (s *commandDedupeStore) removeRestartPending(commandID string) {
 		}
 	}
 	s.data.RestartPending = out
-	_ = s.saveLocked()
+	return s.saveLocked()
 }
 
 func (s *commandDedupeStore) restartPending() []restartPendingRecord {
@@ -205,7 +217,7 @@ func (s *commandDedupeStore) addPendingResult(rec pendingResultRecord) error {
 	return s.saveLocked()
 }
 
-func (s *commandDedupeStore) removePendingResult(commandID string) {
+func (s *commandDedupeStore) removePendingResult(commandID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := s.data.PendingResults[:0]
@@ -215,7 +227,7 @@ func (s *commandDedupeStore) removePendingResult(commandID string) {
 		}
 	}
 	s.data.PendingResults = out
-	_ = s.saveLocked()
+	return s.saveLocked()
 }
 
 func (s *commandDedupeStore) pendingResults() []pendingResultRecord {

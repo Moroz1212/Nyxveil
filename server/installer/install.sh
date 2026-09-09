@@ -12,8 +12,11 @@
 # Local --binary-dir / --skip-download skips remote verify.
 set -euo pipefail
 
-# Capture operator/test override BEFORE any defaulting. Never silently pin an
-# older hardcoded version when NYXVEIL_VERSION is unset for remote installs.
+# Capture operator/test override BEFORE any defaulting.
+# Release-packaged install.sh sets DEFAULT_RELEASE_VERSION so server-vX.Y.Z/install.sh
+# installs that exact tag (not floating latest). Generic/main copy keeps it empty.
+DEFAULT_RELEASE_VERSION=""
+
 NYXVEIL_VERSION_ENV_OVERRIDE=""
 if [[ "${NYXVEIL_VERSION+x}" == "x" ]]; then
   NYXVEIL_VERSION_ENV_OVERRIDE="${NYXVEIL_VERSION}"
@@ -270,6 +273,14 @@ resolve_installer_version() {
     NYXVEIL_VERSION="$(tr -d '\r[:space:]' < "${ver_file}")"
     [[ -n "${NYXVEIL_VERSION}" ]] || die "empty VERSION file: ${ver_file}"
     log "using local candidate version from ${ver_file}: ${NYXVEIL_VERSION}"
+    return 0
+  fi
+
+  # Release-packaged install.sh embeds DEFAULT_RELEASE_VERSION so
+  # server-vX.Y.Z/install.sh always installs that exact tag (reproducible).
+  if [[ -n "${DEFAULT_RELEASE_VERSION}" ]]; then
+    NYXVEIL_VERSION="${DEFAULT_RELEASE_VERSION}"
+    log "using release-pinned DEFAULT_RELEASE_VERSION: ${NYXVEIL_VERSION}"
     return 0
   fi
 

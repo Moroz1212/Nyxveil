@@ -1369,20 +1369,42 @@ func (n *Node) issueACMEWithOptions(ctx context.Context, cfg localconfig.File, f
 		return tls.Certificate{}, prevPin, newPin, true, fmt.Errorf("runtime: advertise staged SPKI: %w", err)
 	}
 	if err = n.verifyAdvertisedSPKI(ctx, newPin); err != nil {
-		_ = n.advertiseStagedSPKI(ctx, prevPin)
+		if len(prevPin) > 0 {
+			if advErr := n.advertiseStagedSPKI(ctx, prevPin); advErr != nil {
+				return tls.Certificate{}, prevPin, newPin, true, errors.Join(
+					fmt.Errorf("runtime: verify staged SPKI catalog: %w", err),
+					fmt.Errorf("runtime: restore previous SPKI advertise: %w", advErr),
+				)
+			}
+			if catErr := n.verifyAdvertisedSPKI(ctx, prevPin); catErr != nil {
+				return tls.Certificate{}, prevPin, newPin, true, errors.Join(
+					fmt.Errorf("runtime: verify staged SPKI catalog: %w", err),
+					fmt.Errorf("runtime: verify restored SPKI catalog: %w", catErr),
+				)
+			}
+		}
 		return tls.Certificate{}, prevPin, newPin, true, fmt.Errorf("runtime: verify staged SPKI catalog: %w", err)
 	}
 
 	rollback := func(cause error) error {
 		restoreErr := configure.RestoreLiveTLS(backup, certFile, keyFile)
+		var reloadErr error
 		if oldCert, loadErr := nodetls.Load(live); loadErr == nil {
-			_ = n.reloadActivatedTLS(oldCert)
+			reloadErr = n.reloadActivatedTLS(oldCert)
+		} else {
+			reloadErr = loadErr
 		}
-		var advertiseErr error
+		var advertiseErr, catalogErr, servedErr error
 		if len(prevPin) > 0 {
 			advertiseErr = n.advertiseStagedSPKI(ctx, prevPin)
+			if advertiseErr == nil {
+				catalogErr = n.verifyAdvertisedSPKI(ctx, prevPin)
+			}
+			if advertiseErr == nil && catalogErr == nil {
+				servedErr = n.verifyActivatedSPKI(ctx, prevPin, live)
+			}
 		}
-		return errors.Join(cause, restoreErr, advertiseErr)
+		return errors.Join(cause, restoreErr, reloadErr, advertiseErr, catalogErr, servedErr)
 	}
 	if err = commit(stageCert, stageKey, certFile, keyFile); err != nil {
 		return tls.Certificate{}, prevPin, newPin, true, rollback(fmt.Errorf("runtime: activate staged TLS: %w", err))

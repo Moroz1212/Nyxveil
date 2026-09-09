@@ -48,6 +48,8 @@ jobs:
         run: bash scripts/test-linux-permissions.sh
       - name: Installer version resolution (semver MAX)
         run: bash scripts/test-installer-version-resolution.sh
+      - name: Pinned release installer (DEFAULT_RELEASE_VERSION)
+        run: bash scripts/test-pinned-release-installer.sh
       - name: Bounded runuser/timeout wrapper
         run: bash scripts/test-bounded-runuser-timeout.sh
       - name: Remote update gate API contract
@@ -56,6 +58,8 @@ jobs:
         run: bash scripts/test-remote-cert-renewal-gate-contract.sh
       - name: Bounded installer HTTP downloads
         run: bash scripts/test-bounded-http-get.sh
+      - name: Clean-host gate contract (required management assets)
+        run: bash scripts/test-clean-host-gate-contract.sh
       - name: Race tests (Linux)
         run: go test -race -timeout 300s ./internal/runtime ./internal/updater ./internal/listeners ./internal/netcfg
 
@@ -74,15 +78,11 @@ jobs:
         run: bash scripts/package-release.sh
       - name: Verify release
         run: bash scripts/verify-release.sh
+      - name: Verify artifact set (UPLOAD-LIST complete)
+        run: bash scripts/verify-artifact-set.sh
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: nyxveil-server-binaries
-          path: |
-            server/dist/bin/**
-            server/dist/release/SHA256SUMS
-            server/dist/release/UPLOAD-LIST-server-v*.txt
-            server/dist/release/install.sh
-            server/dist/release/release-manifest-linux-*.json
-            server/dist/release/nyxveil-*-linux-*
-            server/dist/release/*.tar.gz
+          # Canonical release directory with EVERY publishable file (flat + tarballs).
+          path: server/dist/release/

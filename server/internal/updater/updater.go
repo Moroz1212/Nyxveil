@@ -280,7 +280,9 @@ func (u *Updater) Apply(m *Manifest, health HealthCheck) error {
 	}
 
 	if u.MarkerPath != "" {
-		_ = os.WriteFile(u.MarkerPath, []byte(m.Version), 0o644)
+		if err := filemeta.DurableWrite(u.MarkerPath, []byte(m.Version), 0o644); err != nil {
+			return fmt.Errorf("updater: write update marker: %w", err)
+		}
 	}
 
 	restoreTLS := func() error {
@@ -382,10 +384,23 @@ func (u *Updater) Apply(m *Manifest, health HealthCheck) error {
 		return fmt.Errorf("updater: health check failed; rolled back")
 	}
 	// Successful path: ensure runtime TLS is readable by service user even if a
-	// prior root-owned rewrite left bad ownership on disk.
-	_ = u.enforceOwnership(stateDir)
+	// prior root-owned rewrite left bad ownership on disk. Fail closed — a node
+	// that cannot read TLS after update will not recover by itself.
+	if err := u.enforceOwnership(stateDir); err != nil {
+		binErr := u.rollbackJobs(replaced)
+		tlsErr := restoreTLS()
+		if binErr != nil {
+			return fmt.Errorf("updater: ownership enforce failed: %w; rollback failed: %v (tls restore err: %v)", err, binErr, tlsErr)
+		}
+		if tlsErr != nil {
+			return fmt.Errorf("updater: ownership enforce failed: %w; binaries rolled back but TLS restore failed: %v", err, tlsErr)
+		}
+		return fmt.Errorf("updater: ownership enforce failed: %w; rolled back", err)
+	}
 	if u.MarkerPath != "" {
-		_ = os.Remove(u.MarkerPath)
+		if err := os.Remove(u.MarkerPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("updater: clear update marker: %w", err)
+		}
 	}
 	return nil
 }

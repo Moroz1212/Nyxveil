@@ -19,11 +19,15 @@ const (
 	commandPollInterval          = 7 * time.Second
 	managementCapabilitiesList   = "certificate_renew,service_restart,host_reboot,node_update"
 	explicitRenewRateLimitWindow = time.Hour
+	rebootHealthGrace            = 5 * time.Minute
+	restartHealthGrace           = 3 * time.Minute
 )
 
 var (
 	systemdRestartService = defaultSystemdRestart
 	hostReboot            = defaultHostReboot
+	// Overridable in tests.
+	nowFunc = time.Now
 )
 
 func defaultSystemdRestart(unit string) error {
@@ -79,6 +83,7 @@ func (n *Node) commandPollLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			n.flushPendingCommandResults(ctx)
+			n.reportPendingRebootResults(ctx)
 			n.reportPendingRestartResults(ctx)
 			if !n.cpOK.Load() {
 				n.completePendingUpdate(ctx)
@@ -90,36 +95,60 @@ func (n *Node) commandPollLoop(ctx context.Context) {
 	}
 }
 
+func (n *Node) nodeFullyHealthy() bool {
+	st := n.Status()
+	st.Healthy = st.ComputeHealthy()
+	return st.Healthy && n.cpOK.Load()
+}
+
 func (n *Node) reportPendingRebootResults(ctx context.Context) {
 	if n.commandStore == nil {
 		return
 	}
 	currentBoot := readBootID()
+	now := nowFunc().UTC()
 	for _, pending := range n.commandStore.rebootPending() {
 		if pending.PreBootID == "" || pending.PreBootID == currentBoot {
 			continue
 		}
-		st := n.Status()
-		st.Healthy = st.ComputeHealthy()
-		if !st.Healthy {
-			n.persistOrReportResult(ctx, pendingResultRecord{
+		// BootID changed → host returned. Start grace if not already marked.
+		if strings.TrimSpace(pending.ReturnedAt) == "" {
+			_ = n.commandStore.markRebootReturned(pending.CommandID, now.Format(time.RFC3339))
+			pending.ReturnedAt = now.Format(time.RFC3339)
+		}
+		if n.nodeFullyHealthy() {
+			if err := n.persistOrReportResult(ctx, pendingResultRecord{
 				CommandID:     pending.CommandID,
-				Success:       false,
-				ResultCode:    "reboot_unhealthy",
-				ResultMessage: "Host returned after reboot but node is not healthy",
+				Success:       true,
+				ResultCode:    "rebooted_healthy",
+				ResultMessage: "Host returned after reboot and node is healthy",
 				BootID:        currentBoot,
-			})
-			n.commandStore.removeRebootPending(pending.CommandID)
+			}); err != nil {
+				log.Printf("runtime: reboot result persist failed %s: %v", pending.CommandID, err)
+				continue
+			}
+			_ = n.commandStore.removeRebootPending(pending.CommandID)
 			continue
 		}
-		n.persistOrReportResult(ctx, pendingResultRecord{
+		returnedAt, err := time.Parse(time.RFC3339, pending.ReturnedAt)
+		if err != nil {
+			returnedAt = now
+		}
+		if now.Sub(returnedAt) < rebootHealthGrace {
+			// Still within grace — keep pending, do not fail.
+			continue
+		}
+		if err := n.persistOrReportResult(ctx, pendingResultRecord{
 			CommandID:     pending.CommandID,
-			Success:       true,
-			ResultCode:    "rebooted_healthy",
-			ResultMessage: "Host returned after reboot and node is healthy",
+			Success:       false,
+			ResultCode:    "reboot_unhealthy",
+			ResultMessage: "Host returned after reboot but node did not become healthy within grace",
 			BootID:        currentBoot,
-		})
-		n.commandStore.removeRebootPending(pending.CommandID)
+		}); err != nil {
+			log.Printf("runtime: reboot unhealthy result persist failed %s: %v", pending.CommandID, err)
+			continue
+		}
+		_ = n.commandStore.removeRebootPending(pending.CommandID)
 	}
 }
 
@@ -127,21 +156,40 @@ func (n *Node) reportPendingRestartResults(ctx context.Context) {
 	if n.commandStore == nil {
 		return
 	}
+	now := nowFunc().UTC()
 	for _, pending := range n.commandStore.restartPending() {
-		st := n.Status()
-		st.Healthy = st.ComputeHealthy()
-		if !st.Healthy {
-			// Keep pending; retry until healthy or operator intervenes.
+		if n.nodeFullyHealthy() {
+			if err := n.persistOrReportResult(ctx, pendingResultRecord{
+				CommandID:     pending.CommandID,
+				Success:       true,
+				ResultCode:    "restarted_healthy",
+				ResultMessage: "Service restarted and node is healthy",
+				BootID:        readBootID(),
+			}); err != nil {
+				log.Printf("runtime: restart result persist failed %s: %v", pending.CommandID, err)
+				continue
+			}
+			_ = n.commandStore.removeRestartPending(pending.CommandID)
 			continue
 		}
-		n.persistOrReportResult(ctx, pendingResultRecord{
+		startedAt, err := time.Parse(time.RFC3339, pending.StartedAt)
+		if err != nil {
+			startedAt = now
+		}
+		if now.Sub(startedAt) < restartHealthGrace {
+			continue
+		}
+		if err := n.persistOrReportResult(ctx, pendingResultRecord{
 			CommandID:     pending.CommandID,
-			Success:       true,
-			ResultCode:    "restarted_healthy",
-			ResultMessage: "Service restarted and node is healthy",
+			Success:       false,
+			ResultCode:    "restart_timeout",
+			ResultMessage: "Service restart did not become healthy within grace",
 			BootID:        readBootID(),
-		})
-		n.commandStore.removeRestartPending(pending.CommandID)
+		}); err != nil {
+			log.Printf("runtime: restart timeout result persist failed %s: %v", pending.CommandID, err)
+			continue
+		}
+		_ = n.commandStore.removeRestartPending(pending.CommandID)
 	}
 }
 
@@ -160,14 +208,17 @@ func (n *Node) flushPendingCommandResults(ctx context.Context) {
 			log.Printf("runtime: pending command result retry %s: %v", pending.CommandID, err)
 			continue
 		}
-		n.commandStore.removePendingResult(pending.CommandID)
+		_ = n.commandStore.removePendingResult(pending.CommandID)
 	}
 }
 
-func (n *Node) persistOrReportResult(ctx context.Context, rec pendingResultRecord) {
+// persistOrReportResult requires durable journal write BEFORE CP POST.
+// Returns error when durable persistence fails (fail-closed).
+func (n *Node) persistOrReportResult(ctx context.Context, rec pendingResultRecord) error {
 	n.ensureCommandStore()
 	if err := n.commandStore.addPendingResult(rec); err != nil {
-		log.Printf("runtime: durable pending result write failed %s: %v", rec.CommandID, err)
+		log.Printf("runtime: CRITICAL durable pending result write failed %s: %v", rec.CommandID, err)
+		return err
 	}
 	err := n.cp.ReportCommandResult(ctx, rec.CommandID, controlplane.NodeCommandResultRequest{
 		Success:       rec.Success,
@@ -177,9 +228,12 @@ func (n *Node) persistOrReportResult(ctx context.Context, rec pendingResultRecor
 	})
 	if err != nil {
 		log.Printf("runtime: command result %s queued for retry: %v", rec.CommandID, err)
-		return
+		return nil // durable; will retry
 	}
-	n.commandStore.removePendingResult(rec.CommandID)
+	if remErr := n.commandStore.removePendingResult(rec.CommandID); remErr != nil {
+		log.Printf("runtime: pending result remove failed %s (idempotent retry OK): %v", rec.CommandID, remErr)
+	}
+	return nil
 }
 
 func (n *Node) pollAndExecuteCommand(ctx context.Context) {
@@ -233,8 +287,6 @@ func (n *Node) executeRenewCertificate(ctx context.Context, commandID string) {
 		n.reportCommandFailure(ctx, commandID, "no_acme", "ACME domain is not configured on this node")
 		return
 	}
-	// Explicit operator renew is allowed even when automatic renewal is not due.
-	// Anti-abuse: refuse hammering Let's Encrypt within the cooldown window.
 	if !lastOK.IsZero() && time.Since(lastOK) < explicitRenewRateLimitWindow {
 		n.reportCommandFailure(ctx, commandID, "rate_limited",
 			fmt.Sprintf("Certificate was renewed recently; retry after %s",
@@ -251,12 +303,12 @@ func (n *Node) executeRenewCertificate(ctx context.Context, commandID string) {
 
 func (n *Node) executeRestartService(ctx context.Context, commandID string) {
 	n.ensureCommandStore()
-	// Durable pending BEFORE MarkExecuted / restart — process may not survive systemctl restart.
-	if err := n.commandStore.addRestartPending(commandID, time.Now().UTC().Format(time.RFC3339)); err != nil {
+	if err := n.commandStore.addRestartPending(commandID, nowFunc().UTC().Format(time.RFC3339)); err != nil {
 		n.reportCommandFailure(ctx, commandID, "journal_failed", err.Error())
 		return
 	}
 	if !n.commandStore.TryMarkExecuted(commandID) {
+		_ = n.commandStore.removeRestartPending(commandID)
 		return
 	}
 	go func() {
@@ -265,7 +317,7 @@ func (n *Node) executeRestartService(ctx context.Context, commandID string) {
 			log.Printf("runtime: service restart: %v", err)
 			failCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 			defer cancel()
-			n.commandStore.removeRestartPending(commandID)
+			_ = n.commandStore.removeRestartPending(commandID)
 			n.reportCommandFailure(failCtx, commandID, "restart_failed", err.Error())
 		}
 	}()
@@ -274,12 +326,12 @@ func (n *Node) executeRestartService(ctx context.Context, commandID string) {
 func (n *Node) executeRebootHost(ctx context.Context, commandID string) {
 	n.ensureCommandStore()
 	preBootID := readBootID()
-	// Persist reboot pending before MarkExecuted / reboot — terminal success only after BootID changes + health.
 	if err := n.commandStore.addRebootPending(commandID, preBootID); err != nil {
 		n.reportCommandFailure(ctx, commandID, "journal_failed", err.Error())
 		return
 	}
 	if !n.commandStore.TryMarkExecuted(commandID) {
+		_ = n.commandStore.removeRebootPending(commandID)
 		return
 	}
 	go func() {
@@ -288,28 +340,32 @@ func (n *Node) executeRebootHost(ctx context.Context, commandID string) {
 			log.Printf("runtime: host reboot: %v", err)
 			failCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 			defer cancel()
-			n.commandStore.removeRebootPending(commandID)
+			_ = n.commandStore.removeRebootPending(commandID)
 			n.reportCommandFailure(failCtx, commandID, "reboot_failed", err.Error())
 		}
 	}()
 }
 
 func (n *Node) reportCommandSuccess(ctx context.Context, commandID, code, message string) {
-	n.persistOrReportResult(ctx, pendingResultRecord{
+	if err := n.persistOrReportResult(ctx, pendingResultRecord{
 		CommandID:     commandID,
 		Success:       true,
 		ResultCode:    code,
 		ResultMessage: message,
 		BootID:        readBootID(),
-	})
+	}); err != nil {
+		log.Printf("runtime: success result not durable %s: %v", commandID, err)
+	}
 }
 
 func (n *Node) reportCommandFailure(ctx context.Context, commandID, code, message string) {
-	n.persistOrReportResult(ctx, pendingResultRecord{
+	if err := n.persistOrReportResult(ctx, pendingResultRecord{
 		CommandID:     commandID,
 		Success:       false,
 		ResultCode:    code,
 		ResultMessage: message,
 		BootID:        readBootID(),
-	})
+	}); err != nil {
+		log.Printf("runtime: failure result not durable %s: %v", commandID, err)
+	}
 }

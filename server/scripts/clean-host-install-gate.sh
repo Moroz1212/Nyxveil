@@ -457,7 +457,7 @@ for b in nyxveil-server nyxveilctl; do
   fi
 done
 
-# Management assets
+# Management assets (PASS-only; remote update requires all of these)
 if [[ -f /usr/local/share/nyxveil/scripts/production-gate.sh ]]; then
   record MGMT_GATE PASS "production-gate.sh present"
 else
@@ -471,7 +471,19 @@ fi
 if [[ -f /etc/polkit-1/rules.d/50-nyxveil-management.rules ]]; then
   record MGMT_POLKIT PASS "polkit rules present"
 else
-  record MGMT_POLKIT SKIP "polkit rules absent (optional on some images)"
+  record MGMT_POLKIT FAIL "polkit rules missing (required for remote management)"
+fi
+if [[ -f /usr/local/share/nyxveil/THIRD_PARTY_CORE.md ]] \
+  && grep -q '7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b' \
+    /usr/local/share/nyxveil/THIRD_PARTY_CORE.md; then
+  record THIRD_PARTY PASS "THIRD_PARTY_CORE.md present with Frozen Core hash"
+else
+  record THIRD_PARTY FAIL "THIRD_PARTY_CORE.md missing or Frozen Core hash mismatch"
+fi
+if [[ -x /usr/local/sbin/nyxveil-catalog-verify ]]; then
+  record CATALOG_VERIFY PASS "nyxveil-catalog-verify present"
+else
+  record CATALOG_VERIFY FAIL "nyxveil-catalog-verify missing"
 fi
 
 # Services
@@ -490,7 +502,7 @@ else
   record HEALTH FAIL "nyxveilctl health"
 fi
 
-# Status fields
+# Status fields — require explicit production readiness bits, not only top-level healthy.
 STATUS_JSON="$(mktemp /tmp/nyxveil-status.XXXXXX.json)"
 if [[ -x "${CTL}" ]] && "${CTL}" status >"${STATUS_JSON}" 2>/dev/null; then
   running="$(json_field "${STATUS_JSON}" running)"
@@ -498,20 +510,46 @@ if [[ -x "${CTL}" ]] && "${CTL}" status >"${STATUS_JSON}" 2>/dev/null; then
   cp_connected="$(json_field "${STATUS_JSON}" cp_connected)"
   accepting="$(json_field "${STATUS_JSON}" accepting)"
   identity="$(json_field "${STATUS_JSON}" identity_present)"
-  detail="running=${running} healthy=${healthy} cp_connected=${cp_connected} accepting=${accepting} identity_present=${identity}"
-  if [[ "${healthy}" == "true" || "${healthy}" == "True" || "${healthy}" == "1" ]]; then
+  tun_ready="$(json_field "${STATUS_JSON}" tun_ready)"
+  tls_ok="$(json_field "${STATUS_JSON}" tls_ok)"
+  quic_ok="$(json_field "${STATUS_JSON}" quic_ok)"
+  bridge_ok="$(json_field "${STATUS_JSON}" bridge_ok)"
+  tickets="$(json_field "${STATUS_JSON}" ticket_keys_loaded)"
+  detail="running=${running} healthy=${healthy} cp_connected=${cp_connected} accepting=${accepting} identity_present=${identity} tun_ready=${tun_ready} tls_ok=${tls_ok} quic_ok=${quic_ok} bridge_ok=${bridge_ok} ticket_keys_loaded=${tickets}"
+  truthy() { case "${1:-}" in true|True|1) return 0 ;; *) return 1 ;; esac; }
+  if truthy "${healthy}" && truthy "${running}" && truthy "${cp_connected}" \
+    && truthy "${identity}" && truthy "${tun_ready}" && truthy "${tls_ok}" \
+    && truthy "${quic_ok}" && truthy "${bridge_ok}" && truthy "${tickets}"; then
     record STATUS_FIELDS PASS "${detail}"
   else
     record STATUS_FIELDS FAIL "${detail}"
   fi
-  if [[ "${cp_connected}" == "true" || "${cp_connected}" == "True" || "${cp_connected}" == "1" ]]; then
+  # Named checks for TUNReady / TLSOK / QUICOK / BridgeOK / TicketKeysLoaded / CPConnected / IdentityPresent / Healthy
+  if truthy "${tun_ready}"; then record TUNReady PASS "tun_ready=true"; else record TUNReady FAIL "tun_ready=${tun_ready}"; fi
+  if truthy "${tls_ok}"; then record TLSOK PASS "tls_ok=true"; else record TLSOK FAIL "tls_ok=${tls_ok}"; fi
+  if truthy "${quic_ok}"; then record QUICOK PASS "quic_ok=true"; else record QUICOK FAIL "quic_ok=${quic_ok}"; fi
+  if truthy "${bridge_ok}"; then record BridgeOK PASS "bridge_ok=true"; else record BridgeOK FAIL "bridge_ok=${bridge_ok}"; fi
+  if truthy "${tickets}"; then record TicketKeysLoaded PASS "ticket_keys_loaded=true"; else record TicketKeysLoaded FAIL "ticket_keys_loaded=${tickets}"; fi
+  if truthy "${cp_connected}"; then
     record CP_CONNECTION PASS "cp_connected=true"
+    record CPConnected PASS "cp_connected=true"
   else
     record CP_CONNECTION FAIL "cp_connected=${cp_connected}"
+    record CPConnected FAIL "cp_connected=${cp_connected}"
   fi
+  if truthy "${identity}"; then record IdentityPresent PASS "identity_present=true"; else record IdentityPresent FAIL "identity_present=${identity}"; fi
+  if truthy "${healthy}"; then record Healthy PASS "healthy=true"; else record Healthy FAIL "healthy=${healthy}"; fi
 else
   record STATUS_FIELDS FAIL "nyxveilctl status failed"
   record CP_CONNECTION FAIL "no status"
+  record TUNReady NOT_EXECUTED "no status"
+  record TLSOK NOT_EXECUTED "no status"
+  record QUICOK NOT_EXECUTED "no status"
+  record BridgeOK NOT_EXECUTED "no status"
+  record TicketKeysLoaded NOT_EXECUTED "no status"
+  record CPConnected NOT_EXECUTED "no status"
+  record IdentityPresent NOT_EXECUTED "no status"
+  record Healthy NOT_EXECUTED "no status"
 fi
 
 # Identity after restart — node_id lives in server.json (not a separate state file).
@@ -571,11 +609,15 @@ if [[ -f "${SERVER_JSON:-/etc/nyxveil/server.json}" ]]; then
   [[ -n "${cfg_cert}" ]] && TLS_CERT="${cfg_cert}"
   [[ -n "${cfg_key}" ]] && TLS_KEY="${cfg_key}"
 fi
+LOCAL_SPKI=""
 if [[ "${TLS_CERT}" == /etc/nyxveil/tls.crt || "${TLS_KEY}" == /etc/nyxveil/tls.key ]]; then
   record TLS_FILES FAIL "tls paths must not use /etc/nyxveil (got cert=${TLS_CERT} key=${TLS_KEY})"
   record TLS_PARSE NOT_EXECUTED "bad path"
   record TLS_SAN NOT_EXECUTED "bad path"
   record TLS_EXPIRY NOT_EXECUTED "bad path"
+  record TLS_KEY_MATCH NOT_EXECUTED "bad path"
+  record TLS_VALIDITY NOT_EXECUTED "bad path"
+  record SERVED_SPKI NOT_EXECUTED "bad path"
 elif [[ -f "${TLS_CERT}" && -f "${TLS_KEY}" ]]; then
   km="$(stat -c '%a' "${TLS_KEY}" 2>/dev/null || echo "?")"
   if [[ "${km}" == "600" || "${km}" == "0600" ]]; then
@@ -584,46 +626,133 @@ elif [[ -f "${TLS_CERT}" && -f "${TLS_KEY}" ]]; then
     record TLS_FILES FAIL "tls.key mode=${km}"
   fi
   if command -v openssl >/dev/null 2>&1; then
-    if openssl x509 -in "${TLS_CERT}" -noout -text >/tmp/nyxveil-tls-parse.txt 2>/dev/null; then
-      record TLS_PARSE PASS "openssl x509 parse"
+    if openssl x509 -in "${TLS_CERT}" -noout -text >/tmp/nyxveil-tls-parse.txt 2>/dev/null \
+      && openssl pkey -in "${TLS_KEY}" -check -noout >/dev/null 2>&1; then
+      record TLS_PARSE PASS "openssl x509+key parse"
       if grep -qi "DNS:${PUBLIC_HOST}\|DNS:\\*\\.${PUBLIC_HOST#*.}" /tmp/nyxveil-tls-parse.txt 2>/dev/null \
         || grep -qi "${PUBLIC_HOST}" /tmp/nyxveil-tls-parse.txt 2>/dev/null; then
         record TLS_SAN PASS "SAN/CN mentions ${PUBLIC_HOST}"
       else
         record TLS_SAN FAIL "public-host not found in cert text"
       fi
-      end="$(openssl x509 -in "${TLS_CERT}" -noout -enddate 2>/dev/null | cut -d= -f2 || true)"
-      if [[ -n "${end}" ]]; then
-        record TLS_EXPIRY PASS "notAfter=${end}"
+      # Cert public key must match private key public key.
+      cert_pub="$(openssl x509 -in "${TLS_CERT}" -pubkey -noout 2>/dev/null \
+        | openssl pkey -pubin -outform DER 2>/dev/null | openssl dgst -sha256 2>/dev/null | awk '{print $NF}')"
+      key_pub="$(openssl pkey -in "${TLS_KEY}" -pubout -outform DER 2>/dev/null \
+        | openssl dgst -sha256 2>/dev/null | awk '{print $NF}')"
+      if [[ -n "${cert_pub}" && "${cert_pub}" == "${key_pub}" ]]; then
+        record TLS_KEY_MATCH PASS "cert pubkey == key pubkey"
       else
-        record TLS_EXPIRY FAIL "cannot read notAfter"
+        record TLS_KEY_MATCH FAIL "cert/key public key mismatch"
+      fi
+      LOCAL_SPKI="$(openssl x509 -in "${TLS_CERT}" -pubkey -noout 2>/dev/null \
+        | openssl pkey -pubin -outform DER 2>/dev/null | openssl dgst -sha256 -binary 2>/dev/null \
+        | openssl base64 -A 2>/dev/null || true)"
+      # Actual validity window: NotBefore <= now < NotAfter (not merely that NotAfter exists).
+      start="$(openssl x509 -in "${TLS_CERT}" -noout -startdate 2>/dev/null | cut -d= -f2 || true)"
+      end="$(openssl x509 -in "${TLS_CERT}" -noout -enddate 2>/dev/null | cut -d= -f2 || true)"
+      if [[ -n "${start}" && -n "${end}" ]] \
+        && openssl x509 -in "${TLS_CERT}" -noout -checkend 0 >/dev/null 2>&1; then
+        # Also reject not-yet-valid: compare epoch if date supports -d.
+        now_epoch="$(date -u +%s 2>/dev/null || echo 0)"
+        start_epoch="$(date -u -d "${start}" +%s 2>/dev/null || echo 0)"
+        end_epoch="$(date -u -d "${end}" +%s 2>/dev/null || echo 0)"
+        if [[ "${now_epoch}" -gt 0 && "${start_epoch}" -gt 0 && "${end_epoch}" -gt 0 ]]; then
+          if [[ "${start_epoch}" -le "${now_epoch}" && "${now_epoch}" -lt "${end_epoch}" ]]; then
+            record TLS_VALIDITY PASS "NotBefore=${start} NotAfter=${end}"
+            record TLS_EXPIRY PASS "notAfter=${end}"
+          else
+            record TLS_VALIDITY FAIL "now outside NotBefore/NotAfter window"
+            record TLS_EXPIRY FAIL "notAfter=${end}"
+          fi
+        else
+          record TLS_VALIDITY PASS "checkend ok NotBefore=${start} NotAfter=${end}"
+          record TLS_EXPIRY PASS "notAfter=${end}"
+        fi
+      else
+        record TLS_VALIDITY FAIL "certificate not currently valid (NotBefore/NotAfter)"
+        record TLS_EXPIRY FAIL "notAfter=${end:-unknown}"
+      fi
+      # Live listener must serve the same SPKI as local expected cert.
+      if [[ -n "${LOCAL_SPKI}" ]]; then
+        served_pem="$(timeout 8 openssl s_client -connect "${PUBLIC_HOST}:443" \
+          -servername "${PUBLIC_HOST}" -brief </dev/null 2>/dev/null \
+          | openssl x509 2>/dev/null || true)"
+        if [[ -z "${served_pem}" ]]; then
+          # Fallback without -brief for older openssl.
+          served_pem="$(timeout 8 openssl s_client -connect "${PUBLIC_HOST}:443" \
+            -servername "${PUBLIC_HOST}" </dev/null 2>/dev/null \
+            | openssl x509 2>/dev/null || true)"
+        fi
+        if [[ -n "${served_pem}" ]]; then
+          served_spki="$(printf '%s\n' "${served_pem}" | openssl x509 -pubkey -noout 2>/dev/null \
+            | openssl pkey -pubin -outform DER 2>/dev/null | openssl dgst -sha256 -binary 2>/dev/null \
+            | openssl base64 -A 2>/dev/null || true)"
+          if [[ -n "${served_spki}" && "${served_spki}" == "${LOCAL_SPKI}" ]]; then
+            record SERVED_SPKI PASS "listener SPKI matches local cert"
+            record SERVED_SPKI_MATCH PASS "served SPKI == local SPKI"
+          else
+            record SERVED_SPKI FAIL "listener SPKI mismatch"
+            record SERVED_SPKI_MATCH FAIL "served SPKI != local SPKI"
+          fi
+        else
+          record SERVED_SPKI FAIL "could not fetch served certificate from :443"
+          record SERVED_SPKI_MATCH FAIL "no served cert"
+        fi
+      else
+        record SERVED_SPKI FAIL "could not compute local SPKI"
+        record SERVED_SPKI_MATCH FAIL "no local SPKI"
       fi
     else
       record TLS_PARSE FAIL "openssl parse failed"
       record TLS_SAN NOT_EXECUTED "parse failed"
       record TLS_EXPIRY NOT_EXECUTED "parse failed"
+      record TLS_KEY_MATCH NOT_EXECUTED "parse failed"
+      record TLS_VALIDITY NOT_EXECUTED "parse failed"
+      record SERVED_SPKI NOT_EXECUTED "parse failed"
+      record SERVED_SPKI_MATCH NOT_EXECUTED "parse failed"
     fi
   else
-    record TLS_PARSE SKIP "openssl not available"
-    record TLS_SAN SKIP "openssl not available"
-    record TLS_EXPIRY SKIP "openssl not available"
+    record TLS_PARSE FAIL "openssl not available (required)"
+    record TLS_SAN NOT_EXECUTED "openssl missing"
+    record TLS_EXPIRY NOT_EXECUTED "openssl missing"
+    record TLS_KEY_MATCH NOT_EXECUTED "openssl missing"
+    record TLS_VALIDITY NOT_EXECUTED "openssl missing"
+    record SERVED_SPKI NOT_EXECUTED "openssl missing"
+    record SERVED_SPKI_MATCH NOT_EXECUTED "openssl missing"
   fi
 else
   record TLS_FILES FAIL "missing cert=${TLS_CERT} key=${TLS_KEY}"
   record TLS_PARSE NOT_EXECUTED "no cert"
   record TLS_SAN NOT_EXECUTED "no cert"
   record TLS_EXPIRY NOT_EXECUTED "no cert"
+  record TLS_KEY_MATCH NOT_EXECUTED "no cert"
+  record TLS_VALIDITY NOT_EXECUTED "no cert"
+  record SERVED_SPKI NOT_EXECUTED "no cert"
+  record SERVED_SPKI_MATCH NOT_EXECUTED "no cert"
 fi
 
-# Network listeners
+# Network listeners — require TCP :443 and UDP :443 (QUIC) where applicable.
 if command -v ss >/dev/null 2>&1; then
+  if ss -lnt 2>/dev/null | grep -Eq ':443\\b'; then
+    record LISTENER_TCP_443 PASS "TCP :443 listening"
+  else
+    record LISTENER_TCP_443 FAIL "no TCP listener on :443"
+  fi
+  if ss -lnu 2>/dev/null | grep -Eq ':443\\b'; then
+    record LISTENER_UDP_443 PASS "UDP :443 listening (QUIC)"
+  else
+    record LISTENER_UDP_443 FAIL "no UDP listener on :443"
+  fi
   if ss -lntu 2>/dev/null | grep -Eq ':443\\b'; then
     record LISTENERS PASS "port 443 listening"
   else
     record LISTENERS FAIL "no listener on :443"
   fi
 else
-  record LISTENERS SKIP "ss not available"
+  record LISTENER_TCP_443 FAIL "ss not available"
+  record LISTENER_UDP_443 FAIL "ss not available"
+  record LISTENERS FAIL "ss not available"
 fi
 
 # Token leak scan WITHOUT printing token
@@ -708,7 +837,12 @@ for ((i = 0; i < ${#CHECK_STATUSES[@]}; i++)); do
 done
 
 # Explicitly require key checks to be PASS (not SKIP)
-for need in CONFIRM_DISPOSABLE DISPOSABLE_MARKER ROOT OS SYSTEMD TUN CLEAN_STATE INSTALL VERSION HEALTH CP_CONNECTION RESTART_TEST TOKEN_LEAK; do
+for need in \
+  CONFIRM_DISPOSABLE DISPOSABLE_MARKER ROOT OS SYSTEMD TUN CLEAN_STATE INSTALL VERSION \
+  HEALTH CP_CONNECTION RESTART_TEST TOKEN_LEAK \
+  MGMT_GATE MGMT_UPDATE_UNIT MGMT_POLKIT THIRD_PARTY CATALOG_VERIFY \
+  TLS_KEY_MATCH TLS_VALIDITY SERVED_SPKI_MATCH LISTENER_TCP_443 \
+  TUNReady TLSOK QUICOK BridgeOK TicketKeysLoaded CPConnected IdentityPresent Healthy; do
   found=0
   for ((i = 0; i < ${#CHECK_NAMES[@]}; i++)); do
     if [[ "${CHECK_NAMES[$i]}" == "${need}" ]]; then

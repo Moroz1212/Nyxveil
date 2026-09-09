@@ -125,6 +125,13 @@ bash "${ROOT}/scripts/normalize-shell-lf.sh" "${DIST}/production-gate.sh"
 # Version-pinned production installer (GitHub Release asset; not floating main raw URL).
 bash "${ROOT}/scripts/normalize-shell-lf.sh" "${ROOT}/installer/install.sh"
 cp -a "${ROOT}/installer/install.sh" "${DIST}/install.sh"
+# Embed exact release version so server-v${VERSION}/install.sh does not float to later tags.
+if grep -q '^DEFAULT_RELEASE_VERSION=""' "${DIST}/install.sh"; then
+  sed -i.bak "s/^DEFAULT_RELEASE_VERSION=\"\"/DEFAULT_RELEASE_VERSION=\"${VERSION}\"/" "${DIST}/install.sh"
+  rm -f "${DIST}/install.sh.bak"
+else
+  die "install.sh missing DEFAULT_RELEASE_VERSION pin site"
+fi
 chmod 0755 "${DIST}/install.sh"
 bash "${ROOT}/scripts/normalize-shell-lf.sh" "${DIST}/install.sh"
 cp -a "${ROOT}/systemd/nyxveil-update.service" "${DIST}/nyxveil-update.service"

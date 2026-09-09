@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,6 +167,107 @@ func TestKeyRotationActivationFailRollsBack(t *testing.T) {
 	h.assertOldTLS(t)
 	if advertisements != 2 {
 		t.Fatalf("advertisements=%d want new then old", advertisements)
+	}
+}
+
+func TestKeyRotationReloadFailRollsBackAndVerifiesOldSPKI(t *testing.T) {
+	h := newRotationHarness(t, true)
+	advertisements := 0
+	catalogPins := 0
+	servedPins := 0
+	reloadCalls := 0
+	h.node.advertiseSPKI = func(context.Context, []byte) error {
+		advertisements++
+		return nil
+	}
+	h.node.verifyCatalogSPKI = func(context.Context, []byte) error {
+		catalogPins++
+		return nil
+	}
+	h.node.verifyServedSPKI = func(context.Context, []byte) error {
+		servedPins++
+		return nil
+	}
+	h.node.reloadTLS = func(tls.Certificate) error {
+		reloadCalls++
+		if reloadCalls == 1 {
+			return errors.New("reload failed")
+		}
+		return nil
+	}
+	if _, _, _, _, err := h.node.issueACME(context.Background(), h.cfg); err == nil {
+		t.Fatal("expected reload failure")
+	}
+	h.assertOldTLS(t)
+	if advertisements < 2 {
+		t.Fatalf("must re-advertise old SPKI after failure; ads=%d", advertisements)
+	}
+	if catalogPins < 2 {
+		t.Fatalf("must verify old SPKI in catalog; catalogs=%d", catalogPins)
+	}
+	if servedPins < 1 {
+		t.Fatalf("must verify served old SPKI; served=%d", servedPins)
+	}
+}
+
+func TestKeyRotationServedSPKIFailRollsBack(t *testing.T) {
+	h := newRotationHarness(t, true)
+	h.node.verifyServedSPKI = func(_ context.Context, pin []byte) error {
+		return errors.New("served SPKI mismatch")
+	}
+	if _, _, _, _, err := h.node.issueACME(context.Background(), h.cfg); err == nil {
+		t.Fatal("expected served SPKI failure")
+	}
+	h.assertOldTLS(t)
+}
+
+func TestKeyRotationOldSPKIAdvertiseFailureSurfaces(t *testing.T) {
+	h := newRotationHarness(t, true)
+	calls := 0
+	h.node.advertiseSPKI = func(context.Context, []byte) error {
+		calls++
+		if calls == 1 {
+			return nil
+		}
+		return errors.New("restore advertise failed")
+	}
+	h.node.commitTLS = func(sc, sk, lc, lk string) error {
+		if err := configure.AtomicCommitTLS(sc, sk, lc, lk); err != nil {
+			return err
+		}
+		return errors.New("activation failed")
+	}
+	_, _, _, _, err := h.node.issueACME(context.Background(), h.cfg)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "restore advertise failed") && !strings.Contains(err.Error(), "advertise") {
+		t.Fatalf("must surface old-SPKI advertise failure: %v", err)
+	}
+}
+
+func TestKeyRotationOldSPKICatalogVerifyFailureSurfaces(t *testing.T) {
+	h := newRotationHarness(t, true)
+	catalogCalls := 0
+	h.node.verifyCatalogSPKI = func(context.Context, []byte) error {
+		catalogCalls++
+		if catalogCalls == 1 {
+			return nil // new pin OK
+		}
+		return errors.New("old pin catalog verify failed")
+	}
+	h.node.commitTLS = func(sc, sk, lc, lk string) error {
+		if err := configure.AtomicCommitTLS(sc, sk, lc, lk); err != nil {
+			return err
+		}
+		return errors.New("activation failed")
+	}
+	_, _, _, _, err := h.node.issueACME(context.Background(), h.cfg)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "old pin catalog verify failed") && !strings.Contains(err.Error(), "catalog") {
+		t.Fatalf("must surface old-SPKI catalog verify failure: %v", err)
 	}
 }
 

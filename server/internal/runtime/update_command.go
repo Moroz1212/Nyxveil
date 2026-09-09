@@ -22,6 +22,21 @@ import (
 const (
 	nyxveilUpdateUnit = "nyxveil-update.service"
 	updateMarkerName  = "update-command.json"
+
+	updatePhaseStarting          = "starting"
+	updatePhaseDownloading       = "downloading"
+	updatePhaseVerifying         = "verifying"
+	updatePhaseInstalling        = "installing"
+	updatePhaseRestarting        = "restarting"
+	updatePhasePostCheck         = "post_check"
+	updatePhaseUpdatedHealthy    = "updated_healthy"
+	updatePhaseRollingBack       = "rolling_back"
+	updatePhaseRolledBackHealthy = "rolled_back_healthy"
+	updatePhaseRollbackFailed    = "rollback_failed"
+	updatePhaseResultPending     = "result_pending"
+
+	// Legacy phase written by 1.1.11 pre-fix runtimes (normalized via ToLower).
+	updatePhaseLegacyDownloading = "Downloading"
 )
 
 type updateMarker struct {
@@ -37,13 +52,58 @@ type updateMarker struct {
 	ResultMessage   string `json:"result_message,omitempty"`
 }
 
+func normalizeUpdatePhase(phase string) string {
+	// Preserve recognition of the historical Title-Case marker value.
+	if phase == updatePhaseLegacyDownloading {
+		return updatePhaseDownloading
+	}
+	p := strings.TrimSpace(strings.ToLower(phase))
+	switch p {
+	case "downloading":
+		return updatePhaseDownloading
+	case "starting":
+		return updatePhaseStarting
+	case "verifying":
+		return updatePhaseVerifying
+	case "installing", "assets_installed":
+		return updatePhaseInstalling
+	case "restarting", "resuming":
+		return updatePhaseRestarting
+	case "post_check":
+		return updatePhasePostCheck
+	case "updated_healthy", "committed":
+		return updatePhaseUpdatedHealthy
+	case "rolling_back":
+		return updatePhaseRollingBack
+	case "rolled_back_healthy", "rolled_back":
+		return updatePhaseRolledBackHealthy
+	case "rollback_failed":
+		return updatePhaseRollbackFailed
+	case "result_pending":
+		return updatePhaseResultPending
+	default:
+		return p
+	}
+}
+
+func updatePhaseIsNonTerminal(phase string) bool {
+	switch normalizeUpdatePhase(phase) {
+	case updatePhaseStarting, updatePhaseDownloading, updatePhaseVerifying,
+		updatePhaseInstalling, updatePhaseRestarting, updatePhasePostCheck,
+		updatePhaseRollingBack:
+		return true
+	default:
+		return false
+	}
+}
+
 func (n *Node) executeUpdateNodeLatest(ctx context.Context, cmd *controlplane.NodeCommand) {
 	if cmd == nil {
 		return
 	}
 	commandID := cmd.ID
 	prev := version.ServerVersion
-	log.Printf("runtime: update %s phase=CheckingLatest", commandID)
+	log.Printf("runtime: update %s phase=starting", commandID)
 
 	target := strings.TrimSpace(strings.TrimPrefix(cmd.TargetVersion, "v"))
 	if target == "" {
@@ -84,7 +144,7 @@ func (n *Node) executeUpdateNodeLatest(ctx context.Context, cmd *controlplane.No
 		CommandID:       commandID,
 		PreviousVersion: prev,
 		TargetVersion:   target,
-		Phase:           "Downloading",
+		Phase:           updatePhaseDownloading,
 		StartedAt:       time.Now().UTC().Format(time.RFC3339),
 		LastUpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 	}); err != nil {
@@ -101,7 +161,7 @@ func (n *Node) executeUpdateNodeLatest(ctx context.Context, cmd *controlplane.No
 			"nyxveil-update.service required for remote update: "+err.Error())
 		return
 	}
-	log.Printf("runtime: update %s started %s target=%s", commandID, nyxveilUpdateUnit, target)
+	log.Printf("runtime: update %s started %s target=%s phase=%s", commandID, nyxveilUpdateUnit, target, updatePhaseDownloading)
 }
 
 func (n *Node) completePendingUpdate(ctx context.Context) {
@@ -110,7 +170,8 @@ func (n *Node) completePendingUpdate(ctx context.Context) {
 		return
 	}
 
-	if m.ResultPending {
+	phase := normalizeUpdatePhase(m.Phase)
+	if m.ResultPending || phase == updatePhaseResultPending {
 		req := controlplane.NodeCommandResultRequest{
 			Success:       m.ResultSuccess,
 			ResultCode:    m.ResultCode,
@@ -124,6 +185,21 @@ func (n *Node) completePendingUpdate(ctx context.Context) {
 		return
 	}
 
+	// Bridge: adopt terminal phase from nyxveilctl update transaction journal.
+	if bridged, changed := n.bridgeUpdatePhaseFromCtl(m); changed {
+		m = bridged
+		phase = normalizeUpdatePhase(m.Phase)
+		if err := n.writeUpdateMarker(m); err != nil {
+			log.Printf("runtime: update marker bridge write: %v", err)
+			return
+		}
+	}
+
+	// Non-terminal: never infer rolled_back_healthy from previous==current.
+	if updatePhaseIsNonTerminal(phase) {
+		return
+	}
+
 	cur := version.ServerVersion
 	target := strings.TrimPrefix(strings.TrimSpace(m.TargetVersion), "v")
 	prev := strings.TrimPrefix(strings.TrimSpace(m.PreviousVersion), "v")
@@ -131,19 +207,93 @@ func (n *Node) completePendingUpdate(ctx context.Context) {
 
 	st := n.Status()
 	st.Healthy = st.ComputeHealthy()
+	cpOK := n.cpOK.Load()
 
-	switch {
-	case got == prev && st.Healthy:
-		// Update failed; previous release restored and proven healthy.
-		n.finishUpdateLocal(ctx, m, false, "rolled_back_healthy",
-			"Runtime rolled back and healthy at previous version: "+cur)
-	case got == target && st.Healthy:
-		n.finishUpdateLocal(ctx, m, true, "updated_healthy",
-			"Runtime version and health confirmed: "+cur)
+	switch phase {
+	case updatePhaseUpdatedHealthy:
+		if got == target && st.Healthy && cpOK {
+			n.finishUpdateLocal(ctx, m, true, "updated_healthy",
+				"Runtime version and health confirmed: "+cur)
+			return
+		}
+		// Executor claimed success but runtime not ready yet — wait.
+		return
+	case updatePhaseRolledBackHealthy:
+		if got == prev && st.Healthy && cpOK {
+			n.finishUpdateLocal(ctx, m, false, "rolled_back_healthy",
+				"Runtime rolled back and healthy at previous version: "+cur)
+			return
+		}
+		return
+	case updatePhaseRollbackFailed:
+		n.finishUpdateLocal(ctx, m, false, "rollback_failed",
+			"Update executor reported rollback_failed")
+		return
 	default:
-		n.finishUpdateLocal(ctx, m, false, "outcome_unknown",
-			fmt.Sprintf("update outcome ambiguous: current=%s target=%s previous=%s healthy=%v",
-				cur, m.TargetVersion, m.PreviousVersion, st.Healthy))
+		// Unknown terminal-ish phase: do not guess rollback from version equality.
+		return
+	}
+}
+
+// bridgeUpdatePhaseFromCtl maps nyxveilctl update-transaction phases onto the
+// runtime marker so there is one authoritative lifecycle for CP results.
+func (n *Node) bridgeUpdatePhaseFromCtl(m updateMarker) (updateMarker, bool) {
+	stateDir := filepath.Dir(paths.CommandsState())
+	if n.opts.KeyPath != "" {
+		stateDir = filepath.Dir(n.opts.KeyPath)
+	}
+	txnDir := filepath.Join(stateDir, "update-transactions")
+	entries, err := os.ReadDir(txnDir)
+	if err != nil {
+		return m, false
+	}
+	var latestPhase string
+	var latestMod time.Time
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(txnDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var tx struct {
+			Phase         string `json:"phase"`
+			TargetVersion string `json:"target_version"`
+		}
+		if json.Unmarshal(raw, &tx) != nil {
+			continue
+		}
+		if strings.TrimPrefix(strings.TrimSpace(tx.TargetVersion), "v") !=
+			strings.TrimPrefix(strings.TrimSpace(m.TargetVersion), "v") {
+			continue
+		}
+		if info.ModTime().After(latestMod) {
+			latestMod = info.ModTime()
+			latestPhase = tx.Phase
+		}
+	}
+	if latestPhase == "" {
+		return m, false
+	}
+	mapped := normalizeUpdatePhase(latestPhase)
+	if mapped == "" || mapped == normalizeUpdatePhase(m.Phase) {
+		return m, false
+	}
+	// Only advance toward terminal / progress phases from ctl.
+	switch mapped {
+	case updatePhaseInstalling, updatePhaseRestarting, updatePhasePostCheck,
+		updatePhaseUpdatedHealthy, updatePhaseRollingBack,
+		updatePhaseRolledBackHealthy, updatePhaseRollbackFailed:
+		m.Phase = mapped
+		m.LastUpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		return m, true
+	default:
+		return m, false
 	}
 }
 
@@ -152,10 +302,11 @@ func (n *Node) finishUpdateLocal(ctx context.Context, m updateMarker, success bo
 	m.ResultSuccess = success
 	m.ResultCode = code
 	m.ResultMessage = message
-	m.Phase = "ResultPending"
+	m.Phase = updatePhaseResultPending
 	m.LastUpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := n.writeUpdateMarker(m); err != nil {
-		log.Printf("runtime: update marker result write: %v", err)
+		log.Printf("runtime: update marker result write FAILED (not reporting): %v", err)
+		return
 	}
 	n.completePendingUpdate(ctx)
 }
