@@ -24,9 +24,14 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: server/go.sum
 
       - name: Assert Frozen Core SHA
         run: bash scripts/assert-frozen-core.sh
@@ -40,7 +45,7 @@ jobs:
           VERSION="$(tr -d '[:space:]' < VERSION)"
           TAG="server-v${VERSION}"
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            TAG="${GITHUB_REF_NAME}"
+            [[ "${GITHUB_REF_NAME}" == "${TAG}" ]] || { echo "Tag disagrees with VERSION"; exit 1; }
           fi
           SHA="${GITHUB_SHA}"
           RUN_ID="${INPUT_RUN_ID:-}"
@@ -54,18 +59,39 @@ jobs:
             echo "Push the tag only after Server CI is green, or pass ci_run_id."
             exit 1
           }
-          echo "Using Server CI run ${RUN_ID} for ${SHA}"
+          [[ "${RUN_ID}" =~ ^[0-9]+$ ]] || { echo "Invalid CI run ID"; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" > /tmp/server-ci-run.json
+          jq -e --arg sha "${SHA}" --arg repo "${GITHUB_REPOSITORY}" '
+            .head_sha == $sha and .repository.full_name == $repo and
+            .head_repository.full_name == $repo and .event == "push" and
+            .path == ".github/workflows/server-ci.yml" and
+            .status == "completed" and .conclusion == "success"
+          ' /tmp/server-ci-run.json >/dev/null
+          git fetch --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          [[ "$(git rev-parse "${TAG}^{commit}")" == "${SHA}" ]] || { echo "Tag targets another commit"; exit 1; }
+          echo "Using verified Server CI run ${RUN_ID} for ${SHA}"
           rm -rf dist/release
           mkdir -p dist/release
-          gh run download "${RUN_ID}" --repo "${GITHUB_REPOSITORY}" \
-            -n nyxveil-server-binaries -D dist/release
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            | jq -s '[.[].artifacts[] | select(.name == "nyxveil-server-binaries" and .expired == false)]' > /tmp/server-ci-artifacts.json
+          jq -e 'length == 1' /tmp/server-ci-artifacts.json >/dev/null
+          ARTIFACT_ID="$(jq -r '.[0].id' /tmp/server-ci-artifacts.json)"
+          DIGEST="$(jq -r '.[0].digest' /tmp/server-ci-artifacts.json)"
+          [[ "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "Missing artifact digest"; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > /tmp/server-ci-artifact.zip
+          printf '%s  %s\n' "${DIGEST#sha256:}" /tmp/server-ci-artifact.zip | sha256sum -c -
+          unzip -q /tmp/server-ci-artifact.zip -d dist/release
+          # Actions ZIP transport normalizes permissions; restore script mode only.
+          chmod 0755 dist/release/{production-gate,install,bootstrap-cli-update,live-final-update}.sh
+          printf 'Source: %s\nCI run: %s\nArtifact ID: %s\nArchive SHA256: %s\n' \
+            "${SHA}" "${RUN_ID}" "${ARTIFACT_ID}" "${DIGEST#sha256:}" >> "${GITHUB_STEP_SUMMARY}"
           echo "CI_RUN_ID=${RUN_ID}" >> "${GITHUB_ENV}"
           echo "RELEASE_TAG=${TAG}" >> "${GITHUB_ENV}"
 
       - name: Verify release bytes identity (CI artifact)
         run: |
           set -euo pipefail
-          bash scripts/verify-release.sh
+          bash scripts/verify-release.sh --ci-artifact
           bash scripts/verify-artifact-set.sh
           bash scripts/assert-release-bytes-identity.sh
           echo "RELEASE_BYTES_IDENTITY=PASS"
@@ -91,23 +117,19 @@ jobs:
           for a in "${ASSETS[@]}"; do
             [[ -f "${a}" ]] || { echo "missing ${a}"; exit 1; }
           done
-          # Refuse --clobber of differently hashed assets: delete+recreate only when
-          # existing release assets match our SHA256SUMS, else fail closed.
+          # Existing releases are immutable; matching bytes make reruns a no-op.
           if gh release view "${TAG}" >/dev/null 2>&1; then
-            echo "Release ${TAG} already exists — verifying asset hash identity before replace"
+            echo "Release ${TAG} already exists — verifying asset identity"
             bash scripts/assert-existing-release-matches-dist.sh "${TAG}" || {
               echo "Existing release assets differ from CI bytes; refuse silent overwrite"
               exit 1
             }
-            gh release upload "${TAG}" "${ASSETS[@]}" --clobber
           else
             NOTES="${DIST}/NOTES.txt"
             [[ -f "${NOTES}" ]] || NOTES=""
             gh release create "${TAG}" "${ASSETS[@]}" \
               --title "Nyxveil Server ${TAG}" \
               ${NOTES:+--notes-file "${NOTES}"} \
-              --verify-tag || gh release create "${TAG}" "${ASSETS[@]}" \
-              --title "Nyxveil Server ${TAG}" \
-              ${NOTES:+--notes-file "${NOTES}"}
+              --verify-tag
           fi
           echo "Published ${TAG} from Server CI run ${CI_RUN_ID} (no rebuild)"

@@ -5,10 +5,12 @@ on:
     paths:
       - 'server/**'
       - '.github/workflows/server-ci.yml'
+      - '.github/workflows/server-release.yml'
   pull_request:
     paths:
       - 'server/**'
       - '.github/workflows/server-ci.yml'
+      - '.github/workflows/server-release.yml'
 
 defaults:
   run:
@@ -16,7 +18,8 @@ defaults:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -40,6 +43,11 @@ jobs:
         run: go test -timeout 120s ./...
       - name: Installer structure checks
         run: bash scripts/test-install.sh
+      - name: Platform modes and firewall transaction contracts
+        run: |
+          bash scripts/test-installed-modes.sh
+          bash scripts/test-installer-management-assets.sh
+          bash scripts/test-firewall-transaction.sh
       - name: Curl|bash self-contained installer mock
         run: bash scripts/test-curl-installer.sh
       - name: Manifest shell↔Go interop + curl pipe
@@ -53,9 +61,16 @@ jobs:
       - name: Bounded runuser/timeout wrapper
         run: bash scripts/test-bounded-runuser-timeout.sh
       - name: ACME privileged bind / bootstrap secret hygiene
-        run: bash scripts/test-acme-privileged-bind.sh
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nftables util-linux libcap2-bin python3
+          id nyxveil >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin nyxveil
+          sudo bash scripts/test-acme-privileged-bind.sh | tee /tmp/acme-bind-gate.log
+          grep -qx 'ACME_PRIVILEGED_BIND=PASS' /tmp/acme-bind-gate.log
       - name: nftables idempotency
-        run: bash scripts/test-nftables-idempotency.sh
+        run: |
+          sudo bash scripts/test-nftables-idempotency.sh | tee /tmp/nft-gate.log
+          grep -q '^NFTABLES_IDEMPOTENCY=PASS ' /tmp/nft-gate.log
       - name: Remote update gate API contract
         run: bash scripts/test-remote-update-gate-contract.sh
       - name: Remote certificate renewal gate contract
@@ -68,7 +83,8 @@ jobs:
         run: go test -race -timeout 300s ./internal/runtime ./internal/updater ./internal/listeners ./internal/netcfg
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     needs: test
     steps:
       - uses: actions/checkout@v4

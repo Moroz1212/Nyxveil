@@ -85,7 +85,7 @@ func TestUpgradeFromReal111OldCtlTo112CompleteRelease(t *testing.T) {
 
 	// Safe first step: replace only the old 1.1.1 ctl. Server and auxiliaries
 	// remain untouched until the new updater is in place.
-	if _, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
+	if _, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{TestMode: true,
 		ManifestURL: httpServer.URL + "/release-manifest.json",
 		WantVersion: "1.1.2",
 		CtlPath:     ctlPath,

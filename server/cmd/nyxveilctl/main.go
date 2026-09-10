@@ -272,6 +272,7 @@ func runBootstrapCLI(args []string) error {
 
 	fmt.Printf("bootstrap-cli: verifying signed manifest %s (CLI-only; server untouched)\n", url)
 	res, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
+		TestMode:    os.Getenv("NYXVEIL_TEST_MODE") == "1",
 		ManifestURL: url,
 		WantVersion: *versionFlag,
 		CtlPath:     dest,
@@ -337,6 +338,12 @@ func runUpdate(args []string) error {
 		}
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		if os.Getenv("NYXVEIL_TEST_MODE") != "1" {
+			if err := updater.ValidateReleaseURL(manifestURL); err != nil {
+				cancel()
+				return err
+			}
+		}
 		defer cancel()
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, manifestURL, nil)
 		if err != nil {
@@ -356,6 +363,18 @@ func runUpdate(args []string) error {
 	m, err := updater.ParseManifest(b)
 	if err != nil {
 		return err
+	}
+	if localDir == "" && os.Getenv("NYXVEIL_TEST_MODE") != "1" {
+		for _, asset := range m.Assets {
+			if err := updater.ValidateReleaseURL(asset.URL); err != nil {
+				return err
+			}
+		}
+		if m.URL != "" {
+			if err := updater.ValidateReleaseURL(m.URL); err != nil {
+				return err
+			}
+		}
 	}
 	u := updater.New(server, paths.PreviousBinary(), paths.RollbackMarker())
 	extraDest, extraPrev := paths.DefaultExtraInstallMaps()

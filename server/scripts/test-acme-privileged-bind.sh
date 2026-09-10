@@ -15,7 +15,7 @@ echo "== static wrapper contract =="
 grep -q 'AmbientCapabilities=CAP_NET_BIND_SERVICE' "${INSTALLER}" \
   && pass "systemd-run AmbientCapabilities=CAP_NET_BIND_SERVICE" \
   || fail "missing systemd-run AmbientCapabilities"
-grep -q 'ambient-caps=+net_bind_service' "${INSTALLER}" \
+grep -q 'ambient-caps=-all,+net_bind_service' "${INSTALLER}" \
   && pass "setpriv ambient-caps fallback" \
   || fail "missing setpriv ambient-caps"
 # Comments may mention setcap; forbid actual invocations as commands.
@@ -54,6 +54,7 @@ printf 'stdin_len=%s\n' "${#line}"
 exit 0
 EOF
 chmod +x "${TMP}/inspect_argv.sh"
+chmod 755 "${TMP}"
 
 MOCK=1
 # shellcheck disable=SC1090
@@ -61,19 +62,22 @@ eval "$(sed -n '/^run_as_nyxveil_bounded()/,/^}/p' "${INSTALLER}")"
 
 echo "== MOCK bounded wrapper preserves stdin, no token on argv =="
 SECRET='tok-live-secret-do-not-leak'
-out="$(printf '%s\n' "${SECRET}" | run_as_nyxveil_bounded 5 1 "${TMP}/inspect_argv.sh" --register-stdin --config /tmp/x 2>&1 || true)"
+probe_rc=0
+out="$(printf '%s\n' "${SECRET}" | run_as_nyxveil_bounded 5 1 "${TMP}/inspect_argv.sh" --register-stdin --config /tmp/x 2>&1)" || probe_rc=$?
+[[ ${probe_rc} -eq 0 ]] || fail "stdin probe failed rc=${probe_rc}"
 echo "${out}" | grep -q "stdin_len=${#SECRET}" && pass "stdin delivered" || fail "stdin missing"
 echo "${out}" | grep -F "${SECRET}" >/dev/null && fail "secret leaked in output" || pass "secret absent from output"
 echo "${out}" | grep -q 'arg=--register-stdin' && pass "register-stdin present" || fail "register-stdin missing"
 
 if [[ "$(uname -s)" != "Linux" || "${EUID}" -ne 0 ]]; then
-  echo "ACME_PRIVILEGED_BIND=PASS (static+mock; live bind skipped)"
-  echo "BOOTSTRAP_SECRET_HYGIENE=PASS"
+  echo "ACME_PRIVILEGED_BIND=SKIP (requires root Linux)"
+  echo "BOOTSTRAP_SECRET_HYGIENE=PARTIAL (mock only)"
   [[ "${FAIL}" -eq 0 ]] || exit 1
   exit 0
 fi
 
-START="$(sysctl -n net.ipv4.ip_unprivileged_port_start 2>/dev/null || echo 1024)"
+START="$(sysctl -n net.ipv4.ip_unprivileged_port_start)"
+command -v getcap >/dev/null || { fail "getcap required"; exit 1; }
 if [[ "${START}" -le 80 ]]; then
   fail "ip_unprivileged_port_start=${START} already allows privileged ports"
 else
@@ -92,7 +96,11 @@ except OSError as e:
     || fail "uncapped bind expected DENIED got '${got}'"
 
   cat >"${TMP}/bind80.py" <<'PY'
-import socket, os, sys
+import socket, os, sys, pwd
+assert os.getuid() == pwd.getpwnam("nyxveil").pw_uid != 0
+status = dict(line.split(':', 1) for line in open('/proc/self/status') if ':' in line)
+for field in ('CapEff', 'CapPrm', 'CapInh', 'CapAmb', 'CapBnd'):
+    assert int(status[field].strip(), 16) == 1 << 10, (field, status[field])
 s = socket.socket()
 try:
     s.bind(("127.0.0.1", 80))
@@ -102,6 +110,7 @@ except Exception as e:
     print("BIND_FAIL %s" % e)
     sys.exit(1)
 PY
+  chmod 644 "${TMP}/bind80.py"
   MOCK=0
   eval "$(sed -n '/^run_as_nyxveil_bounded()/,/^}/p' "${INSTALLER}")"
   if run_as_nyxveil_bounded 10 2 /usr/bin/python3 "${TMP}/bind80.py"; then
@@ -109,6 +118,18 @@ PY
   else
     fail "privileged bind :80 failed under registration wrapper"
   fi
+  # Hide systemd-run to exercise the exact fallback branch independently.
+  mkdir "${TMP}/tools"
+  ln -s "$(command -v setpriv)" "${TMP}/tools/setpriv"
+  ln -s "$(command -v timeout)" "${TMP}/tools/timeout"
+  if PATH="${TMP}/tools" run_as_nyxveil_bounded 10 2 /usr/bin/python3 "${TMP}/bind80.py"; then
+    pass "setpriv fallback grants only CAP_NET_BIND_SERVICE"
+  else
+    fail "setpriv fallback bind/capability assertion failed"
+  fi
+  timeout_rc=0
+  run_as_nyxveil_bounded 1 1 /usr/bin/sleep 30 >/dev/null 2>&1 || timeout_rc=$?
+  [[ ${timeout_rc} -ne 0 ]] && pass "wrapper timeout propagates failure" || fail "timed-out child reported success"
   if command -v getcap >/dev/null 2>&1; then
     caps="$(getcap /usr/bin/python3 2>/dev/null || true)"
     [[ -z "${caps}" ]] && pass "no persistent file capability on probe binary" \
@@ -120,10 +141,10 @@ PY
       || fail "nyxveil-server has file caps: ${scaps}"
   fi
 else
-  pass "skip live bind (no nyxveil user)"
+  fail "live bind requires existing nyxveil user"
 fi
 
-NOW="$(sysctl -n net.ipv4.ip_unprivileged_port_start 2>/dev/null || echo 1024)"
+NOW="$(sysctl -n net.ipv4.ip_unprivileged_port_start)"
 [[ "${NOW}" == "${START}" ]] && pass "sysctl unchanged (${NOW})" || fail "sysctl changed ${START}->${NOW}"
 
 if [[ "${FAIL}" -ne 0 ]]; then
@@ -132,5 +153,5 @@ if [[ "${FAIL}" -ne 0 ]]; then
   exit 1
 fi
 echo "ACME_PRIVILEGED_BIND=PASS"
-echo "BOOTSTRAP_SECRET_HYGIENE=PASS"
+echo "BOOTSTRAP_SECRET_HYGIENE=PARTIAL (mock stdin/argv; full registration gate required)"
 exit 0

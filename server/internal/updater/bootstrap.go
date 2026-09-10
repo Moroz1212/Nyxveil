@@ -18,6 +18,7 @@ import (
 //
 // Use this to escape legacy broken updaters (server ≤1.0.4) before running a full update.
 type BootstrapCLIOpts struct {
+	TestMode    bool   // explicit permission for local HTTP test fixtures
 	ManifestURL string // required unless constructed via ManifestURLForTag
 	WantVersion string // if set, reject manifests with a different version
 	WantArch    string // empty = ArchString()
@@ -55,6 +56,11 @@ func ManifestURLForVersion(version string) string {
 // BootstrapCLI downloads and atomically installs ONLY the nyxveilctl asset from a
 // multi-asset release manifest. Fail-closed on bad hash/arch/version.
 func BootstrapCLI(opts BootstrapCLIOpts) (*BootstrapCLIResult, error) {
+	if !opts.TestMode {
+		if err := ValidateReleaseURL(opts.ManifestURL); err != nil {
+			return nil, err
+		}
+	}
 	if opts.ManifestURL == "" {
 		return nil, fmt.Errorf("updater: bootstrap-cli requires manifest URL")
 	}
@@ -104,6 +110,11 @@ func BootstrapCLI(opts BootstrapCLIOpts) (*BootstrapCLIResult, error) {
 	}
 	if ctlAsset == nil {
 		return nil, fmt.Errorf("updater: bootstrap-cli manifest missing nyxveilctl asset")
+	}
+	if !opts.TestMode {
+		if err := ValidateReleaseURL(ctlAsset.URL); err != nil {
+			return nil, err
+		}
 	}
 
 	prevSHA := ""

@@ -3,11 +3,13 @@
 package configure
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -51,11 +53,14 @@ func ApplyNyxveilFirewall(opts FirewallOpts) error {
 	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
 		return err
 	}
+	defer os.Remove(tmp)
+	if out, err := firewallCommand("nft", "--check", "-f", tmp); err != nil {
+		return fmt.Errorf("configure: validate nft: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
 	if err := os.Rename(tmp, opts.NFTFile); err != nil {
 		return err
 	}
-	_ = exec.Command("nft", "delete", "table", "inet", "nyxveil").Run()
-	if out, err := exec.Command("nft", "-f", opts.NFTFile).CombinedOutput(); err != nil {
+	if out, err := firewallCommand("nft", "-f", opts.NFTFile); err != nil {
 		return fmt.Errorf("configure: nft -f %s: %w (%s)", opts.NFTFile, err, strings.TrimSpace(string(out)))
 	}
 	// Unit restart also loads the file; conf must contain `destroy table` so
@@ -64,14 +69,20 @@ func ApplyNyxveilFirewall(opts FirewallOpts) error {
 }
 
 func reloadFirewallUnit() error {
-	_ = exec.Command("systemctl", "daemon-reload").Run()
-	_ = exec.Command("systemctl", "enable", firewallUnit).Run()
-	if out, err := exec.Command("systemctl", "restart", firewallUnit).CombinedOutput(); err != nil {
-		if out2, err2 := exec.Command("systemctl", "start", firewallUnit).CombinedOutput(); err2 != nil {
-			return fmt.Errorf("configure: firewall unit: %v / %v (%s %s)", err, err2, strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
+	for _, args := range [][]string{{"daemon-reload"}, {"enable", firewallUnit}, {"restart", firewallUnit}} {
+		if out, err := firewallCommand("systemctl", args...); err != nil {
+			return fmt.Errorf("configure: firewall unit %s: %w (%s)", args[0], err, strings.TrimSpace(string(out)))
 		}
 	}
 	return nil
+}
+
+func firewallCommand(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 5 * time.Second
+	return cmd.CombinedOutput()
 }
 
 // ParseListenPort extracts port from ":443" style listen strings.

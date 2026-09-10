@@ -51,7 +51,7 @@ func TestBootstrapCLIReplacesOnlyCtl(t *testing.T) {
 	}
 	mux.HandleFunc("/manifest.json", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(raw) })
 
-	res, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
+	res, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{TestMode: true,
 		ManifestURL: hs.URL + "/manifest.json",
 		WantVersion: "1.0.5",
 		CtlPath:     ctl,
@@ -95,7 +95,7 @@ func TestBootstrapCLIBadHashKeepsOld(t *testing.T) {
 	raw, _ := json.Marshal(m)
 	mux.HandleFunc("/m.json", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(raw) })
 
-	_, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
+	_, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{TestMode: true,
 		ManifestURL: hs.URL + "/m.json", WantVersion: "1.0.5", CtlPath: ctl, HTTP: hs.Client(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "sha256") {
@@ -124,7 +124,7 @@ func TestBootstrapCLIAtomicRenameFailureKeepsOld(t *testing.T) {
 	raw, _ := json.Marshal(m)
 	mux.HandleFunc("/m.json", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(raw) })
 
-	_, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
+	_, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{TestMode: true,
 		ManifestURL: hs.URL + "/m.json", WantVersion: "1.0.5", CtlPath: ctl, HTTP: hs.Client(),
 		AtomicInstall: func(src, dest string) error { return os.ErrPermission },
 	})
@@ -177,7 +177,7 @@ func TestLegacy103To105BootstrapThenUpdate(t *testing.T) {
 	mux.HandleFunc("/manifest.json", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(raw) })
 	manifestURL := hs.URL + "/manifest.json"
 
-	if _, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
+	if _, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{TestMode: true,
 		ManifestURL: manifestURL, WantVersion: "1.0.5", CtlPath: ctl, HTTP: hs.Client(),
 	}); err != nil {
 		t.Fatal(err)
@@ -312,7 +312,7 @@ func TestBootstrapCLIUpdateDoesNotTouchConfig(t *testing.T) {
 	}
 	raw, _ := json.Marshal(m)
 	mux.HandleFunc("/m.json", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(raw) })
-	if _, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
+	if _, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{TestMode: true,
 		ManifestURL: hs.URL + "/m.json", WantVersion: "1.0.9", CtlPath: ctl, HTTP: hs.Client(),
 	}); err != nil {
 		t.Fatal(err)

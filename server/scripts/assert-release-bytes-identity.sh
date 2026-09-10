@@ -31,4 +31,5 @@ go run "${ROOT}/scripts/verify-manifest-hashes.go" -dist "${DIST}" -version "${V
 grep -q "^DEFAULT_RELEASE_VERSION=\"${VERSION}\"" "${DIST}/install.sh" \
   || die "install.sh not pinned to ${VERSION}"
 
-echo "RELEASE_BYTES_IDENTITY=PASS"
+# Only the release workflow can prove that these bytes came from the verified CI run.
+echo "LOCAL_ARTIFACT_INTEGRITY=PASS"

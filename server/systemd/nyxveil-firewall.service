@@ -9,10 +9,8 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 # Conf file begins with `destroy table inet nyxveil` so re-apply is idempotent.
-# ExecStartPre delete is defense-in-depth for older conf files without destroy.
-ExecStartPre=-/usr/sbin/nft delete table inet nyxveil
+# Keep the existing table if an atomic replacement fails.
 ExecStart=/usr/sbin/nft -f /etc/nftables.d/nyxveil.conf
-ExecStop=/usr/sbin/nft delete table inet nyxveil
 
 [Install]
 WantedBy=multi-user.target

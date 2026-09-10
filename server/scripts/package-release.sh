@@ -226,8 +226,8 @@ bash "${ROOT}/scripts/assert-no-crlf.sh" \
 # Tarballs for offline --binary-dir
 (
   cd "${DIST}"
-  tar -czf "nyxveil-server-${VERSION}-linux-amd64.tar.gz" linux-amd64
-  tar -czf "nyxveil-server-${VERSION}-linux-arm64.tar.gz" linux-arm64
+  go run "${ROOT}/scripts/make-release-archive.go" -dir linux-amd64 -out "nyxveil-server-${VERSION}-linux-amd64.tar.gz"
+  go run "${ROOT}/scripts/make-release-archive.go" -dir linux-arm64 -out "nyxveil-server-${VERSION}-linux-arm64.tar.gz"
 )
 
 cat > "${DIST}/NOTES.txt" <<EOF

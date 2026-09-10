@@ -187,6 +187,7 @@ func manifestToolEnv(t *testing.T) string {
 func liveFinalEnv(t *testing.T, extra ...string) []string {
 	t.Helper()
 	env := append(os.Environ(),
+		"NYXVEIL_TEST_MODE=1",
 		"NYXVEIL_SKIP_ROOT=1",
 		"NYXVEIL_MANIFEST_TOOL="+manifestToolEnv(t),
 	)

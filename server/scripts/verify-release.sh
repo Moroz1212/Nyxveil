@@ -9,13 +9,19 @@ BIN="${ROOT}/dist/bin"
 VERSION="$(tr -d '[:space:]' < "${ROOT}/VERSION")"
 
 die() { echo "verify-release: $*" >&2; exit 1; }
+ARTIFACT_ONLY=0
+case "${1:-}" in
+  --ci-artifact) ARTIFACT_ONLY=1 ;;
+  "") ;;
+  *) die "unknown verification mode" ;;
+esac
 
 echo "==> Frozen Core gate"
 bash "${ROOT}/scripts/assert-frozen-core.sh"
 
 echo "==> Release tree present"
 [[ -d "${DIST}" ]] || die "missing ${DIST} (run build-release + package-release)"
-[[ -d "${BIN}" ]] || die "missing ${BIN}"
+[[ "${ARTIFACT_ONLY}" -eq 1 || -d "${BIN}" ]] || die "missing ${BIN}"
 
 [[ ! -f "${ROOT}/dist/release-manifest.json" ]] || die "legacy dist/release-manifest.json must not exist"
 [[ ! -d "${ROOT}/dist/checksums" ]] || die "stale dist/checksums must not exist"
@@ -85,12 +91,17 @@ echo "==> SHA256SUMS matches every listed file and includes required assets"
 )
 
 echo "==> Staging bin hashes match release flat assets"
+if [[ "${ARTIFACT_ONLY}" -eq 0 ]]; then
 for f in nyxveil-server-linux-amd64 nyxveilctl-linux-amd64 nyxveil-catalog-verify-linux-amd64 \
          nyxveil-server-linux-arm64 nyxveilctl-linux-arm64 nyxveil-catalog-verify-linux-arm64; do
   a="$(sha256sum "${BIN}/${f}" | awk '{print $1}')"
   b="$(sha256sum "${DIST}/${f}" | awk '{print $1}')"
   [[ "${a}" == "${b}" ]] || die "bin/release mismatch for ${f}"
 done
+
+else
+  echo "BIN_STAGING_COMPARISON=NOT_EXECUTED (downloaded CI artifact has no build staging)"
+fi
 
 echo "==> No CRLF in production shell release assets"
 bash "${ROOT}/scripts/assert-no-crlf.sh" \
@@ -113,11 +124,11 @@ bash "${ROOT}/scripts/assert-no-crlf.sh" \
 
 
 echo "==> production-gate.sh parses under bash and is executable"
-[[ -x "${DIST}/production-gate.sh" ]] || die "production-gate.sh must be executable"
+[[ "${ARTIFACT_ONLY}" -eq 1 || -x "${DIST}/production-gate.sh" ]] || die "production-gate.sh must be executable"
 bash -n "${DIST}/production-gate.sh"
 
 echo "==> install.sh parses under bash and is executable"
-[[ -x "${DIST}/install.sh" ]] || die "install.sh must be executable"
+[[ "${ARTIFACT_ONLY}" -eq 1 || -x "${DIST}/install.sh" ]] || die "install.sh must be executable"
 bash -n "${DIST}/install.sh"
 
 echo "==> bootstrap-cli-update.sh parses under bash"
@@ -125,7 +136,7 @@ bash -n "${DIST}/bootstrap-cli-update.sh"
 bash "${DIST}/bootstrap-cli-update.sh" --help >/dev/null
 
 echo "==> live-final-update.sh parses under bash and is executable"
-[[ -x "${DIST}/live-final-update.sh" ]] || die "live-final-update.sh must be executable"
+[[ "${ARTIFACT_ONLY}" -eq 1 || -x "${DIST}/live-final-update.sh" ]] || die "live-final-update.sh must be executable"
 bash -n "${DIST}/live-final-update.sh"
 bash "${DIST}/live-final-update.sh" --help >/dev/null
 

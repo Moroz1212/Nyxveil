@@ -2,6 +2,7 @@
 # Serve ONLY dist/release over HTTP and run live-final-update.sh --verify-chain
 # from an empty working directory that initially contains ONLY that script.
 set -euo pipefail
+export NYXVEIL_TEST_MODE=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="${1:-${ROOT}/dist/release}"

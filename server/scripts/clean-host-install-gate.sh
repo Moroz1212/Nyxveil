@@ -143,6 +143,7 @@ die_usage() {
 }
 
 # --- parse args ---
+trap 'rc=$?; if [[ ${rc} -ne 0 && ${FAIL_N} -eq 0 ]]; then record GATE_RUNTIME FAIL "unexpected gate failure"; fi; write_json_report' EXIT
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --confirm-disposable-host) CONFIRM_DISPOSABLE=1; shift ;;
@@ -446,12 +447,16 @@ else
 fi
 
 # Binaries
-for b in nyxveil-server nyxveilctl; do
+for b in nyxveil-server nyxveilctl nyxveil-catalog-verify; do
   p="/usr/local/sbin/${b}"
   if [[ -x "${p}" ]]; then
     owner="$(stat -c '%U:%G' "${p}" 2>/dev/null || echo "?")"
     mode="$(stat -c '%a' "${p}" 2>/dev/null || echo "?")"
-    record "BIN_${b}" PASS "${p} mode=${mode} owner=${owner}"
+    if [[ "${mode}" == 755 && "${owner}" == root:root ]]; then
+      record "BIN_${b}" PASS "${p} mode=${mode} owner=${owner}"
+    else
+      record "BIN_${b}" FAIL "${p} mode=${mode} owner=${owner}"
+    fi
   else
     record "BIN_${b}" FAIL "missing or not executable: ${p}"
   fi
@@ -486,6 +491,19 @@ else
   record CATALOG_VERIFY FAIL "nyxveil-catalog-verify missing"
 fi
 
+# Exact runtime modes; this gate only runs on real Linux.
+MODES_OK=1
+for entry in \
+  /usr/local/share/nyxveil/scripts/production-gate.sh:755 \
+  /usr/local/share/nyxveil/VERSION:644 \
+  /etc/systemd/system/nyxveil-server.service:644 \
+  /etc/systemd/system/nyxveil-firewall.service:644 \
+  /etc/systemd/system/nyxveil-update.service:644 \
+  /etc/polkit-1/rules.d/50-nyxveil-management.rules:644; do
+  [[ "$(stat -c '%a' "${entry%:*}" 2>/dev/null || true)" == "${entry##*:}" ]] || MODES_OK=0
+done
+if [[ ${MODES_OK} -eq 1 ]]; then record FILE_MODES PASS "Linux runtime modes"; else record FILE_MODES FAIL "incorrect Linux runtime modes"; fi
+
 # Services
 for svc in nyxveil-server.service nyxveil-firewall.service; do
   if systemctl is-active --quiet "${svc}"; then
@@ -514,20 +532,14 @@ except Exception as e:
     sys.exit(1)
 PY
   BIND_RC=0
-  if command -v systemd-run >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
-    systemd-run --uid=nyxveil --gid=nyxveil \
-      --property=AmbientCapabilities=CAP_NET_BIND_SERVICE \
-      --property=CapabilityBoundingSet=CAP_NET_BIND_SERVICE \
-      --property=NoNewPrivileges=true \
-      --wait --pipe --collect --quiet \
-      /usr/bin/python3 "${BIND_PROBE}" >/tmp/nyxveil-bind80.out 2>&1 || BIND_RC=$?
-  elif command -v setpriv >/dev/null 2>&1; then
-    setpriv --reuid=nyxveil --regid=nyxveil --clear-groups \
-      --inh-caps=+net_bind_service --ambient-caps=+net_bind_service \
-      -- /usr/bin/python3 "${BIND_PROBE}" >/tmp/nyxveil-bind80.out 2>&1 || BIND_RC=$?
+  chmod 644 "${BIND_PROBE}"
+  MOCK=0
+  eval "$(sed -n '/^run_as_nyxveil_bounded()/,/^}/p' "${INSTALLER}")"
+  if declare -F run_as_nyxveil_bounded >/dev/null; then
+    run_as_nyxveil_bounded 10 2 /usr/bin/python3 "${BIND_PROBE}" >/tmp/nyxveil-bind80.out 2>&1 || BIND_RC=$?
   else
     BIND_RC=96
-    echo "no systemd-run/setpriv" >/tmp/nyxveil-bind80.out
+    echo "installer wrapper missing" >/tmp/nyxveil-bind80.out
   fi
   rm -f "${BIND_PROBE}"
   if [[ "${BIND_RC}" -eq 0 ]] && grep -q BIND_OK /tmp/nyxveil-bind80.out; then
@@ -545,7 +557,7 @@ if command -v getcap >/dev/null 2>&1; then
     record ACME_NO_PERSISTENT_SETCAP PASS "no file capabilities on nyxveil-server"
   fi
 else
-  record ACME_NO_PERSISTENT_SETCAP PASS "getcap unavailable; installer forbids setcap"
+  record ACME_NO_PERSISTENT_SETCAP FAIL "getcap unavailable; file capabilities were not checked"
 fi
 NOW_PORT="$(sysctl -n net.ipv4.ip_unprivileged_port_start 2>/dev/null || echo 1024)"
 if [[ "${NOW_PORT}" == "${START_PORT}" ]]; then
@@ -592,6 +604,12 @@ fi
 STATUS_JSON="$(mktemp /tmp/nyxveil-status.XXXXXX.json)"
 if [[ -x "${CTL}" ]] && "${CTL}" status >"${STATUS_JSON}" 2>/dev/null; then
   running="$(json_field "${STATUS_JSON}" running)"
+  capabilities="$(json_field "${STATUS_JSON}" management_capabilities)"
+  caps_ok=1
+  for cap in node_update certificate_renew service_restart host_reboot; do
+    [[ ",${capabilities}," == *",${cap},"* ]] || caps_ok=0
+  done
+  if [[ ${caps_ok} -eq 1 ]]; then record MGMT_CAPABILITIES PASS "${capabilities}"; else record MGMT_CAPABILITIES FAIL "missing runtime capabilities"; fi
   healthy="$(json_field "${STATUS_JSON}" healthy)"
   cp_connected="$(json_field "${STATUS_JSON}" cp_connected)"
   accepting="$(json_field "${STATUS_JSON}" accepting)"
@@ -659,8 +677,17 @@ else
   record NODE_KEY_MODE FAIL "node.key missing"
 fi
 
-systemctl restart nyxveil-server.service
-sleep 3
+RESTART_OK=0
+if timeout -k 5 60 systemctl restart nyxveil-server.service; then
+  for attempt in $(seq 1 30); do
+    if timeout -k 2 5 "${CTL}" status >"${STATUS_JSON}" 2>/dev/null \
+      && [[ "$(json_field "${STATUS_JSON}" healthy)" == true && "$(json_field "${STATUS_JSON}" cp_connected)" == true ]]; then
+      RESTART_OK=1
+      break
+    fi
+    sleep 2
+  done
+fi
 NODE_ID_AFTER=""
 NODE_KEY_HASH_AFTER=""
 if [[ -f "${SERVER_JSON}" ]]; then
@@ -680,7 +707,7 @@ else
   record IDENTITY_KEY_RESTART FAIL "node.key hash changed or unavailable"
 fi
 
-if systemctl is-active --quiet nyxveil-server.service && [[ -x "${CTL}" ]] && "${CTL}" health >/dev/null 2>&1; then
+if [[ ${RESTART_OK} -eq 1 ]] && systemctl is-active --quiet nyxveil-server.service; then
   record RESTART_TEST PASS "service healthy after restart"
 else
   record RESTART_TEST FAIL "unhealthy after restart"
@@ -715,8 +742,7 @@ elif [[ -f "${TLS_CERT}" && -f "${TLS_KEY}" ]]; then
     if openssl x509 -in "${TLS_CERT}" -noout -text >/tmp/nyxveil-tls-parse.txt 2>/dev/null \
       && openssl pkey -in "${TLS_KEY}" -check -noout >/dev/null 2>&1; then
       record TLS_PARSE PASS "openssl x509+key parse"
-      if grep -qi "DNS:${PUBLIC_HOST}\|DNS:\\*\\.${PUBLIC_HOST#*.}" /tmp/nyxveil-tls-parse.txt 2>/dev/null \
-        || grep -qi "${PUBLIC_HOST}" /tmp/nyxveil-tls-parse.txt 2>/dev/null; then
+      if openssl x509 -in "${TLS_CERT}" -noout -checkhost "${PUBLIC_HOST}" >/dev/null 2>&1; then
         record TLS_SAN PASS "SAN/CN mentions ${PUBLIC_HOST}"
       else
         record TLS_SAN FAIL "public-host not found in cert text"
@@ -752,8 +778,8 @@ elif [[ -f "${TLS_CERT}" && -f "${TLS_KEY}" ]]; then
             record TLS_EXPIRY FAIL "notAfter=${end}"
           fi
         else
-          record TLS_VALIDITY PASS "checkend ok NotBefore=${start} NotAfter=${end}"
-          record TLS_EXPIRY PASS "notAfter=${end}"
+          record TLS_VALIDITY FAIL "cannot prove NotBefore/NotAfter window"
+          record TLS_EXPIRY FAIL "cannot parse validity dates"
         fi
       else
         record TLS_VALIDITY FAIL "certificate not currently valid (NotBefore/NotAfter)"
@@ -852,20 +878,20 @@ if [[ -n "${TOKEN_LEAK_PROBE}" ]]; then
   elif command -v shasum >/dev/null 2>&1; then
     TOKEN_HASH="$(printf '%s' "${TOKEN_LEAK_PROBE}" | shasum -a 256 | awk '{print $1}')"
   fi
-  if grep -R --fixed-strings -- "${TOKEN_LEAK_PROBE}" /etc/nyxveil /var/lib/nyxveil /etc/systemd/system /usr/local/share/nyxveil 2>/dev/null >/dev/null; then
+  if grep -R --fixed-strings -f <(printf '%s\n' "${TOKEN_LEAK_PROBE}") -- /etc/nyxveil /var/lib/nyxveil /etc/systemd/system /usr/local/share/nyxveil 2>/dev/null >/dev/null; then
     LEAK=1
   fi
   # journalctl scan: never echo the token; compare via fixed-string quiet match only.
   if command -v journalctl >/dev/null 2>&1; then
     for unit in nyxveil-server nyxveil-firewall nyxveil-update; do
-      if journalctl -u "${unit}" --no-pager -n 8000 2>/dev/null | grep -F -q -- "${TOKEN_LEAK_PROBE}"; then
+      if journalctl -u "${unit}" --no-pager -n 8000 2>/dev/null | grep -F -f <(printf '%s\n' "${TOKEN_LEAK_PROBE}") >/dev/null; then
         LEAK=1
         break
       fi
     done
     # Also scan recent boots without unit filter for installer-time leaks (bounded).
     if [[ "${LEAK}" -eq 0 ]]; then
-      if journalctl --no-pager -n 2000 -t nyxveilctl -t install 2>/dev/null | grep -F -q -- "${TOKEN_LEAK_PROBE}"; then
+      if journalctl --no-pager -n 2000 -t nyxveilctl -t install 2>/dev/null | grep -F -f <(printf '%s\n' "${TOKEN_LEAK_PROBE}") >/dev/null; then
         LEAK=1
       fi
     fi
@@ -926,6 +952,8 @@ done
 for need in \
   CONFIRM_DISPOSABLE DISPOSABLE_MARKER ROOT OS SYSTEMD TUN CLEAN_STATE INSTALL VERSION \
   HEALTH CP_CONNECTION RESTART_TEST TOKEN_LEAK \
+  FILE_MODES MGMT_CAPABILITIES IDENTITY_RESTART IDENTITY_KEY_RESTART NODE_KEY_MODE \
+  TLS_FILES TLS_PARSE TLS_SAN TLS_EXPIRY LISTENER_UDP_443 CONFIG_NO_TOKEN TEMP_STATE \
   MGMT_GATE MGMT_UPDATE_UNIT MGMT_POLKIT THIRD_PARTY CATALOG_VERIFY \
   TLS_KEY_MATCH TLS_VALIDITY SERVED_SPKI_MATCH LISTENER_TCP_443 \
   TUNReady TLSOK QUICOK BridgeOK TicketKeysLoaded CPConnected IdentityPresent Healthy \

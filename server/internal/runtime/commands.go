@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -14,6 +15,8 @@ import (
 	"github.com/nyxveil/server/internal/controlplane"
 	"github.com/nyxveil/server/internal/paths"
 )
+
+var runtimeInstanceID = fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
 
 const (
 	commandPollInterval          = 7 * time.Second
@@ -158,7 +161,9 @@ func (n *Node) reportPendingRestartResults(ctx context.Context) {
 	}
 	now := nowFunc().UTC()
 	for _, pending := range n.commandStore.restartPending() {
-		if n.nodeFullyHealthy() {
+		// A healthy old process is not proof of restart. Legacy journals without
+		// an origin ID fail closed instead of guessing that a restart occurred.
+		if pending.OriginRuntimeID != "" && pending.OriginRuntimeID != runtimeInstanceID && n.nodeFullyHealthy() {
 			if err := n.persistOrReportResult(ctx, pendingResultRecord{
 				CommandID:     pending.CommandID,
 				Success:       true,

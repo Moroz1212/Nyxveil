@@ -103,7 +103,7 @@ func TestUpgradeFrom116StyleNodeTo119(t *testing.T) {
 		_, _ = w.Write(rawManifest)
 	})
 
-	if _, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{
+	if _, err := updater.BootstrapCLI(updater.BootstrapCLIOpts{TestMode: true,
 		ManifestURL: httpServer.URL + "/release-manifest.json",
 		WantVersion: "1.1.10",
 		CtlPath:     ctlPath,

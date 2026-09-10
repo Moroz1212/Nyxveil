@@ -1,6 +1,7 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # Process-level live-final-update integration tests (fixture release + stub ctl).
 set -euo pipefail
+export NYXVEIL_TEST_MODE=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CASE="${1:?case name required}"
@@ -34,6 +35,7 @@ write_stub_ctl() {
   cat > "${dest}" <<'CTL'
 #!/usr/bin/env bash
 set -euo pipefail
+export NYXVEIL_TEST_MODE=1
 if [[ "${1:-}" != "update" ]]; then
   echo "stub-ctl $*"; exit 0
 fi
@@ -130,6 +132,7 @@ build_fixture_assets() {
     cat > "${out}/nyxveilctl-linux-${arch}" <<CTL
 #!/usr/bin/env bash
 set -euo pipefail
+export NYXVEIL_TEST_MODE=1
 if [[ "\${1:-}" != "update" ]]; then
   echo "stub-ctl \$*"; exit 0
 fi
@@ -181,7 +184,9 @@ CTL
 start_http() {
   local root="$1"
   local port_file="$2"
-  python3 - "${root}" "${port_file}" <<'PY' &
+  # Do not inherit command-substitution stdout: the background server otherwise
+  # keeps PID="$(start_http ...)" waiting for EOF forever.
+  python3 - "${root}" "${port_file}" >"${root}/http.log" 2>&1 <<'PY' &
 import http.server, socketserver, pathlib, sys, os
 os.chdir(sys.argv[1])
 port_file = pathlib.Path(sys.argv[2])

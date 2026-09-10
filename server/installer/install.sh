@@ -656,12 +656,12 @@ sysctl_cmd() {
 
 systemctl_cmd() {
   [[ "${MOCK}" -eq 1 ]] && return 0
-  command systemctl "$@"
+  timeout -k 5 60 systemctl "$@"
 }
 
 nft_cmd() {
   [[ "${MOCK}" -eq 1 ]] && return 0
-  command nft "$@"
+  timeout -k 5 30 nft "$@"
 }
 
 rollback() {
@@ -725,14 +725,25 @@ rollback() {
     sysctl_cmd --system >/dev/null 2>&1 || true
   fi
   if [[ "${INSTALLED_NFT}" -eq 1 ]]; then
-    nft_cmd delete table inet nyxveil 2>/dev/null || true
     if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/nyxveil.nft" ]]; then
-      cp -a "${BACKUP_DIR}/nyxveil.nft" "${NFT_FILE}"
-      nft_cmd -f "${NFT_FILE}" 2>/dev/null || true
+      # Legacy backup files may lack destroy. Replace in one transaction, and
+      # retain the currently working table if validating/restoring fails.
+      { printf 'destroy table inet nyxveil\n'; cat "${BACKUP_DIR}/nyxveil.nft"; } >"${NFT_FILE}.rollback"
+      if nft_cmd --check -f "${NFT_FILE}.rollback" && nft_cmd -f "${NFT_FILE}.rollback"; then
+        cp -a "${BACKUP_DIR}/nyxveil.nft" "${NFT_FILE}" || warn "ROLLBACK_FAILED: persist previous firewall"
+      else
+        warn "ROLLBACK_FAILED: firewall restore failed; current table retained"
+      fi
+      rm -f "${NFT_FILE}.rollback"
     else
-      rm -f "${NFT_FILE}"
+      if nft_cmd destroy table inet nyxveil; then
+        rm -f "${NFT_FILE}"
+      else
+        warn "ROLLBACK_FAILED: remove temporary Nyxveil firewall"
+      fi
     fi
   fi
+  rm -f "${NFT_FILE}.next"
   if [[ "${INSTALLED_BINARIES}" -eq 1 ]]; then
     if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/nyxveil-server" ]]; then
       cp -a "${BACKUP_DIR}/nyxveil-server" "${BIN_DIR}/nyxveil-server"
@@ -967,6 +978,28 @@ EOF
   die "download failed after ${attempts} attempt(s) (connect-timeout=${connect_timeout}s max-time=${max_time}s): ${url}"
 }
 
+assert_release_asset_origin() {
+  local url="$1" base="$2" leaf
+  [[ "${MOCK}" -eq 1 || "${NYXVEIL_TEST_MODE:-0}" == 1 ]] && return 0
+  leaf="${url#"${base}/"}"
+  [[ "${url}" == "${base}/"* && "${leaf}" =~ ^[a-zA-Z0-9_.-]+$ ]] || die "asset must come from the pinned production release"
+}
+
+assert_installed_mode() {
+  local path="$1" expected="$2" actual
+  [[ -f "${path}" ]] || die "installed asset missing: ${path}"
+  # Manifest contracts are checked on every platform. Only Windows MOCK lacks
+  # meaningful Unix mode bits; production and Linux mocks never bypass this.
+  if [[ "${MOCK}" -eq 1 ]]; then
+    case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
+  fi
+  actual="$(stat -c '%a' "${path}")" || die "cannot read installed mode: ${path}"
+  [[ "${actual}" == "${expected#0}" ]] || die "installed mode ${actual}, expected ${expected}: ${path}"
+  if [[ "${expected}" == "0755" ]]; then
+    [[ -x "${path}" ]] || die "installed asset not executable: ${path}"
+  fi
+}
+
 download_or_copy_binaries() {
   local arch tmp
   arch="$(detect_arch)"
@@ -1079,6 +1112,7 @@ download_or_copy_binaries() {
     [[ "${manifest_required}" == "true" ]] || die "manifest asset ${name} is not required"
     [[ "${sha}" =~ ^[0-9a-fA-F]{64}$ ]] || die "manifest asset ${name}: invalid sha256"
     dest="${tmp}/asset-${i}"
+    assert_release_asset_origin "${url}" "${base}"
     log "downloading ${name}"
     http_get "${url}" "${dest}"
     echo "${sha}  ${dest}" | sha256sum -c - >/dev/null || die "SHA256 mismatch for ${name}"
@@ -1150,10 +1184,14 @@ download_or_copy_binaries() {
   [[ "${have_tp}" -eq 1 ]] || die "THIRD_PARTY_CORE.md not installed from manifest"
   [[ "${have_update_service}" -eq 1 ]] || die "nyxveil-update.service not installed from manifest"
   [[ "${have_management_polkit}" -eq 1 ]] || die "50-nyxveil-management.rules not installed from manifest"
-  [[ -x "${BIN_DIR}/nyxveil-server" ]] || die "nyxveil-server not executable"
-  [[ -x "${BIN_DIR}/nyxveilctl" ]] || die "nyxveilctl not executable"
-  [[ -x "${BIN_DIR}/nyxveil-catalog-verify" ]] || die "nyxveil-catalog-verify not executable"
-  [[ -x "${SCRIPTS_DIR}/production-gate.sh" ]] || die "production-gate.sh not executable"
+  assert_installed_mode "${BIN_DIR}/nyxveil-server" 0755
+  assert_installed_mode "${BIN_DIR}/nyxveilctl" 0755
+  assert_installed_mode "${BIN_DIR}/nyxveil-catalog-verify" 0755
+  assert_installed_mode "${SCRIPTS_DIR}/production-gate.sh" 0755
+  assert_installed_mode "${SHARE_DIR}/VERSION" 0644
+  assert_installed_mode "${SHARE_DIR}/THIRD_PARTY_CORE.md" 0644
+  assert_installed_mode "${update_unit_dest}" 0644
+  assert_installed_mode "${polkit_dest}" 0644
   [[ -f "${update_unit_dest}" ]] || die "nyxveil-update.service missing after install"
   [[ -f "${polkit_dest}" ]] || die "50-nyxveil-management.rules missing after install"
   rm -rf "${tmp}"
@@ -1178,7 +1216,7 @@ install_nftables() {
   if [[ -n "${TLS_DOMAIN}" ]]; then
     acme_line=$'    tcp dport 80 ct state new accept comment "nyxveil-acme-http01"\n'
   fi
-  cat > "${NFT_FILE}" <<EOF
+  cat > "${NFT_FILE}.next" <<EOF
 # Managed by Nyxveil installer — table inet nyxveil only
 # destroy makes nft -f idempotent (no duplicate rules on re-apply / unit start).
 destroy table inet nyxveil
@@ -1201,9 +1239,11 @@ ${acme_line}    tcp dport ${TLS_PORT} ct state new accept comment "nyxveil-tls"
   }
 }
 EOF
-  chmod 0644 "${NFT_FILE}"
-  # File already destroys; explicit delete kept for older kernels / clarity.
-  nft_cmd delete table inet nyxveil 2>/dev/null || true
+  chmod 0644 "${NFT_FILE}.next"
+  nft_cmd --check -f "${NFT_FILE}.next" || die "invalid Nyxveil firewall"
+  INSTALLED_NFT=1
+  mv -f "${NFT_FILE}.next" "${NFT_FILE}"
+  # Replacement is one nft transaction: never delete the working table first.
   nft_cmd -f "${NFT_FILE}" || [[ "${MOCK}" -eq 1 ]]
   INSTALLED_NFT=1
   log "applied nftables table inet nyxveil (idempotent destroy+load; no ruleset flush)"
@@ -1222,9 +1262,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStartPre=-/usr/sbin/nft delete table inet nyxveil
 ExecStart=/usr/sbin/nft -f /etc/nftables.d/nyxveil.conf
-ExecStop=/usr/sbin/nft delete table inet nyxveil
 
 [Install]
 WantedBy=multi-user.target
@@ -1353,7 +1391,7 @@ install_systemd_units() {
   systemctl_cmd daemon-reload
   systemctl_cmd enable nyxveil-firewall.service
   # Apply firewall now and mark active (oneshot RemainAfterExit).
-  systemctl_cmd restart nyxveil-firewall.service || systemctl_cmd start nyxveil-firewall.service || true
+  systemctl_cmd restart nyxveil-firewall.service || die "failed to activate Nyxveil firewall"
   INSTALLED_FIREWALL_UNIT=1
   INSTALLED_UNIT=1
   log "installed ${FIREWALL_UNIT} and ${SERVICE_UNIT}"
@@ -1580,19 +1618,30 @@ run_as_nyxveil_bounded() {
 
   # Prefer systemd-run: AmbientCapabilities apply only to this transient unit.
   if command -v systemd-run >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
-    systemd-run --uid=nyxveil --gid=nyxveil \
+    (
+    local unit="nyxveil-register-${BASHPID}-${RANDOM}.service"
+    trap 'timeout -k 2 10 systemctl stop "${unit}" >/dev/null 2>&1 || true' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    timeout -k "${kill_after}" "$((sec + kill_after + 10))" \
+      systemd-run --unit="${unit}" --uid=nyxveil --gid=nyxveil \
+      --property=RuntimeMaxSec="${sec}" \
+      --property=TimeoutStopSec="${kill_after}" \
+      --property=KillMode=control-group \
       --property=AmbientCapabilities=CAP_NET_BIND_SERVICE \
       --property=CapabilityBoundingSet=CAP_NET_BIND_SERVICE \
       --property=NoNewPrivileges=true \
       --wait --pipe --collect --quiet \
       /usr/bin/timeout -k "${kill_after}" "${sec}" "${exe}" "$@"
+    )
     return $?
   fi
 
   # Fallback: setpriv keeps CAP_NET_BIND_SERVICE across uid drop (util-linux).
   if command -v setpriv >/dev/null 2>&1; then
     setpriv --reuid=nyxveil --regid=nyxveil --clear-groups \
-      --inh-caps=+net_bind_service --ambient-caps=+net_bind_service \
+      --bounding-set=-all,+net_bind_service --no-new-privs \
+      --inh-caps=-all,+net_bind_service --ambient-caps=-all,+net_bind_service \
       -- \
       timeout -k "${kill_after}" "${sec}" "${exe}" "$@"
     return $?
@@ -1641,7 +1690,7 @@ start_and_test() {
   fi
   systemctl_cmd enable nyxveil-firewall.service
   systemctl_cmd enable nyxveil-server
-  systemctl_cmd restart nyxveil-firewall.service || true
+  systemctl_cmd restart nyxveil-firewall.service || die "failed to activate Nyxveil firewall"
   systemctl_cmd restart nyxveil-server
   STARTED_SERVICE=1
   local i

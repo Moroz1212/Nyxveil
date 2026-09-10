@@ -1,32 +1,20 @@
 #!/usr/bin/env bash
-# Compare an existing GitHub Release's asset digests to local dist/release SHA256SUMS.
-# Used by server-release.yml before --clobber.
+# An existing release must contain exactly the canonical upload set and bytes.
 set -euo pipefail
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="${ROOT}/dist/release"
 TAG="${1:?tag required}"
 VERSION="$(tr -d '\r[:space:]' < "${ROOT}/VERSION")"
-
-die() { echo "assert-existing-release-matches-dist: $*" >&2; exit 1; }
-
-[[ -f "${DIST}/SHA256SUMS" ]] || die "missing SHA256SUMS"
-command -v gh >/dev/null 2>&1 || die "gh required"
-command -v sha256sum >/dev/null 2>&1 || die "sha256sum required"
-
-TMP="$(mktemp -d /tmp/nyxveil-rel-cmp.XXXXXX)"
-cleanup() { rm -rf "${TMP}"; }
-trap cleanup EXIT
-
-# Download each asset named in SHA256SUMS and compare.
-while read -r want name; do
-  [[ -n "${want}" && -n "${name}" ]] || continue
-  name="$(printf '%s' "${name}" | tr -d '\r')"
-  want="$(printf '%s' "${want}" | tr -d '\r')"
-  gh release download "${TAG}" -p "${name}" -D "${TMP}" --clobber >/dev/null 2>&1 \
-    || die "cannot download ${name} from ${TAG}"
-  got="$(sha256sum "${TMP}/${name}" | awk '{print $1}')"
-  [[ "${got}" == "${want}" ]] || die "hash mismatch for ${name}: release=${got} dist=${want}"
-done < <(tr -d '\r' < "${DIST}/SHA256SUMS" | awk 'NF>=2 {print $1, $2}')
-
+[[ "${TAG}" == "server-v${VERSION}" ]] || exit 1
+TMP="$(mktemp -d)"
+trap 'rm -rf "${TMP}"' EXIT
+LIST="${DIST}/UPLOAD-LIST-server-v${VERSION}.txt"
+tr -d '\r' <"${LIST}" | LC_ALL=C sort >"${TMP}/expected"
+gh release view "${TAG}" --json assets --jq '.assets[].name' | LC_ALL=C sort >"${TMP}/actual"
+cmp "${TMP}/expected" "${TMP}/actual"
+gh release download "${TAG}" -D "${TMP}/assets"
+while IFS= read -r name; do
+  [[ -n "${name}" && "${name}" == "$(basename "${name}")" && "${name}" != . && "${name}" != .. ]] || exit 1
+  cmp "${DIST}/${name}" "${TMP}/assets/${name}"
+done <"${TMP}/expected"
 echo "EXISTING_RELEASE_MATCHES_DIST=PASS version=${VERSION} tag=${TAG}"

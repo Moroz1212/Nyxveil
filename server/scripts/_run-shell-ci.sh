@@ -2,25 +2,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 FAIL=0
-for s in \
-  test-curl-installer \
-  test-manifest-interop \
-  test-linux-permissions \
-  test-installer-version-resolution \
-  test-pinned-release-installer \
-  test-remote-update-gate-contract \
-  test-remote-cert-renewal-gate-contract \
-  test-bounded-http-get \
-  test-installer-management-assets \
-  test-nftables-idempotency \
-  test-acme-privileged-bind \
-  test-clean-host-gate-contract \
-  test-bounded-runuser-timeout \
-  test-post-registration-identity
+for script in scripts/test-*.sh
 do
+  s="$(basename "${script}" .sh)"
   echo "== ${s} =="
-  if bash "scripts/${s}.sh"; then
-    echo "PASS ${s}"
+  if [[ "${s}" == test-live-final-cases ]]; then
+    while IFS= read -r scenario; do
+      if ! timeout -k 5 180 bash "${script}" "${scenario}"; then echo "FAIL ${s}/${scenario}"; FAIL=1; fi
+    done < <(sed -n 's/^  \(Test[^)]*\))$/\1/p' "${script}" | tr '|' '\n')
+    continue
+  fi
+  if timeout -k 5 240 bash "scripts/${s}.sh"; then
+    echo "SCRIPT_EXIT_OK ${s} (gate status is reported above; SKIP is not PASS)"
   else
     echo "FAIL ${s}"
     FAIL=1

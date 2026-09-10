@@ -3,6 +3,7 @@ package configure
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -148,13 +149,16 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 	if err := SnapshotFile(cfgPath, filepath.Join(snapDir, "server.json")); err != nil {
 		return res, fmt.Errorf("configure: snapshot server.json: %w", err)
 	}
-	_ = SnapshotFile(certPath, filepath.Join(snapDir, "tls.crt"))
-	_ = SnapshotFile(keyPath, filepath.Join(snapDir, "tls.key"))
+	if err := errors.Join(SnapshotFile(certPath, filepath.Join(snapDir, "tls.crt")), SnapshotFile(keyPath, filepath.Join(snapDir, "tls.key"))); err != nil {
+		return res, fmt.Errorf("configure: snapshot TLS: %w", err)
+	}
 	nftFile := "/etc/nftables.d/nyxveil.conf"
 	if opts.NFTFile != "" {
 		nftFile = opts.NFTFile
 	}
-	_ = SnapshotFile(nftFile, filepath.Join(snapDir, "nyxveil.conf"))
+	if err := SnapshotFile(nftFile, filepath.Join(snapDir, "nyxveil.conf")); err != nil {
+		return res, fmt.Errorf("configure: snapshot firewall: %w", err)
+	}
 
 	stageCert, stageKey := StagingTLSPaths(stateDir)
 	CleanStaging(stageCert, stageKey)
@@ -165,26 +169,37 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 		res.RolledBack = true
 		res.RollbackConfigComplete = true
 		CleanStaging(stageCert, stageKey)
-		_ = RestoreFile(filepath.Join(snapDir, "server.json"), cfgPath)
-		_ = RestoreFile(filepath.Join(snapDir, "tls.crt"), certPath)
-		_ = RestoreFile(filepath.Join(snapDir, "tls.key"), keyPath)
-		_ = RestoreFile(filepath.Join(snapDir, "nyxveil.conf"), nftFile)
-		_ = filemeta.EnforceRuntimeTLS(filepath.Dir(keyPath))
+		restoreErr := errors.Join(
+			RestoreFile(filepath.Join(snapDir, "server.json"), cfgPath),
+			RestoreFile(filepath.Join(snapDir, "tls.crt"), certPath),
+			RestoreFile(filepath.Join(snapDir, "tls.key"), keyPath),
+			RestoreFile(filepath.Join(snapDir, "nyxveil.conf"), nftFile),
+			filemeta.EnforceRuntimeTLS(filepath.Dir(keyPath)),
+		)
+		if restoreErr != nil {
+			res.RollbackConfigComplete = false
+			return fmt.Errorf("configure: rollback restore failed: %w", errors.Join(cause, restoreErr))
+		}
 		if !opts.SkipFW {
 			fw := opts.ExecFirewall
 			if fw == nil {
 				fw = ApplyNyxveilFirewall
 			}
-			_ = fw(FirewallOpts{
+			if err := fw(FirewallOpts{
 				NFTFile:   nftFile,
 				TLSPort:   ParseListenPort(base.TLSListen, 443),
 				QUICPort:  ParseListenPort(base.QUICListen, 443),
 				VPNSubnet: base.VPNSubnetCIDR,
 				Enable80:  strings.TrimSpace(base.ACMEDomain) != "",
-			})
+			}); err != nil {
+				res.RollbackConfigComplete = false
+				return fmt.Errorf("configure: rollback firewall failed: %w", errors.Join(cause, err))
+			}
 		}
 		if !opts.SkipSvc {
-			_ = systemctlAction(opts, "start", "nyxveil-server")
+			if err := systemctlAction(opts, "start", "nyxveil-server"); err != nil {
+				return fmt.Errorf("configure: rollback service start failed: %w", errors.Join(cause, err))
+			}
 			if err := waitHealthDataplane(opts, 30); err != nil {
 				// Old CP URL may be TLS-invalid after CP hostname migration.
 				res.RollbackEndpointHealthImpossible = true
@@ -267,7 +282,9 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 
 	// Final commit window: stop → write live TLS + server.json → start → health → CP.
 	if !opts.SkipSvc {
-		_ = systemctlAction(opts, "stop", "nyxveil-server")
+		if err := systemctlAction(opts, "stop", "nyxveil-server"); err != nil {
+			return res, rollback(fmt.Errorf("configure: stop service: %w", err))
+		}
 		time.Sleep(500 * time.Millisecond)
 	}
 
@@ -505,17 +522,39 @@ func defaultPoPRegister(cfgPath string) error {
 }
 
 func runAsNyxveil(cmd *exec.Cmd) error {
+	timeoutPath, err := exec.LookPath("timeout")
+	if err != nil {
+		return fmt.Errorf("configure: GNU timeout required for bounded registration: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 640*time.Second)
+	defer cancel()
+	run := func(path string, args ...string) error {
+		c := exec.CommandContext(ctx, path, args...)
+		c.Stdin, c.Stdout, c.Stderr = cmd.Stdin, cmd.Stdout, cmd.Stderr
+		c.WaitDelay = 15 * time.Second
+		return c.Run()
+	}
 	if effectiveUID() != 0 {
-		return cmd.Run()
+		return run(timeoutPath, append([]string{"-k", "15", "600", cmd.Path}, cmd.Args[1:]...)...)
 	}
 	// Prefer systemd-run with transient CAP_NET_BIND_SERVICE for ACME HTTP-01.
 	if path, err := exec.LookPath("systemd-run"); err == nil {
 		if _, err := os.Stat("/run/systemd/system"); err == nil {
-			timeoutPath, _ := exec.LookPath("timeout")
+			unit := fmt.Sprintf("nyxveil-register-%d-%d.service", os.Getpid(), time.Now().UnixNano())
+			defer func() {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cleanupCancel()
+				cleanup := exec.CommandContext(cleanupCtx, "systemctl", "stop", unit)
+				cleanup.WaitDelay = 2 * time.Second
+				_ = cleanup.Run()
+			}()
 			inner := []string{cmd.Path}
 			inner = append(inner, cmd.Args[1:]...)
 			args := []string{
+				"--unit=" + unit,
 				"--uid=nyxveil", "--gid=nyxveil",
+				"--property=RuntimeMaxSec=600", "--property=TimeoutStopSec=15",
+				"--property=KillMode=control-group",
 				"--property=AmbientCapabilities=CAP_NET_BIND_SERVICE",
 				"--property=CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
 				"--property=NoNewPrivileges=true",
@@ -525,25 +564,18 @@ func runAsNyxveil(cmd *exec.Cmd) error {
 				args = append(args, timeoutPath, "-k", "15", "600")
 			}
 			args = append(args, inner...)
-			c := exec.Command(path, args...)
-			c.Stdin = cmd.Stdin
-			c.Stdout = cmd.Stdout
-			c.Stderr = cmd.Stderr
-			return c.Run()
+			return run(path, args...)
 		}
 	}
 	if path, err := exec.LookPath("setpriv"); err == nil {
 		args := []string{
 			"--reuid=nyxveil", "--regid=nyxveil", "--clear-groups",
-			"--inh-caps=+net_bind_service", "--ambient-caps=+net_bind_service",
-			"--", cmd.Path,
+			"--bounding-set=-all,+net_bind_service", "--no-new-privs",
+			"--inh-caps=-all,+net_bind_service", "--ambient-caps=-all,+net_bind_service",
+			"--", timeoutPath, "-k", "15", "600", cmd.Path,
 		}
 		args = append(args, cmd.Args[1:]...)
-		c := exec.Command(path, args...)
-		c.Stdin = cmd.Stdin
-		c.Stdout = cmd.Stdout
-		c.Stderr = cmd.Stderr
-		return c.Run()
+		return run(path, args...)
 	}
 	// Fail closed: uncapped runuser cannot bind :80 under default
 	// ip_unprivileged_port_start=1024 (live gate blocker on Ubuntu 24.04).

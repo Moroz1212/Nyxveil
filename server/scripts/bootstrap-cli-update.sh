@@ -77,6 +77,9 @@ case "${ARCH}" in
 esac
 MANIFEST_ARCH="linux/${ARCH}"
 BASE_URL="${NYXVEIL_RELEASE_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/server-v${VERSION}}"
+if [[ "${NYXVEIL_TEST_MODE:-0}" != 1 ]]; then
+  [[ "${GITHUB_REPO}" == Moroz1212/Nyxveil && "${BASE_URL}" == "https://github.com/Moroz1212/Nyxveil/releases/download/server-v${VERSION}" ]] || die "production release source is fixed"
+fi
 
 WORK="$(mktemp -d /tmp/nyxveil-bootstrap-cli.XXXXXX)"
 cleanup() { rm -rf "${WORK}"; }
@@ -110,6 +113,9 @@ if [[ -n "${CTL_FILE}" ]]; then
   cp -a "${CTL_FILE}" "${NEW_CTL}"
 else
   log "fetching nyxveilctl asset"
+  if [[ "${NYXVEIL_TEST_MODE:-0}" != 1 ]]; then
+    [[ "${CTL_URL}" == "${BASE_URL}/nyxveilctl-linux-${ARCH}" ]] || die "ctl asset must come from the pinned production release"
+  fi
   curl -fsSL --connect-timeout 10 --max-time 300 "${CTL_URL}" -o "${NEW_CTL}" || die "ctl download failed (old CLI left intact)"
 fi
 GOT_SHA="$(sha256sum "${NEW_CTL}" | awk '{print $1}')"

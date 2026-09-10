@@ -324,10 +324,30 @@ func TestRestartHealthySuccess(t *testing.T) {
 	if err := n.commandStore.addRestartPending("cmd-rst-ok", time.Now().UTC().Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
 	}
+	n.commandStore.data.RestartPending[0].OriginRuntimeID = "previous-process"
 	n.reportPendingRestartResults(context.Background())
 	codes := cap.codes()
 	if len(codes) != 1 || codes[0] != "restarted_healthy" {
 		t.Fatalf("want restarted_healthy got %v", codes)
+	}
+}
+
+func TestRestartOldHealthyRuntimeCannotReportSuccess(t *testing.T) {
+	n, cap := newLifecycleNode(t)
+	if got := n.Status().ManagementCapabilities; got != managementCapabilitiesList {
+		t.Fatalf("status capabilities: %q", got)
+	}
+	n.cpOK.Store(true)
+	if err := n.commandStore.addRestartPending("same-runtime", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	n.commandStore = newCommandDedupeStore(n.commandStore.path)
+	n.reportPendingRestartResults(context.Background())
+	if codes := cap.codes(); len(codes) != 0 {
+		t.Fatalf("old process reported restart: %v", codes)
+	}
+	if got := n.commandStore.restartPending(); len(got) != 1 || got[0].OriginRuntimeID != runtimeInstanceID {
+		t.Fatal("durable process identity lost")
 	}
 }
 

@@ -59,6 +59,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "${NYXVEIL_TEST_MODE:-0}" != 1 && -n "${BASE_URL}" ]]; then
+  [[ "${BASE_URL}" =~ ^https://github\.com/Moroz1212/Nyxveil/releases/download/server-v[0-9]+\.[0-9]+\.[0-9]+/?$ ]] \
+    || die "production source must be a pinned Moroz1212/Nyxveil release (test overrides require NYXVEIL_TEST_MODE=1)"
+fi
+
 cleanup() {
   if [[ -n "${WORK}" && -d "${WORK}" ]]; then
     rm -rf "${WORK}"

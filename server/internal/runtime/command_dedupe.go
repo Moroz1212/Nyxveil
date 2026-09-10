@@ -25,8 +25,9 @@ type rebootPendingRecord struct {
 }
 
 type restartPendingRecord struct {
-	CommandID string `json:"command_id"`
-	StartedAt string `json:"started_at,omitempty"`
+	CommandID       string `json:"command_id"`
+	StartedAt       string `json:"started_at,omitempty"`
+	OriginRuntimeID string `json:"origin_runtime_id,omitempty"`
 }
 
 type pendingResultRecord struct {
@@ -173,12 +174,14 @@ func (s *commandDedupeStore) addRestartPending(commandID, startedAt string) erro
 	for i, rec := range s.data.RestartPending {
 		if rec.CommandID == commandID {
 			s.data.RestartPending[i].StartedAt = startedAt
+			s.data.RestartPending[i].OriginRuntimeID = runtimeInstanceID
 			return s.saveLocked()
 		}
 	}
 	s.data.RestartPending = append(s.data.RestartPending, restartPendingRecord{
-		CommandID: commandID,
-		StartedAt: startedAt,
+		CommandID:       commandID,
+		StartedAt:       startedAt,
+		OriginRuntimeID: runtimeInstanceID,
 	})
 	return s.saveLocked()
 }
