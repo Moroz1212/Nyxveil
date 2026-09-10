@@ -67,7 +67,7 @@ jobs:
             .path == ".github/workflows/server-ci.yml" and
             .status == "completed" and .conclusion == "success"
           ' /tmp/server-ci-run.json >/dev/null
-          git fetch --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          git fetch --force --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}"
           [[ "$(git rev-parse "${TAG}^{commit}")" == "${SHA}" ]] || { echo "Tag targets another commit"; exit 1; }
           echo "Using verified Server CI run ${RUN_ID} for ${SHA}"
           rm -rf dist/release
