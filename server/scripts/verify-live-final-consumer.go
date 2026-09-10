@@ -143,7 +143,8 @@ func main() {
 				if !needsOpenSSL {
 					cmd := exec.Command(bash, dstScript, "--base-url", base, "--verify-chain")
 					cmd.Dir = work
-					cmd.Env = append(os.Environ(), "NYXVEIL_SKIP_ROOT=1")
+					// Only this verification subprocess may use the loopback fixture.
+					cmd.Env = append(os.Environ(), "NYXVEIL_SKIP_ROOT=1", "NYXVEIL_TEST_MODE=1")
 					out, err := cmd.CombinedOutput()
 					if err != nil {
 						fatal("live-final --verify-chain: %v\n%s", err, out)
