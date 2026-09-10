@@ -7,12 +7,14 @@ Continuation base HEAD (local and GitHub main verified): 9b7321b4b3b3d686118e689
 ## Current continuation
 
 - Root cause: test-bounded-runuser-timeout.sh still expected ambient-caps=+net_bind_service, although the production fallback already restricts capabilities with -all,+net_bind_service.
-- Changed only this regression test and this report. The test independently requires --bounding-set=-all,+net_bind_service, --no-new-privs, --inh-caps=-all,+net_bind_service and --ambient-caps=-all,+net_bind_service, plus the setpriv user switch. No production capability contract was weakened.
+- The test independently requires --bounding-set=-all,+net_bind_service, --no-new-privs, --inh-caps=-all,+net_bind_service and --ambient-caps=-all,+net_bind_service, plus the setpriv user switch. No production capability contract was weakened.
 - PASS: targeted test-bounded-runuser-timeout.sh executed on Ubuntu/WSL, including all four assertions, stdin, exit status, timeout and TERM delivery.
 - PASS: fresh go test -timeout 120s ./... and go vet ./... on Windows; test-installed-modes.sh on Ubuntu/WSL; assert-frozen-core.sh and git diff --check. No server/third_party or licensing changes against base HEAD.
 - Windows mock executable-assets are already fixed in base HEAD: assert_installed_mode bypasses Unix mode checks only for Windows MOCK, while Linux mocks and production retain strict checks. test-installed-modes.sh covers this boundary.
 - Previous Server CI 34471564225 on 9b7321b4b3b3d686118e689775f998deed707c9d: FAIL only at the stale capability assertion, with exact error `FAIL missing setpriv ambient-caps fallback`. All preceding steps passed, including Linux management-assets (`test-installer-management-assets PASSED`) and platform/firewall contracts. Remaining Linux stages and build were SKIP, not PASS.
 - New CI, its artifact ID, complete artifact verification and disposable live gates: pending. No GitHub Release or production deployment authorized in this continuation.
+- Follow-up HEAD da2cdd80ebed64cc92e7f0c554c60fdd0028f13e, CI 34498579036: capability wrapper, real ACME privileged bind, exact setpriv capability sets, nftables/private netns, bounded HTTP and clean-host contract all PASS. Race stage FAIL: the ACME fixture left the nyxveil account behind, so later Go tests running as runner attempted forbidden chown on temporary TLS files. No data-race diagnostic was reported; runtime/updater failed ownership setup and build was SKIP.
+- CI fixture correction: server-ci.yml now removes only the service account created by its ACME step using an EXIT trap and bounded userdel. Pre-existing accounts are preserved; cleanup failure fails the step. Production file ownership enforcement is unchanged. A fresh CI run must execute race, build, package and artifact gates.
 
 ## Root causes and behavior changes
 

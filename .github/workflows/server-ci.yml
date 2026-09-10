@@ -64,7 +64,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y nftables util-linux libcap2-bin python3
-          id nyxveil >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin nyxveil
+          # This fixture must not leak into later unprivileged Go tests: their
+          # TLS fixtures cannot chown files to a different service account.
+          # Preserve any account that existed before this step.
+          if ! id nyxveil >/dev/null 2>&1; then
+            sudo useradd --system --no-create-home --shell /usr/sbin/nologin nyxveil
+            trap 'sudo timeout -k 2 10 userdel nyxveil || exit 1' EXIT
+          fi
           sudo bash scripts/test-acme-privileged-bind.sh | tee /tmp/acme-bind-gate.log
           grep -qx 'ACME_PRIVILEGED_BIND=PASS' /tmp/acme-bind-gate.log
       - name: nftables idempotency
