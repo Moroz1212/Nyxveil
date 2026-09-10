@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       ci_run_id:
-        description: Optional Server CI run ID whose artifact to publish (default: latest success for this SHA)
+        description: "Optional Server CI run ID whose artifact to publish (default: latest success for this SHA)"
         required: false
         type: string
   push:
