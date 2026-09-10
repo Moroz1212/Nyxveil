@@ -2,7 +2,17 @@
 
 FINAL VERDICT: NOT READY.
 
-Source HEAD: 20eaedc8faef0a5a535503c882a34ec9d6e51dbc, plus uncommitted changes listed below. Local binaries identify Commit=20eaedc-dirty. Toolchain: Go 1.25.0 Windows/amd64; CI remains Go 1.24, Ubuntu 24.04. These are local candidate artifacts, not verified CI artifacts or published releases.
+Continuation base HEAD (local and GitHub main verified): 9b7321b4b3b3d686118e689775f998deed707c9d. The capability-assertion fix is recorded by the commit containing this report; its exact SHA and new CI evidence will be recorded after CI completes. Server remains 1.1.12. Toolchain: Go 1.25.0 Windows/amd64; CI remains Go 1.24, Ubuntu 24.04. The artifacts below are historical local candidates built from 20eaedc8faef0a5a535503c882a34ec9d6e51dbc with uncommitted changes (Commit=20eaedc-dirty), not artifacts of the continuation HEAD.
+
+## Current continuation
+
+- Root cause: test-bounded-runuser-timeout.sh still expected ambient-caps=+net_bind_service, although the production fallback already restricts capabilities with -all,+net_bind_service.
+- Changed only this regression test and this report. The test independently requires --bounding-set=-all,+net_bind_service, --no-new-privs, --inh-caps=-all,+net_bind_service and --ambient-caps=-all,+net_bind_service, plus the setpriv user switch. No production capability contract was weakened.
+- PASS: targeted test-bounded-runuser-timeout.sh executed on Ubuntu/WSL, including all four assertions, stdin, exit status, timeout and TERM delivery.
+- PASS: fresh go test -timeout 120s ./... and go vet ./... on Windows; test-installed-modes.sh on Ubuntu/WSL; assert-frozen-core.sh and git diff --check. No server/third_party or licensing changes against base HEAD.
+- Windows mock executable-assets are already fixed in base HEAD: assert_installed_mode bypasses Unix mode checks only for Windows MOCK, while Linux mocks and production retain strict checks. test-installed-modes.sh covers this boundary.
+- Previous Server CI 34471564225 on 9b7321b4b3b3d686118e689775f998deed707c9d: FAIL only at the stale capability assertion, with exact error `FAIL missing setpriv ambient-caps fallback`. All preceding steps passed, including Linux management-assets (`test-installer-management-assets PASSED`) and platform/firewall contracts. Remaining Linux stages and build were SKIP, not PASS.
+- New CI, its artifact ID, complete artifact verification and disposable live gates: pending. No GitHub Release or production deployment authorized in this continuation.
 
 ## Root causes and behavior changes
 
@@ -45,12 +55,12 @@ PASS — bounded HTTP fault tests: stalled headers/body, reset, 404/500, partial
 PASS — local packaging, verify-release in build and --ci-artifact modes, upload-set completeness, manifest hashes, SHA256SUMS, pinned installer, LOCAL_ARTIFACT_INTEGRITY.
 PASS — git diff --check.
 
-FAIL — complete local shell suite is not green: test-installer-management-assets cannot establish Unix executable semantics for its plain-text mock asset on Git Bash. An experimental fixture adjustment was reverted. Initial missing Python/jq failures were environment-related; bounded HTTP and manifest interoperability passed after providing real tools. The management-assets test still needs Linux execution.
+RESOLVED — the earlier Windows mock executable-assets failure is fixed in 9b7321b; Linux management-assets passed in CI 34471564225. Initial local missing Python/jq failures were environment-related; bounded HTTP and manifest interoperability passed after providing real tools.
 SKIP — ACME_PRIVILEGED_BIND and NFTABLES_IDEMPOTENCY runtime checks on Windows; static/mock wrapper checks passed.
 PARTIAL — BOOTSTRAP_SECRET_HYGIENE: mock stdin/argv checks only, not full process/log/filesystem observation of production registration.
 NOT EXECUTED — Linux race tests; execution of new Linux firewall tests; real transient-capability bind test; real nft transactions; real install/repair x3; real ACME failure; clean-host, reboot, live update/rollback and served-SPKI gates.
 NOT EXECUTED — actual release bytes identity between a successful CI artifact and GitHub Release. Local integrity is not that proof.
-NOT EXECUTED — GitHub Actions run for these uncommitted changes. gh is not authenticated in this environment; no workflow run ID or artifact ID is claimed.
+FAIL — GitHub Actions Server CI 34471564225, verified against base HEAD, stopped at the stale capability assertion described above. A new run is required after committing this correction.
 
 ## Local artifacts
 
@@ -72,7 +82,7 @@ Before/after expected baseline: 7b13097da410c79e4ad3292642f4a7bc03e576489edb0585
 PASS — no diff in server/third_party against starting HEAD; no licensing changes.
 The existing assert-frozen-core script passed its available checks. The authoritative frozen ZIP was not present in the file inventory, so independent recomputation of that ZIP hash is NOT EXECUTED; do not interpret its printed expected hash as new archive evidence.
 
-GITHUB PUSH: NO
+GITHUB PUSH: base HEAD is on main; continuation correction pending push.
 GITHUB RELEASE: NO
 PRODUCTION DEPLOY: NO
 

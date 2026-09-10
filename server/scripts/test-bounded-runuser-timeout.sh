@@ -44,11 +44,22 @@ if grep -qE 'runuser -u nyxveil -- timeout -k' "${INSTALLER}"; then
 else
   pass "no uncapped runuser+timeout for bounded registration"
 fi
-if grep -qE 'setpriv --reuid=nyxveil' "${INSTALLER}" && grep -q 'ambient-caps=+net_bind_service' "${INSTALLER}"; then
-  pass "setpriv ambient-caps fallback present"
+if grep -qF -- 'setpriv --reuid=nyxveil' "${INSTALLER}"; then
+  pass "setpriv fallback present"
 else
-  fail "missing setpriv ambient-caps fallback"
+  fail "missing setpriv fallback"
 fi
+for property in \
+  '--bounding-set=-all,+net_bind_service' \
+  '--no-new-privs' \
+  '--inh-caps=-all,+net_bind_service' \
+  '--ambient-caps=-all,+net_bind_service'; do
+  if grep -qF -- "${property}" "${INSTALLER}"; then
+    pass "setpriv fallback ${property}"
+  else
+    fail "missing setpriv fallback ${property}"
+  fi
+done
 
 TMP="$(mktemp -d /tmp/nyxveil-bounded-timeout.XXXXXX)"
 cleanup() { rm -rf "${TMP}"; }
