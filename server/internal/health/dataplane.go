@@ -38,23 +38,30 @@ func (s *Status) ManagementConnected() bool {
 
 // Baseline is a pre-update / pre-rollback snapshot used for regression gates.
 type Baseline struct {
-	Running         bool `json:"running"`
-	Accepting       bool `json:"accepting"`
-	BridgeOK        bool `json:"bridge_ok"`
-	TLSOK           bool `json:"tls_ok"`
-	QUICOK          bool `json:"quic_ok"`
-	TUNReady        bool `json:"tun_ready"`
-	CPConnected     bool `json:"cp_connected"`
-	Healthy         bool `json:"healthy"`
-	IdentityPresent bool `json:"identity_present"`
-	VersionBlocked  bool `json:"version_blocked"`
-	DataplaneOK     bool `json:"dataplane_ok"`
+	LifecycleKnown  bool   `json:"lifecycle_known"`
+	Draining        bool   `json:"draining"`
+	MaintenanceMode bool   `json:"maintenance_mode"`
+	NodeID          string `json:"node_id,omitempty"`
+	ConfigVersion   int64  `json:"config_version,omitempty"`
+	Running         bool   `json:"running"`
+	Accepting       bool   `json:"accepting"`
+	BridgeOK        bool   `json:"bridge_ok"`
+	TLSOK           bool   `json:"tls_ok"`
+	QUICOK          bool   `json:"quic_ok"`
+	TUNReady        bool   `json:"tun_ready"`
+	CPConnected     bool   `json:"cp_connected"`
+	Healthy         bool   `json:"healthy"`
+	IdentityPresent bool   `json:"identity_present"`
+	VersionBlocked  bool   `json:"version_blocked"`
+	DataplaneOK     bool   `json:"dataplane_ok"`
 }
 
 // CaptureBaseline extracts update-relevant fields from a full status snapshot.
 func CaptureBaseline(s Status) Baseline {
 	s.Healthy = s.ComputeHealthy()
 	return Baseline{
+		LifecycleKnown: true, Draining: s.Draining, MaintenanceMode: s.MaintenanceMode,
+		NodeID: s.NodeID, ConfigVersion: s.ConfigVersion,
 		Running:         s.Running,
 		Accepting:       s.Accepting,
 		BridgeOK:        s.BridgeOK,
@@ -119,11 +126,21 @@ type UpdateResult struct {
 
 // EvaluatePostUpdate decides whether an update may commit given pre-update baseline and post status.
 func EvaluatePostUpdate(pre Baseline, post Status) UpdateResult {
+	if pre.IntentionallyStopped() {
+		reason := stoppedUpdateFailure(pre, post)
+		return UpdateResult{OK: reason == "", UpdateSuccess: reason == "", Reason: reason,
+			DataplaneHealthy: post.DataplaneOK(), ManagementPlaneConnected: post.CPConnected,
+			PreexistingManagementDegradation: !pre.CPConnected}
+	}
 	postBase := CaptureBaseline(post)
 	res := UpdateResult{
 		DataplaneHealthy:                 postBase.DataplaneOK,
 		ManagementPlaneConnected:         postBase.CPConnected,
 		PreexistingManagementDegradation: !pre.CPConnected,
+	}
+	if pre.NodeID != "" && pre.NodeID != post.NodeID || post.ConfigVersion < pre.ConfigVersion {
+		res.Reason = "identity/configuration changed"
+		return res
 	}
 
 	if regressed, field := DataplaneRegressed(pre, postBase); regressed {
@@ -165,6 +182,10 @@ type RollbackResult struct {
 
 // EvaluateRollbackSuccess reports success when restored state is not worse than pre-update baseline.
 func EvaluateRollbackSuccess(pre Baseline, post Status) RollbackResult {
+	if pre.IntentionallyStopped() {
+		reason := stoppedUpdateFailure(pre, post)
+		return RollbackResult{Complete: reason == "", BaselineRestored: reason == "", Incomplete: reason != "", Reason: reason}
+	}
 	postBase := CaptureBaseline(post)
 	if regressed, field := DataplaneRegressed(pre, postBase); regressed {
 		return RollbackResult{
@@ -190,4 +211,31 @@ func EvaluateRollbackSuccess(pre Baseline, post Status) RollbackResult {
 		BaselineRestored: true,
 		Reason:           "baseline restored (global healthy may remain false for preexisting CP reasons)",
 	}
+}
+
+// IntentionallyStopped requires explicit lifecycle evidence, never accepting=false alone.
+func (b Baseline) IntentionallyStopped() bool {
+	return b.LifecycleKnown && !b.Accepting && (b.Draining || b.MaintenanceMode)
+}
+
+func stoppedUpdateFailure(pre Baseline, post Status) string {
+	if post.Accepting || post.Draining != pre.Draining || post.MaintenanceMode != pre.MaintenanceMode {
+		return "update lifecycle changed"
+	}
+	if !post.Running || !post.IdentityPresent || post.VersionBlocked || !post.TUNReady || !post.BridgeOK || post.SkipTUN {
+		return "stopped node runtime/identity/TUN/bridge not ready"
+	}
+	if !post.TicketKeysLoaded || post.RevocationStale {
+		return "stopped node ticket keys/revocation not ready"
+	}
+	if pre.CPConnected && !post.CPConnected {
+		return "cp_connected regressed"
+	}
+	if pre.NodeID != "" && pre.NodeID != post.NodeID {
+		return "node identity changed"
+	}
+	if post.ConfigVersion < pre.ConfigVersion {
+		return "applied configuration regressed"
+	}
+	return ""
 }

@@ -38,6 +38,7 @@ func TestWrongManagementDestinationFailsClosed(t *testing.T) {
 
 	root := tempRoot(t)
 	u := updater.New(filepath.Join(root, "server"), filepath.Join(root, "server.prev"), "")
+	u.StateDir = t.TempDir()
 	u.DaemonReload = func() error { return nil }
 	mapRequiredTestAssets(u, root)
 	if err := u.Apply(m, nil); err == nil || !strings.Contains(err.Error(), "allowlist") {
@@ -71,6 +72,7 @@ func TestWrongManagementModeFailsClosed(t *testing.T) {
 
 	root := tempRoot(t)
 	u := updater.New(filepath.Join(root, "server"), filepath.Join(root, "server.prev"), "")
+	u.StateDir = t.TempDir()
 	u.DaemonReload = func() error { return nil }
 	mapRequiredTestAssets(u, root)
 	if err := u.Apply(m, nil); err == nil || !strings.Contains(err.Error(), "mode") {
@@ -104,6 +106,7 @@ func TestUnknownRequiredPrivilegedAssetFailsClosed(t *testing.T) {
 
 	root := tempRoot(t)
 	u := updater.New(filepath.Join(root, "server"), filepath.Join(root, "server.prev"), "")
+	u.StateDir = t.TempDir()
 	u.DaemonReload = func() error { return nil }
 	mapRequiredTestAssets(u, root)
 	if err := u.Apply(m, nil); err == nil || !strings.Contains(err.Error(), "allowlist") {
@@ -135,6 +138,7 @@ func TestManagementAssetRollbackRemovesNewFiles(t *testing.T) {
 
 	reloadCalls := 0
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), "")
+	u.StateDir = t.TempDir()
 	u.DaemonReload = func() error {
 		reloadCalls++
 		return nil
@@ -179,6 +183,7 @@ func TestDaemonReloadInvokedAfterUpdateUnitInstall(t *testing.T) {
 
 	calls := 0
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), "")
+	u.StateDir = t.TempDir()
 	u.DaemonReload = func() error { calls++; return nil }
 	mapRequiredTestAssets(u, root)
 	if err := u.Apply(m, func() bool { return true }); err != nil {

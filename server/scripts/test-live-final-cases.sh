@@ -42,7 +42,9 @@ fi
 MANIFEST="${2:?manifest}"
 python3 - <<'PY'
 import hashlib, json, os, pathlib, urllib.request
-m = json.load(open(os.environ["MANIFEST"], encoding="utf-8"))
+source = os.environ["MANIFEST"]
+with urllib.request.urlopen(source, timeout=15) if source.startswith(("http://", "https://")) else open(source, "rb") as stream:
+    m = json.load(stream)
 bin_dir = pathlib.Path(os.environ.get("NYXVEIL_BIN_DIR", "/usr/local/sbin"))
 share = pathlib.Path(os.environ.get("NYXVEIL_SHARE_DIR", "/usr/local/share/nyxveil"))
 dest = {
@@ -57,7 +59,7 @@ for a in m["assets"]:
   name = a["name"]
   if name not in dest:
     continue
-  data = urllib.request.urlopen(a["url"]).read()
+  data = urllib.request.urlopen(a["url"], timeout=15).read()
   got = hashlib.sha256(data).hexdigest()
   if got != a["sha256"]:
     raise SystemExit(f"hash mismatch {name}")
@@ -139,7 +141,9 @@ fi
 export MANIFEST="\${2:?manifest}"
 python3 - <<'PY'
 import hashlib, json, os, pathlib, urllib.request
-m = json.load(open(os.environ["MANIFEST"], encoding="utf-8"))
+source = os.environ["MANIFEST"]
+with urllib.request.urlopen(source, timeout=15) if source.startswith(("http://", "https://")) else open(source, "rb") as stream:
+    m = json.load(stream)
 bin_dir = pathlib.Path(os.environ.get("NYXVEIL_BIN_DIR", "/usr/local/sbin"))
 share = pathlib.Path(os.environ.get("NYXVEIL_SHARE_DIR", "/usr/local/share/nyxveil"))
 dest = {
@@ -154,7 +158,7 @@ for a in m["assets"]:
   name = a["name"]
   if name not in dest:
     continue
-  data = urllib.request.urlopen(a["url"]).read()
+  data = urllib.request.urlopen(a["url"], timeout=15).read()
   got = hashlib.sha256(data).hexdigest()
   if got != a["sha256"]:
     raise SystemExit(f"hash mismatch {name}")
@@ -187,15 +191,18 @@ start_http() {
   # Do not inherit command-substitution stdout: the background server otherwise
   # keeps PID="$(start_http ...)" waiting for EOF forever.
   python3 - "${root}" "${port_file}" >"${root}/http.log" 2>&1 <<'PY' &
-import http.server, socketserver, pathlib, sys, os
-os.chdir(sys.argv[1])
+import http.server, socketserver, pathlib, sys, functools
 port_file = pathlib.Path(sys.argv[2])
 class H(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a):
         pass
-with socketserver.TCPServer(("127.0.0.1", 0), H) as httpd:
+with socketserver.TCPServer(("127.0.0.1", 0), functools.partial(H, directory=sys.argv[1])) as httpd:
     port_file.write_text(str(httpd.server_address[1]), encoding="ascii")
-    httpd.serve_forever()
+    httpd.timeout = 1
+    import time
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        httpd.handle_request()
 PY
   echo $!
 }
@@ -370,19 +377,7 @@ case "${CASE}" in
     seed_old_install
     printf '%s\n' '#!/bin/bash' 'echo evil-no-pubkey' > "${SRV}/bootstrap-cli-update.sh"
     chmod 0755 "${SRV}/bootstrap-cli-update.sh"
-    sum="$(sha256sum "${SRV}/bootstrap-cli-update.sh" | awk '{print $1}')"
-    python3 - "${SRV}/SHA256SUMS" "${sum}" <<'PY'
-from pathlib import Path
-import sys
-p = Path(sys.argv[1]); s = sys.argv[2]
-lines = []
-for line in p.read_text(encoding="utf-8").splitlines():
-    if line.endswith("bootstrap-cli-update.sh"):
-        lines.append(f"{s}  bootstrap-cli-update.sh")
-    else:
-        lines.append(line)
-p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-PY
+    # Keep the trusted checksum unchanged: corrupt bytes must fail integrity verification.
     place_only_live_final
     if (
       cd "${WORK}"

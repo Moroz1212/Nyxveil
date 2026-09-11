@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/nyxveil/server/internal/filemeta"
 	"github.com/nyxveil/server/internal/health"
+	"github.com/nyxveil/server/internal/localconfig"
 	"github.com/nyxveil/server/internal/paths"
 	"github.com/nyxveil/server/internal/updater"
 	"github.com/nyxveil/server/internal/version"
@@ -21,6 +23,9 @@ import (
 // updateTransaction journals a self-update across the old→new ctl process boundary.
 // Only one process owns rollback at a time (see OwnerPID / Phase).
 type updateTransaction struct {
+	LegacyParent      bool                          `json:"legacy_parent,omitempty"`
+	TerminalOutcome   string                        `json:"terminal_outcome,omitempty"`
+	FailureReason     string                        `json:"failure_reason,omitempty"`
 	ID                string                        `json:"id"`
 	TargetVersion     string                        `json:"target_version"`
 	ManifestURL       string                        `json:"manifest_url,omitempty"`
@@ -79,7 +84,17 @@ func writeUpdateTransaction(tx *updateTransaction) error {
 	if err := os.MkdirAll(updateTxnDir(), 0o700); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(tx, "", "  ")
+	wire := *tx
+	if tx.LegacyParent && (tx.Phase == txPhaseRolledBackHealthy || tx.Phase == txPhaseRollbackFailed) {
+		// 1.1.9 parent recognizes only these ownership phases. Preserve the exact
+		// outcome separately; rolling_back must never imply successful rollback.
+		wire.TerminalOutcome = tx.Phase
+		wire.Phase = txPhaseRollingBack
+		if tx.Phase == txPhaseRolledBackHealthy {
+			wire.Phase = txPhaseRolledBack
+		}
+	}
+	b, err := json.MarshalIndent(&wire, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -94,6 +109,9 @@ func loadUpdateTransaction(id string) (*updateTransaction, error) {
 	var tx updateTransaction
 	if err := json.Unmarshal(b, &tx); err != nil {
 		return nil, err
+	}
+	if tx.TerminalOutcome == txPhaseRollbackFailed || tx.TerminalOutcome == txPhaseRolledBackHealthy {
+		tx.Phase = tx.TerminalOutcome
 	}
 	return &tx, nil
 }
@@ -119,7 +137,9 @@ func acquireUpdateLock() (*os.File, error) {
 }
 
 func spawnUpdateResume(newCtl, txID string) (exitCode int, err error) {
-	cmd := exec.Command(newCtl, "update-resume", "--transaction", txID)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, newCtl, "update-resume", "--transaction", txID)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -147,13 +167,9 @@ func handoffPostCheckToNewCtl(tx *updateTransaction) bool {
 	loaded, loadErr := loadUpdateTransaction(tx.ID)
 	if loadErr == nil {
 		switch loaded.Phase {
-		case txPhaseRolledBackHealthy, txPhaseRolledBack, txPhaseRollingBack:
+		case txPhaseRolledBackHealthy, txPhaseRolledBack, txPhaseRollingBack, txPhaseRollbackFailed, txPhaseResuming, txPhaseCommitted:
 			fmt.Printf("self-update handoff: new ctl owns rollback (phase=%s); parent will not double-rollback\n", loaded.Phase)
 			os.Exit(1)
-		case txPhaseRollbackFailed:
-			fmt.Printf("self-update handoff: new ctl rollback failed (phase=%s); parent will rollback\n", loaded.Phase)
-			removeUpdateTransaction(tx.ID)
-			return false
 		}
 	}
 	fmt.Printf("self-update handoff failed: %v (exit=%d); parent will rollback\n", err, code)
@@ -186,9 +202,17 @@ func runUpdateResume(args []string) error {
 		return fmt.Errorf("update-resume: unexpected phase %q", tx.Phase)
 	}
 	tx.Phase = txPhaseResuming
+	tx.LegacyParent = tx.LegacyParent || !tx.PreBaseline.LifecycleKnown
+	if tx.PreviousVersion == "" {
+		tx.PreviousVersion = tx.ProcessCLIAtStart
+	}
 	tx.OwnerPID = os.Getpid()
 	if err := writeUpdateTransaction(tx); err != nil {
 		return err
+	}
+	if err := restoreLegacyLifecycle(tx); err != nil {
+		tx.FailureReason = err.Error()
+		return rollbackAcrossHandoff(tx)
 	}
 
 	fmt.Printf("update-resume: target=%s process_cli=%s (was %s at start)\n",
@@ -200,6 +224,7 @@ func runUpdateResume(args []string) error {
 
 	fmt.Printf("updated to %s\n", tx.TargetVersion)
 	if err := afterSuccessfulUpdate(tx.TargetVersion); err != nil {
+		tx.FailureReason = err.Error()
 		return rollbackAcrossHandoff(tx)
 	}
 
@@ -208,7 +233,7 @@ func runUpdateResume(args []string) error {
 	if err := writeUpdateTransaction(tx); err != nil {
 		return fmt.Errorf("update-resume: commit journal: %w", err)
 	}
-	removeUpdateTransaction(tx.ID)
+	// Retain the terminal journal until the daemon has durably reported the result.
 	return nil
 }
 
@@ -224,20 +249,28 @@ func performPostUpdateVerification(tx *updateTransaction) bool {
 		return true
 	}
 	prePID := unitMainPID("nyxveil-server")
+	if err := verifyUpdateTLS(); err != nil {
+		tx.FailureReason = "TLS validation: " + err.Error()
+		return false
+	}
 	if err := restartUnit("nyxveil-server"); err != nil {
+		tx.FailureReason = "restart failure: " + err.Error()
 		fmt.Printf("update restart failed: %v\n", err)
 		return false
 	}
 	res, ok := verifyPostUpdateHealth(tx.PreBaseline, 45)
 	if !ok {
+		tx.FailureReason = "health timeout: " + res.Reason
 		return false
 	}
 	postPID := unitMainPID("nyxveil-server")
 	if prePID > 0 && postPID > 0 && prePID == postPID {
+		tx.FailureReason = "same PID after restart"
 		fmt.Printf("update_success=false reason=same_pid_after_restart pre_pid=%d post_pid=%d\n", prePID, postPID)
 		return false
 	}
 	if err := assertVersionsMatchTarget(tx.TargetVersion); err != nil {
+		tx.FailureReason = "version mismatch: " + err.Error()
 		fmt.Printf("update_success=false reason=version_mismatch detail=%v\n", err)
 		return false
 	}
@@ -250,6 +283,7 @@ func performPostUpdateVerification(tx *updateTransaction) bool {
 }
 
 func markRollbackFailed(tx *updateTransaction, reason error) error {
+	tx.FailureReason += "; rollback failure: " + reason.Error()
 	tx.Phase = txPhaseRollbackFailed
 	tx.OwnerPID = os.Getpid()
 	if werr := writeUpdateTransaction(tx); werr != nil {
@@ -299,12 +333,14 @@ func rollbackAcrossHandoff(tx *updateTransaction) error {
 	}
 	if err := rollbackEnforceTLS(stateDir); err != nil {
 		fmt.Printf("rollback TLS enforce error: %v\n", err)
-		// Ownership enforce failure is non-fatal when service user is absent (CI);
-		// continue to restart/health so production still verifies runtime.
+		return markRollbackFailed(tx, fmt.Errorf("TLS ownership failure: %w", err))
 	}
 
 	skipSystemd := runtime.GOOS == "windows" || strings.TrimSpace(os.Getenv("NYXVEIL_CONTROL_HTTP")) != ""
 	if !skipSystemd {
+		if err := verifyUpdateTLS(); err != nil {
+			return markRollbackFailed(tx, err)
+		}
 		if err := restartUnit("nyxveil-server"); err != nil {
 			fmt.Printf("rollback restart failed: %v\n", err)
 			return markRollbackFailed(tx, err)
@@ -335,6 +371,39 @@ func rollbackAcrossHandoff(tx *updateTransaction) error {
 		return fmt.Errorf("update-resume failed; binaries rolled back but journal write failed: %w", err)
 	}
 	return fmt.Errorf("update-resume failed; rolled_back_healthy to previous release")
+}
+
+// Older ctl snapshots omit lifecycle fields. Recover only from the authoritative
+// persisted CP configuration and matching status while the update owns the node.
+func restoreLegacyLifecycle(tx *updateTransaction) error {
+	if tx.PreBaseline.LifecycleKnown || tx.PreBaseline.Accepting {
+		return nil
+	}
+	snap, err := localconfig.LoadApplied(filepath.Join(runtimeStateDir(), "applied-config.json"))
+	if err != nil {
+		return fmt.Errorf("legacy lifecycle unavailable: %w", err)
+	}
+	raw, err := ctlStatusJSON()
+	if err != nil {
+		return err
+	}
+	st, err := health.ParseStatusJSON(raw)
+	if err != nil {
+		return err
+	}
+	cfg := snap.Config
+	if cfg.ConfigVersion <= 0 || cfg.NodeID == "" || cfg.NodeID != st.NodeID ||
+		cfg.ConfigVersion != st.ConfigVersion || st.Accepting ||
+		cfg.Draining != st.Draining || cfg.MaintenanceMode != st.MaintenanceMode ||
+		(!cfg.Draining && !cfg.MaintenanceMode) {
+		return fmt.Errorf("legacy lifecycle cannot prove intentional drain/maintenance")
+	}
+	tx.PreBaseline.LifecycleKnown = true
+	tx.PreBaseline.Draining = cfg.Draining
+	tx.PreBaseline.MaintenanceMode = cfg.MaintenanceMode
+	tx.PreBaseline.NodeID = cfg.NodeID
+	tx.PreBaseline.ConfigVersion = cfg.ConfigVersion
+	return writeUpdateTransaction(tx)
 }
 
 func runtimeStateDir() string {

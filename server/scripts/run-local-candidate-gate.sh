@@ -15,7 +15,7 @@ case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) exit 2 ;; 
 cd "${ROOT}"
 sha256sum --strict -c BUNDLE-SHA256SUMS >/dev/null
 version="$(tr -d '[:space:]' < VERSION)"
-[[ "${version}" == 1.1.12 ]] || exit 1
+[[ "${version}" == 1.1.13 ]] || exit 1
 exec bash "${ROOT}/linux-${arch}/scripts/clean-host-install-gate.sh" \
   --mode local-candidate --expected-version "${version}" \
   --installer "${ROOT}/install.sh" --binary-dir "${ROOT}/linux-${arch}" "$@"

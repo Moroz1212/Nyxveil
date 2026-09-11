@@ -76,6 +76,12 @@ func runVersion(args []string) error {
 			return fmt.Errorf("version: unknown argument %q", a)
 		}
 	}
+	if os.Getenv("NYXVEIL_VERSION_PROBE") == "1" {
+		// A binary provenance probe must not recursively probe other binaries or
+		// wait for the daemon control socket during its restart.
+		printVersionReport(os.Stdout, VersionReport{CLIVersion: version.CLIVersion}, asJSON)
+		return nil
+	}
 	printVersionReport(os.Stdout, collectVersionReport(), asJSON)
 	return nil
 }

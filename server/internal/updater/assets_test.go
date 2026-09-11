@@ -112,6 +112,7 @@ func TestApplyMultiAsset(t *testing.T) {
 	completeInternalTestAssets(m, Asset{SHA256: hex.EncodeToString(ctlSum[:]), URL: srv.URL + "/ctl"})
 
 	u := New(serverBin, filepath.Join(dir, "server.prev"), filepath.Join(dir, "marker"))
+	u.StateDir = t.TempDir()
 	u.ExtraBinaries = map[string]string{"nyxveilctl": ctlBin}
 	u.ExtraPrev = map[string]string{"nyxveilctl": filepath.Join(dir, "ctl.prev")}
 	mapInternalTestAssets(u, dir)

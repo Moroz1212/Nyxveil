@@ -43,6 +43,8 @@ jobs:
         run: go test -timeout 120s ./...
       - name: Installer structure checks
         run: bash scripts/test-install.sh
+      - name: Lifecycle-aware updater gate regression
+        run: bash scripts/test-update-lifecycle-gate.sh
       - name: Platform modes and firewall transaction contracts
         run: |
           bash scripts/test-installed-modes.sh

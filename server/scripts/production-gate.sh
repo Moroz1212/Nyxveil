@@ -5,6 +5,7 @@
 #   source - verify built release artifacts + Frozen Core (no install, no secrets)
 #   local  - installed node local health (no mutating stop unless GATE_STOP_TEST=1)
 #   live   - local + CP reachability + cp_connected (asks license token once for catalog crypto)
+#   updater - automatic lifecycle health + TLS material; never requests a license
 #
 # Never prints/stores license tokens, private keys, or node.key contents.
 set -euo pipefail
@@ -195,11 +196,11 @@ ask_license_once() {
 }
 
 case "${MODE}" in
-  source|local|live) ;;
-  *) fail "mode" "GATE_MODE must be source|local|live" ;;
+  source|local|live|updater) ;;
+  *) fail "mode" "GATE_MODE must be source|local|live|updater" ;;
 esac
 
-EXPECTED_VERSION="${NYXVEIL_EXPECTED_VERSION:-1.1.12}"
+EXPECTED_VERSION="${NYXVEIL_EXPECTED_VERSION:-1.1.13}"
 SHARE_DIR="${NYXVEIL_SHARE_DIR:-/usr/local/share/nyxveil}"
 SHARE_VERSION_FILE="${NYXVEIL_SHARE_VERSION:-${SHARE_DIR}/VERSION}"
 VERSION="$(tr -d '\r[:space:]' < "${ROOT}/VERSION" 2>/dev/null || true)"
@@ -396,13 +397,38 @@ json_bool "${WORK}/status.json" tun_ready || fail "tun_ready" "TUN is not ready"
 json_bool "${WORK}/status.json" bridge_ok || fail "bridge_ok" "bridge is not ready"
 json_bool "${WORK}/status.json" ticket_keys_loaded ||
   fail "ticket_keys" "ticket verification keys are not loaded"
-if ! json_bool "${WORK}/status.json" tls_ok &&
+LIFECYCLE_STOPPED=0
+if [[ "${MODE}" == updater ]] && ! json_bool "${WORK}/status.json" accepting &&
+   { json_bool "${WORK}/status.json" draining || json_bool "${WORK}/status.json" maintenance_mode; }; then
+  LIFECYCLE_STOPPED=1
+  json_bool "${WORK}/status.json" identity_present || fail identity "runtime identity missing"
+  json_bool "${WORK}/status.json" cp_connected || fail cp_connected "management not connected"
+  if json_bool "${WORK}/status.json" version_blocked || json_bool "${WORK}/status.json" revocation_stale; then
+    fail updater_health "version blocked or revocation stale"
+  fi
+  record "transports=deliberately_stopped_by_lifecycle"
+fi
+if [[ "${LIFECYCLE_STOPPED}" != 1 ]] && ! json_bool "${WORK}/status.json" tls_ok &&
    ! json_bool "${WORK}/status.json" quic_ok; then
   fail "transports" "neither TLS nor QUIC is ready"
 fi
 
 CERT="${NYXVEIL_TLS_CERT:-${STATE_DIR}/tls.crt}"
 KEY="${NYXVEIL_TLS_KEY:-${STATE_DIR}/tls.key}"
+if [[ "${MODE}" == updater ]]; then
+  mapfile -t TLS_CONFIG < <(python3 - "${CONFIG}" "${STATE_DIR}" <<'PY'
+import json,sys,os
+with open(sys.argv[1],encoding='utf-8') as f:c=json.load(f)
+for value in [c.get('tls_cert_file') or os.path.join(sys.argv[2],'tls.crt'),
+              c.get('tls_key_file') or os.path.join(sys.argv[2],'tls.key'),
+              c.get('server_name') or c.get('public_host') or '']:
+    if '\n' in value or '\r' in value:raise SystemExit(1)
+    print(value)
+PY
+  )
+  [[ "${#TLS_CONFIG[@]}" == 3 && -n "${TLS_CONFIG[2]}" ]] || fail tls_config "invalid TLS configuration"
+  CERT="${TLS_CONFIG[0]}"; KEY="${TLS_CONFIG[1]}"
+fi
 [[ -s "${CERT}" && -s "${KEY}" ]] || fail "tls_files" "TLS cert/key missing"
 openssl x509 -in "${CERT}" -noout -subject -issuer -dates -ext subjectAltName \
   >"${WORK}/tls-certificate.txt" 2>&1 || fail "tls_certificate" "certificate parse failed"
@@ -410,7 +436,17 @@ openssl x509 -in "${CERT}" -pubkey -noout |
   openssl pkey -pubin -outform DER 2>/dev/null |
   sha256sum >"${WORK}/tls-spki-sha256.txt" ||
   fail "tls_spki" "could not derive certificate SPKI"
-record "tls_private_key=presence_only (never collected)"
+if [[ "${MODE}" == updater ]]; then
+  openssl x509 -in "${CERT}" -noout -checkhost "${TLS_CONFIG[2]}" >"${WORK}/tls-host.txt" 2>&1 || fail tls_san "configured hostname mismatch"
+  openssl pkey -in "${KEY}" -pubout -outform DER 2>/dev/null |
+    sha256sum >"${WORK}/tls-key-public-sha256.txt" || fail tls_key "key parse failed"
+  cmp -s "${WORK}/tls-spki-sha256.txt" "${WORK}/tls-key-public-sha256.txt" ||
+    fail tls_key "certificate and key mismatch"
+  openssl x509 -in "${CERT}" -noout -checkend 0 >/dev/null || fail tls_certificate "certificate expired"
+  [[ "$(stat -c '%a:%U' "${KEY}")" == 600:nyxveil ]] || fail tls_ownership "key mode/owner invalid"
+  [[ "$(stat -c '%a:%U' "${CERT}")" == 644:nyxveil ]] || fail tls_ownership "certificate mode/owner invalid"
+fi
+record "tls_private_key=never_collected"
 
 CP_URL="$(python3 - "${CONFIG}" <<'PY'
 import json, sys
@@ -593,7 +629,7 @@ STOP_US="$(systemctl show nyxveil-server -p TimeoutStopUSec --value 2>/dev/null 
   fail "shutdown_bound" "systemd TimeoutStopUSec is missing or unbounded"
 record "graceful_stop=dry_check timeout_stop_usec=${STOP_US}"
 
-if [[ "${GATE_STOP_TEST:-0}" == "1" ]]; then
+if [[ "${GATE_STOP_TEST:-0}" == "1" && "${MODE}" != updater ]]; then
   start_ns="$(date +%s%N)"
   systemctl stop nyxveil-server || fail "graceful_stop" "systemctl stop failed"
   elapsed_ms="$(( ($(date +%s%N) - start_ns) / 1000000 ))"

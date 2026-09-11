@@ -40,6 +40,7 @@ const (
 )
 
 type updateMarker struct {
+	FailureReason   string `json:"failure_reason,omitempty"`
 	CommandID       string `json:"command_id"`
 	PreviousVersion string `json:"previous_version"`
 	TargetVersion   string `json:"target_version"`
@@ -221,13 +222,13 @@ func (n *Node) completePendingUpdate(ctx context.Context) {
 	case updatePhaseRolledBackHealthy:
 		if got == prev && st.Healthy && cpOK {
 			n.finishUpdateLocal(ctx, m, false, "rolled_back_healthy",
-				"Runtime rolled back and healthy at previous version: "+cur)
+				"Runtime rolled back and healthy at previous version: "+cur+"; "+m.FailureReason)
 			return
 		}
 		return
 	case updatePhaseRollbackFailed:
 		n.finishUpdateLocal(ctx, m, false, "rollback_failed",
-			"Update executor reported rollback_failed")
+			"Update executor reported rollback_failed: "+m.FailureReason)
 		return
 	default:
 		// Unknown terminal-ish phase: do not guess rollback from version equality.
@@ -249,6 +250,11 @@ func (n *Node) bridgeUpdatePhaseFromCtl(m updateMarker) (updateMarker, bool) {
 	}
 	var latestPhase string
 	var latestMod time.Time
+	var latestReason string
+	started, parseErr := time.Parse(time.RFC3339, m.StartedAt)
+	if parseErr != nil {
+		return m, false
+	}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
@@ -262,10 +268,22 @@ func (n *Node) bridgeUpdatePhaseFromCtl(m updateMarker) (updateMarker, bool) {
 			continue
 		}
 		var tx struct {
-			Phase         string `json:"phase"`
-			TargetVersion string `json:"target_version"`
+			TerminalOutcome string    `json:"terminal_outcome"`
+			CreatedAt       time.Time `json:"created_at"`
+			FailureReason   string    `json:"failure_reason"`
+			Phase           string    `json:"phase"`
+			TargetVersion   string    `json:"target_version"`
 		}
 		if json.Unmarshal(raw, &tx) != nil {
+			continue
+		}
+		if tx.TerminalOutcome == updatePhaseRollbackFailed || tx.TerminalOutcome == updatePhaseRolledBackHealthy {
+			tx.Phase = tx.TerminalOutcome
+		}
+		if !tx.CreatedAt.IsZero() && tx.CreatedAt.Before(started) {
+			continue
+		}
+		if info.ModTime().Before(started) {
 			continue
 		}
 		if strings.TrimPrefix(strings.TrimSpace(tx.TargetVersion), "v") !=
@@ -275,6 +293,7 @@ func (n *Node) bridgeUpdatePhaseFromCtl(m updateMarker) (updateMarker, bool) {
 		if info.ModTime().After(latestMod) {
 			latestMod = info.ModTime()
 			latestPhase = tx.Phase
+			latestReason = tx.FailureReason
 		}
 	}
 	if latestPhase == "" {
@@ -290,6 +309,7 @@ func (n *Node) bridgeUpdatePhaseFromCtl(m updateMarker) (updateMarker, bool) {
 		updatePhaseUpdatedHealthy, updatePhaseRollingBack,
 		updatePhaseRolledBackHealthy, updatePhaseRollbackFailed:
 		m.Phase = mapped
+		m.FailureReason = latestReason
 		m.LastUpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		return m, true
 	default:

@@ -139,6 +139,7 @@ func TestUpdateInstallsProductionGate(t *testing.T) {
 	}
 
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), filepath.Join(root, "marker"))
+	u.StateDir = t.TempDir()
 	u.DaemonReload = func() error { return nil }
 	u.ExtraBinaries = map[string]string{
 		"nyxveilctl":             ctlBin,
@@ -198,6 +199,7 @@ func TestProductionGatePathExistsAfterUpgrade(t *testing.T) {
 	}
 
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), filepath.Join(root, "marker"))
+	u.StateDir = t.TempDir()
 	u.DaemonReload = func() error { return nil }
 	u.ExtraBinaries = map[string]string{
 		"nyxveilctl": filepath.Join(root, "ctl"), "nyxveil-catalog-verify": filepath.Join(root, "cat"),
@@ -249,6 +251,7 @@ func TestProductionGateExecutableAfterUpgrade(t *testing.T) {
 	}
 
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), filepath.Join(root, "marker"))
+	u.StateDir = t.TempDir()
 	u.DaemonReload = func() error { return nil }
 	u.ExtraBinaries = map[string]string{
 		"nyxveilctl":             filepath.Join(root, "nyxveilctl"),
@@ -319,6 +322,7 @@ func TestAuxiliaryFilesHashVerified(t *testing.T) {
 		})
 	}
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), filepath.Join(root, "marker"))
+	u.StateDir = t.TempDir()
 	u.DaemonReload = func() error { return nil }
 	u.ExtraBinaries = map[string]string{
 		"nyxveilctl": filepath.Join(root, "ctl"), "nyxveil-catalog-verify": filepath.Join(root, "cat"),
@@ -374,6 +378,7 @@ func TestAuxiliaryFilesRollback(t *testing.T) {
 	}
 
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), filepath.Join(root, "marker"))
+	u.StateDir = t.TempDir()
 	u.DaemonReload = func() error { return nil }
 	u.ExtraBinaries = map[string]string{
 		"nyxveilctl": ctlBin, "nyxveil-catalog-verify": filepath.Join(root, "catalog"),
@@ -441,6 +446,7 @@ func TestUpgradePreservesNodeIdentityAndTLS(t *testing.T) {
 	}
 
 	u := updater.New(serverBin, filepath.Join(root, "server.prev"), filepath.Join(root, "marker"))
+	u.StateDir = t.TempDir()
 	u.DaemonReload = func() error { return nil }
 	u.StateDir = state
 	u.EnforceOwnership = func(string) error { return nil }

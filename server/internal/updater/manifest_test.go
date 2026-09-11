@@ -111,6 +111,7 @@ func TestApplySHAAndRollback(t *testing.T) {
 	}
 
 	u := New(bin, prev, marker)
+	u.StateDir = t.TempDir()
 
 	if err := u.Apply(m, func() bool { return true }); err != nil {
 		t.Fatal(err)
@@ -168,6 +169,7 @@ func TestApplyRejectsWrongSHA256(t *testing.T) {
 		MinCore: "1.0.0", MinProtocol: 1,
 	}
 	u := New(bin, filepath.Join(dir, "prev"), filepath.Join(dir, "marker"))
+	u.StateDir = t.TempDir()
 	if err := u.Apply(m, nil); err == nil || !strings.Contains(err.Error(), "sha256") {
 		t.Fatalf("expected sha256 reject, got %v", err)
 	}
@@ -183,6 +185,7 @@ func TestApplyRejectsWrongArch(t *testing.T) {
 		MinCore: "1.0.0", MinProtocol: 1,
 	}
 	u := New(filepath.Join(t.TempDir(), "bin"), "", "")
+	u.StateDir = t.TempDir()
 	if err := u.Apply(m, nil); err == nil || !strings.Contains(strings.ToLower(err.Error()), "arch") {
 		t.Fatalf("expected arch reject, got %v", err)
 	}

@@ -426,15 +426,22 @@ func finishUpdate(m *updater.Manifest, u *updater.Updater, health updater.Health
 		// evaluate against the PRE-UPDATE baseline (not absolute global healthy).
 		if runtime.GOOS != "windows" && isUpdateRollback(err) {
 			fmt.Println("update failed; restoring previous binaries/TLS ownership and restarting service…")
-			_ = filemeta.EnforceRuntimeTLS(paths.StateDir)
-			_ = restartUnit("nyxveil-server")
+			if e := filemeta.EnforceRuntimeTLS(paths.StateDir); e != nil {
+				return fmt.Errorf("%w; rollback TLS ownership failure: %v", err, e)
+			}
+			if e := verifyUpdateTLS(); e != nil {
+				return fmt.Errorf("%w; rollback TLS failure: %v", err, e)
+			}
+			if e := restartUnit("nyxveil-server"); e != nil {
+				return fmt.Errorf("%w; rollback restart failure: %v", err, e)
+			}
 			rb, ok := verifyRollbackHealth(preBaseline, 45)
 			postTLS, _ := filemeta.CaptureTLSOwnership(paths.StateDir)
 			tlsMsg := filemeta.TLSOwnershipChanged(preTLS, postTLS)
 			if tlsMsg == "" {
 				tlsMsg = filemeta.VerifyRuntimeTLSContract(paths.StateDir)
 			}
-			if ok {
+			if ok && tlsMsg == "" {
 				fmt.Printf("rollback_complete=%v baseline_restored=%v\n", rb.Complete, rb.BaselineRestored)
 				if tlsMsg != "" {
 					fmt.Printf("warning: TLS ownership verification failed: %s\n", tlsMsg)
@@ -488,10 +495,7 @@ func execInstalledProductionGate() error {
 	if st.IsDir() {
 		return fmt.Errorf("production gate path is a directory: %s", gate)
 	}
-	mode := strings.TrimSpace(os.Getenv("GATE_MODE"))
-	if mode == "" {
-		mode = "live"
-	}
+	mode := "updater"
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		return fmt.Errorf("bash required to run production gate: %w", err)
@@ -503,7 +507,9 @@ func execInstalledProductionGate() error {
 	// Windows checkouts may ship CRLF; shebang + \r yields "No such file or directory".
 	raw = bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
 	raw = bytes.ReplaceAll(raw, []byte("\r"), []byte("\n"))
-	cmd := exec.Command(bash, "-s", "--", gate)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bash, "-s", "--", gate)
 	cmd.Stdin = bytes.NewReader(raw)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -519,7 +525,9 @@ func execInstalledProductionGate() error {
 
 // restartUnit runs systemctl restart (overridable in tests).
 var restartUnit = func(unit string) error {
-	return exec.Command("systemctl", "restart", unit).Run()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "systemctl", "restart", unit).Run()
 }
 
 // unitMainPID returns systemd MainPID for unit, or 0 if unavailable.
@@ -540,7 +548,9 @@ var serviceActive = func(unit string) bool {
 
 // ctlStatusJSON runs nyxveilctl status and returns stdout (overridable in tests).
 var ctlStatusJSON = func() ([]byte, error) {
-	return exec.Command("nyxveilctl", "status").CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "nyxveilctl", "status").CombinedOutput()
 }
 
 // ctlHealthJSON retained for configure/tests that still probe /health.
@@ -626,6 +636,9 @@ func verifyPostUpdateHealth(pre health.Baseline, seconds int) (health.UpdateResu
 		if stable >= needStable {
 			return last, true
 		}
+	}
+	if last.Reason == "" {
+		last.Reason = "service/status unavailable within health timeout"
 	}
 	return last, false
 }
