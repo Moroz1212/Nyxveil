@@ -22,6 +22,9 @@ import (
 
 // updateTransaction journals a self-update across the old→new ctl process boundary.
 // Only one process owns rollback at a time (see OwnerPID / Phase).
+//
+// CommandID / result_* fields are additive and optional for backward compatibility
+// with historical journals (including those written by Server 1.1.9).
 type updateTransaction struct {
 	LegacyParent      bool                          `json:"legacy_parent,omitempty"`
 	TerminalOutcome   string                        `json:"terminal_outcome,omitempty"`
@@ -40,6 +43,10 @@ type updateTransaction struct {
 	CreatedAt         time.Time                     `json:"created_at"`
 	ProcessCLIAtStart string                        `json:"process_cli_at_start"`
 	PreviousVersion   string                        `json:"previous_version,omitempty"`
+	CommandID         string                        `json:"command_id,omitempty"`
+	CommandStartedAt  string                        `json:"command_started_at,omitempty"`
+	ResultQueuedAt    string                        `json:"result_queued_at,omitempty"`
+	ResultReportedAt  string                        `json:"result_reported_at,omitempty"`
 }
 
 const (
@@ -81,7 +88,8 @@ func updateTxnLockPath() string {
 }
 
 func writeUpdateTransaction(tx *updateTransaction) error {
-	if err := os.MkdirAll(updateTxnDir(), 0o700); err != nil {
+	dir := updateTxnDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	wire := *tx
@@ -98,7 +106,86 @@ func writeUpdateTransaction(tx *updateTransaction) error {
 	if err != nil {
 		return err
 	}
-	return filemeta.DurableWrite(txPath(tx.ID), b, 0o600)
+	path := txPath(tx.ID)
+	if err := filemeta.DurableWrite(path, b, 0o600); err != nil {
+		return err
+	}
+	// Update unit runs as root; daemon runs as nyxveil. Re-apply ownership after
+	// every atomic rewrite so completePendingUpdate can read/consume the journal.
+	uid, gid, _ := filemeta.LookupServiceIDs()
+	_ = filemeta.ApplyOwnerMode(dir, uid, gid, 0o700)
+	_ = filemeta.ApplyOwnerMode(path, uid, gid, 0o600)
+	return nil
+}
+
+// updateCommandMarker is the durable CP correlation file written by the daemon
+// before nyxveil-update.service starts (path: <state>/management/update-command.json).
+type updateCommandMarker struct {
+	CommandID       string `json:"command_id"`
+	PreviousVersion string `json:"previous_version"`
+	TargetVersion   string `json:"target_version"`
+	StartedAt       string `json:"started_at"`
+}
+
+func updateCommandMarkerPath() string {
+	return filepath.Join(runtimeStateDir(), "management", "update-command.json")
+}
+
+func readUpdateCommandMarker() (updateCommandMarker, bool) {
+	raw, err := os.ReadFile(updateCommandMarkerPath())
+	if err != nil {
+		return updateCommandMarker{}, false
+	}
+	var m updateCommandMarker
+	if json.Unmarshal(raw, &m) != nil {
+		return updateCommandMarker{}, false
+	}
+	return m, true
+}
+
+// captureCommandCorrelationFromMarker copies CP CommandID into the transaction
+// while the legacy marker is still present. Must run before any action that
+// restarts/terminates the old daemon (which may delete the marker on 1.1.9).
+func captureCommandCorrelationFromMarker(tx *updateTransaction) error {
+	if tx == nil {
+		return fmt.Errorf("nil update transaction")
+	}
+	m, ok := readUpdateCommandMarker()
+	if !ok {
+		// Manual / non-CP updates have no marker; correlation is not required.
+		return nil
+	}
+	cmdID := strings.TrimSpace(m.CommandID)
+	if cmdID == "" {
+		return fmt.Errorf("update-command.json present but command_id is empty")
+	}
+	markerTarget := strings.TrimPrefix(strings.TrimSpace(m.TargetVersion), "v")
+	txTarget := strings.TrimPrefix(strings.TrimSpace(tx.TargetVersion), "v")
+	if markerTarget == "" || txTarget == "" || markerTarget != txTarget {
+		return fmt.Errorf("update marker target %q does not match transaction target %q",
+			m.TargetVersion, tx.TargetVersion)
+	}
+	if prev := strings.TrimPrefix(strings.TrimSpace(m.PreviousVersion), "v"); prev != "" {
+		txPrev := strings.TrimPrefix(strings.TrimSpace(tx.PreviousVersion), "v")
+		if txPrev == "" {
+			txPrev = strings.TrimPrefix(strings.TrimSpace(tx.ProcessCLIAtStart), "v")
+		}
+		if txPrev != "" && txPrev != prev {
+			return fmt.Errorf("update marker previous %q does not match transaction previous %q",
+				m.PreviousVersion, tx.PreviousVersion)
+		}
+	}
+	if existing := strings.TrimSpace(tx.CommandID); existing != "" && existing != cmdID {
+		return fmt.Errorf("transaction already correlated to command %q; marker has %q", existing, cmdID)
+	}
+	tx.CommandID = cmdID
+	if strings.TrimSpace(tx.CommandStartedAt) == "" {
+		tx.CommandStartedAt = strings.TrimSpace(m.StartedAt)
+	}
+	if strings.TrimSpace(tx.PreviousVersion) == "" && strings.TrimSpace(m.PreviousVersion) != "" {
+		tx.PreviousVersion = strings.TrimSpace(m.PreviousVersion)
+	}
+	return writeUpdateTransaction(tx)
 }
 
 func loadUpdateTransaction(id string) (*updateTransaction, error) {
@@ -200,6 +287,11 @@ func runUpdateResume(args []string) error {
 	}
 	if tx.Phase != txPhaseAssetsInstalled && tx.Phase != txPhaseResuming {
 		return fmt.Errorf("update-resume: unexpected phase %q", tx.Phase)
+	}
+	// Capture CP CommandID from the still-present marker BEFORE any restart that
+	// can kill a legacy 1.1.9 parent (which deletes update-command.json on cancel).
+	if err := captureCommandCorrelationFromMarker(tx); err != nil {
+		return fmt.Errorf("update-resume: command correlation: %w", err)
 	}
 	tx.Phase = txPhaseResuming
 	tx.LegacyParent = tx.LegacyParent || !tx.PreBaseline.LifecycleKnown

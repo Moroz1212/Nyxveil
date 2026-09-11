@@ -404,6 +404,12 @@ func runUpdate(args []string) error {
 			ProcessCLIAtStart: version.CLIVersion,
 			PreviousVersion:   version.ServerVersion,
 		}
+		// Best-effort early capture when this ctl already knows the CP marker
+		// (1.1.14+ parent). Legacy 1.1.9 parents omit this; update-resume re-captures.
+		if err := captureCommandCorrelationFromMarker(tx); err != nil {
+			fmt.Printf("update_success=false reason=command_correlation detail=%v\n", err)
+			return false
+		}
 		if err := writeUpdateTransaction(tx); err != nil {
 			fmt.Printf("update_success=false reason=transaction_journal detail=%v\n", err)
 			return false

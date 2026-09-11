@@ -8,7 +8,7 @@ func TestUpgrade119DrainedTo113(t *testing.T) {
 	old.Draining, old.Accepting = true, false
 	pre := CaptureBaseline(old)
 	post := old
-	post.ServerVersion, post.TLSOK, post.QUICOK = "1.1.13", false, false
+	post.ServerVersion, post.TLSOK, post.QUICOK = "1.1.14", false, false
 	if r := EvaluatePostUpdate(pre, post); !r.OK {
 		t.Fatalf("%+v", r)
 	}

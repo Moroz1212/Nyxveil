@@ -380,4 +380,76 @@ and capture the CI release ZIP artifact. No production deploy / no LIVE reconcil
 
 Production deploy rehearsal → backup → deploy CP 1.3.3 → UI reconcile LIVE unknown 1.1.9→1.1.12 as rollback → separate LIVE 1.1.9→1.1.13.
 
+---
+
+## 2026-09-11 — Server 1.1.14 legacy update terminal recovery (local)
+
+### Goal
+
+Fix LIVE compatibility defect where successful Server **1.1.9 → 1.1.13** update installed
+and verified but never automatically reported `updated_healthy` after legacy parent deleted
+`update-command.json` during canceled in-process fallback.
+
+### Baseline
+
+- Initial HEAD: `8d83268ad7654cc9431f7fbd7a0eb4c9cdcde638`
+- Server before: **1.1.13** (published) → after: **1.1.14** (local candidate)
+- Control Plane **1.3.3** / Core **1.0.0** / NVP/1 unchanged
+- Preserved unrelated dirty file: `licensing/tests/CoreInterop/verify-signed/go.mod` (not committed)
+
+### Root cause (code-proven)
+
+1. Only `update-command.json` held CP `command_id`.
+2. Ctl transaction journal retained `phase=committed` without `command_id`.
+3. Server 1.1.9 deleted the marker after failed/canceled result POST.
+4. `completePendingUpdate` returned when marker missing → no automatic terminal report.
+
+### Fix
+
+- `captureCommandCorrelationFromMarker` in `update-resume` **before** restart
+- Additive journal fields: `command_id`, `command_started_at`, `result_queued_at`, `result_reported_at`
+- Marker-missing recovery via exact correlated terminal journals + version/node evidence
+- Fail closed on missing/ambiguous correlation
+- Durable pending-result queue + consume-after-ack; nyxveil ownership on journals
+- Intact marker path retained; Drain/Maintenance 1.1.13 semantics preserved
+
+### Files changed (primary)
+
+- `server/cmd/nyxveilctl/update_handoff.go`, `main.go`, `update_correlation_test.go`
+- `server/internal/runtime/update_command.go`, `update_recovery_test.go`, `lifecycle_blocker_test.go`
+- Version pins → 1.1.14 + `SERVER-1.1.14.md`
+- `AI_STATE.md`, `AI_CHANGELOG.md`, `PROJECT.md`
+
+### Tests actually run
+
+- `gofmt` on changed non-frozen Go files
+- `go vet` selected packages
+- `go test -timeout 120s ./...` (server module): **PASS**
+- Host + linux-amd64 + linux-arm64 builds of `nyxveil-server` / `nyxveilctl`: **PASS**
+- `bash scripts/test-update-lifecycle-gate.sh`: **PASS**
+- `bash scripts/test-installer-version-resolution.sh`: **PASS**
+- `bash scripts/assert-frozen-core.sh`: **PASS**
+
+### Not verified / SKIP
+
+- Authoritative GitHub Server CI (no push)
+- Real systemd LIVE with published `server-v1.1.9` artifact
+- Production package/deploy
+- Linux permission / ACME / nftables host gates requiring sudo Ubuntu
+
+### Compatibility
+
+- Frozen Core hash unchanged
+- No Control Plane API change; CP reconciliation remains emergency fallback
+- Old journals without `command_id` ignored (fail closed)
+
+### Risks
+
+- Until LIVE 1.1.9→1.1.14 gate, production readiness is **NO**
+- Requires new ctl 1.1.14 on the handoff path (target of the upgrade)
+
+### Next suggested action
+
+Push → Server CI → package → disposable Ubuntu LIVE 1.1.9→1.1.14 automatic terminal report.
+
 
