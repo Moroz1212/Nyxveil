@@ -1,6 +1,6 @@
 # AI_STATE.md — Nyxveil current project state
 
-> Updated 2026-09-11 after local Server **1.1.14** candidate (legacy update terminal recovery).  
+> Updated 2026-09-11 after local Server **1.1.14** candidate `524d3151018d76d413e312b2d9bbd5e54fdd2cf5`.  
 > Control Plane **1.3.3** remains pushed + CI green (not necessarily deployed).  
 > Published Server release remains `server-v1.1.13` (`8fc3853…`).  
 > Server 1.1.14 is **local only** — no push/tag/release/deploy.  

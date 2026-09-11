@@ -393,6 +393,7 @@ and verified but never automatically reported `updated_healthy` after legacy par
 ### Baseline
 
 - Initial HEAD: `8d83268ad7654cc9431f7fbd7a0eb4c9cdcde638`
+- Product / Final HEAD: `524d3151018d76d413e312b2d9bbd5e54fdd2cf5`
 - Server before: **1.1.13** (published) → after: **1.1.14** (local candidate)
 - Control Plane **1.3.3** / Core **1.0.0** / NVP/1 unchanged
 - Preserved unrelated dirty file: `licensing/tests/CoreInterop/verify-signed/go.mod` (not committed)
