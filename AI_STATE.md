@@ -1,8 +1,8 @@
 # AI_STATE.md — Nyxveil current project state
 
-> Updated after Server 1.1.13 release-candidate finalization on 2026-09-11.  
-> Source HEAD: `8fc385335a91aa753b879234999f29a2d025abfb`  
-> Commit: `fix(server): resolve production gate path for stdin execution`  
+> Updated 2026-09-11 after authorized push of Server 1.1.13 candidate + Server CI verification.  
+> Product SHA (Server CI GREEN): `8fc385335a91aa753b879234999f29a2d025abfb`  
+> Docs tip HEAD (pushed): `812732acfccf8f398afbbc2eaa7b888c08323cc8`  
 > GitHub branch-protection note from prior audit: `main` reported **unprotected**
 
 ## How to use this file safely
@@ -21,88 +21,64 @@ Never reset or downgrade the repository to this snapshot merely because this fil
 
 The user's current task overrides the "next action" section below. Never treat this file as permission to deploy, publish, connect to production, or discard local changes.
 
-Because `main` was unprotected at the prior audit, an AI agent must not assume GitHub will stop an accidental direct push. Prefer branch/worktree isolation for AI changes and require explicit user authorization before pushing `main`.
+Prefer branch/worktree isolation for AI changes and require explicit user authorization before pushing `main` (except when the user explicitly authorizes that push).
 
 ## Current audited component state
 
 | Component | Source version | Audited state |
 |---|---:|---|
 | Protocol | `NVP/1` | Frozen |
-| Core | `1.0.0` | Frozen; `docs/CORE-READINESS.md` says ready for server/client product integration |
-| Server node | `1.1.13` | Local candidate; build/package/verify completed from HEAD `8fc3853` on Windows host |
+| Core | `1.0.0` | Frozen |
+| Server node | `1.1.13` | Candidate; **Server CI GREEN** on product SHA `8fc3853`; not published as GitHub Release |
 | Latest published GitHub Release | `server-v1.1.12` | Do not treat 1.1.13 as published |
-| Control Plane | `1.3.2` | Windows/.NET 10 + SQL Server + Blazor/API implementation present |
-| Windows client | `1.1.2` | Source present; README contains stale 1.0.0 artifact wording |
-| Android client | `1.0.0` | Source, bridge, scripts, Gradle project present |
+| Control Plane | `1.3.2` | Unchanged by this task |
+| Windows client | `1.1.2` | Unchanged |
+| Android client | `1.0.0` | Unchanged |
 
 ## Frozen Core
 
-Source of truth:
-
-`docs/CORE-READINESS.md`
-
-Frozen release identity used by server/client vendoring:
-
 - release: `Nyxveil-Protocol-Core-v1.0.0-FROZEN`
 - SHA256: `7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b`
+- Protected: `core/`, `server/third_party/nvp/`, `clients/windows/third_party/nvp/`
 
-Protected default paths:
+## Server 1.1.13 — push + authoritative CI
 
-- `core/`
-- `server/third_party/nvp/`
-- `clients/windows/third_party/nvp/`
+### Commits
 
-Important: current root CI explicitly says **do not rewrite Frozen Core with gofmt**. It excludes `core/platform/windows` from Linux vet/test and tests that package on Windows separately.
+- Product: `8fc385335a91aa753b879234999f29a2d025abfb` — `fix(server): resolve production gate path for stdin execution` (includes drained-update lifecycle + stdin gate).
+- Docs handoff tip pushed: `812732acfccf8f398afbbc2eaa7b888c08323cc8` — AI coordination docs only (`AGENTS.md`, `AI_STATE.md`, `AI_CHANGELOG.md`, `PROJECT.md`).
+- `git push origin main` authorized and completed: `8fc3853..812732a`.
 
-## Server node — 1.1.13 candidate status
+### Server CI (authoritative)
 
-`server/VERSION` = `1.1.13`  
-`internal/version.ServerVersion` / `CLIVersion` = `1.1.13`  
-Module: `github.com/nyxveil/server`  
-Declared Go: `1.24` (Server CI). Local Windows host used Go `1.27.0` for cross-compile only — **GitHub Server CI Go 1.24 remains the authoritative binary producer**.
+- Workflow: `.github/workflows/server-ci.yml`
+- Run ID: `34588327249`
+- URL: https://github.com/Moroz1212/Nyxveil/actions/runs/34588327249
+- SHA: `8fc385335a91aa753b879234999f29a2d025abfb`
+- Event: `push`
+- Conclusion: **success**
+- Jobs: `test` PASS, `build` PASS
+- Runner: ubuntu-24.04; Go from workflow: **1.24**
+- Notable Linux steps PASS: lifecycle updater gate, ACME privileged bind, nftables idempotency, Linux permissions, race tests, package/verify/bytes-identity
+- Artifact: `nyxveil-server-binaries` id `10194603661` size `48269882` digest `sha256:180c12fa157e0922b0a8ce582132d01c8f9e26385bdbd589b836d67a4589e74b`
 
-Documented in `server/SERVER-1.1.13.md`:
+Docs-only tip `812732a` does **not** match Server CI path filters (`server/**`, workflows); no Server CI run exists for `812732a`. Root `CI` may run for that tip separately — do not conflate with Server CI.
 
-- Lifecycle-aware remote update/rollback (drained/maintenance ≠ active-listener failure).
-- Strict DataplaneOK retained for active nodes.
-- Old ctl (1.1.9) handoff / terminal journal / undrain-by-CP semantics.
-- `production-gate` updater mode + stdin/`bash -s` path fix (`BASH_SOURCE` unbound).
+### Release / LIVE status
 
-### Finalization completed 2026-09-11 (this continuation)
+- Tag `server-v1.1.13`: **not** created
+- GitHub Release: **not** created
+- `server-v1.1.12`: untouched
+- LIVE drain→update→undrain: **not** performed
+- Production deploy: **not** performed
 
-From HEAD `8fc385335a91aa753b879234999f29a2d025abfb`:
-
-- Fresh wipe of `server/dist/` then `build-release.sh` + `package-release.sh`.
-- `verify-release.sh`, `verify-artifact-set.sh`, `assert-release-bytes-identity.sh` → PASS for `1.1.13`.
-- Frozen Core assert → PASS (`7b13097…`).
-- Local Go tests `go test ./...` → PASS (Windows).
-- `go vet ./...` → PASS.
-- gofmt against Git index LF blobs → PASS (working-tree CRLF on Windows makes bare `gofmt -l` false-fail).
-- Update lifecycle Go packages (`health`, `nyxveilctl`, `runtime`) → PASS.
-- stdin production-gate init (`bash -s`) → PASS.
-- Shell `test-update-lifecycle-gate.sh` full Python scenario block → SKIP locally (Windows Store `python3` stub; needs real Python/Linux CI).
-
-No server product source was modified during this finalization continuation.
-
-### Not done / not claimed
-
-- No `git push`, tag, or GitHub Release for `server-v1.1.13`.
-- No LIVE Ubuntu 24.04 drain→update→undrain E2E.
-- No production node touch.
-- Local Windows cross-compile bytes are **not** production-publishable substitutes for Server CI artifacts (Go toolchain differs).
-
-## Control Plane / licensing
-
-`licensing/VERSION` = `1.3.2` (unchanged by this task).
-
-## Windows / Android clients
-
-Unchanged by this task. See prior audit notes for README drift.
+`READY FOR server-v1.1.13 RELEASE` = YES (CI green on product SHA).  
+`PRODUCTION READY` = NO.
 
 ## Advisory next action
 
-1. Push HEAD (or a PR branch) so GitHub **Server CI** (ubuntu-24.04, Go 1.24) produces authoritative artifacts.  
-2. Only after green Server CI: operator-authorized disposable Ubuntu 24.04 LIVE drained-update gate (`1.1.9` → `1.1.13`).  
-3. Do **not** publish `server-v1.1.13` or touch LIVE until user explicitly authorizes.
+1. Explicit user authorization to create tag/`server-v1.1.13` GitHub Release from **CI artifact bytes** of run `34588327249` (or a fresh Server CI on the chosen release SHA).  
+2. Then disposable Ubuntu LIVE: `1.1.9` → CP drain → update to `1.1.13` → terminal success → undrain.  
+3. Do not touch LIVE node `nv-test-227e939e` until that task is authorized.
 
 This is advisory only.

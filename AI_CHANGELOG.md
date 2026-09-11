@@ -154,3 +154,57 @@ Finalize Nyxveil Server **1.1.13** candidate after Codex lifecycle work: confirm
 
 User-authorized push/PR → wait for green Server CI → disposable Ubuntu 24.04 drained remote-update LIVE gate → only then consider release authorization.
 
+---
+
+## 2026-09-11 — Push Server 1.1.13 candidate + confirm Server CI GREEN
+
+### Goal
+
+Authorized `git push origin main` of the 1.1.13 candidate tip; confirm authoritative GitHub Server CI on Linux; no tag/release/LIVE.
+
+### Baseline / pushed
+
+- Initial HEAD: `812732acfccf8f398afbbc2eaa7b888c08323cc8`
+- Product SHA: `8fc385335a91aa753b879234999f29a2d025abfb`
+- Pushed range: `8fc3853..812732a` → `origin/main`
+- Force push: no
+
+### Files changed (this entry)
+
+- `AI_STATE.md` — record push + Server CI green facts
+- `AI_CHANGELOG.md` — this entry
+- (prior tip commit already contained handoff docs)
+
+### Server / Core
+
+- Server **1.1.13** unchanged
+- Core **1.0.0** / NVP/1 unchanged
+- Frozen Core SHA256 `7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b` — assert OK locally before push
+
+### Server CI
+
+- Run: `34588327249`
+- URL: https://github.com/Moroz1212/Nyxveil/actions/runs/34588327249
+- SHA: `8fc385335a91aa753b879234999f29a2d025abfb` (product; not the docs-only tip)
+- Event: push; conclusion: **success**
+- Jobs: `test` PASS; `build` PASS
+- Go: **1.24** (workflow `actions/setup-go`)
+- Artifact: `nyxveil-server-binaries` id `10194603661` digest `sha256:180c12fa157e0922b0a8ce582132d01c8f9e26385bdbd589b836d67a4589e74b` size 48269882
+
+Docs tip `812732a` did not start Server CI (path filters). Do not claim Server CI for the docs commit.
+
+### CI blockers fixed this task
+
+None (pre-existing product CI already green).
+
+### Not done
+
+- Tag / GitHub Release / production deploy / LIVE update
+- Force push
+- Touching LIVE node `nv-test-227e939e`
+
+### Next suggested action
+
+Authorized `server-v1.1.13` release from CI artifact bytes, then LIVE `1.1.9`→`1.1.13` drained update gate.
+
+
