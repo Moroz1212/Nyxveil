@@ -1,3 +1,4 @@
+using Nyxveil.ControlPlane.Application.Contracts.V1;
 using Nyxveil.ControlPlane.Domain.Entities;
 using Nyxveil.ControlPlane.Domain.Enums;
 
@@ -36,4 +37,22 @@ public interface INodeCommandService
         CancellationToken cancellationToken = default);
 
     Task ExpireStaleAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// SuperAdmin preview of whether an unknown UpdateNodeLatest outcome can be reconciled
+    /// from current fresh node evidence (no mutation).
+    /// </summary>
+    Task<UnknownUpdateReconciliationPreview> GetUnknownUpdateReconciliationPreviewAsync(
+        Guid commandId,
+        string nodeId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// SuperAdmin reconciliation of UpdateNodeLatest with expired_outcome_unknown /
+    /// outcome_unknown / rollback_failed after verifying current effective version evidence.
+    /// Restores admin_state_before via the shared restore path. Does not delete the command.
+    /// </summary>
+    Task<UnknownUpdateReconciliationResult> ReconcileUnknownUpdateAsync(
+        UnknownUpdateReconciliationRequest request,
+        CancellationToken cancellationToken = default);
 }

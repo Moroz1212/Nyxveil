@@ -1,8 +1,8 @@
 # AI_STATE.md — Nyxveil current project state
 
-> Updated 2026-09-11 after publishing GitHub Release **server-v1.1.13**.  
-> Product / tag SHA: `8fc385335a91aa753b879234999f29a2d025abfb`  
-> Main docs tip may be newer than the release tag (do not conflate).  
+> Updated 2026-09-11 after local Control Plane **1.3.3** implementation (unknown update reconciliation).  
+> Server product / tag SHA remains: `8fc385335a91aa753b879234999f29a2d025abfb` (`server-v1.1.13`)  
+> Control Plane 1.3.3 is **local commit only** — not pushed, not tagged, not deployed.  
 > GitHub branch-protection note from prior audit: `main` reported **unprotected**
 
 ## How to use this file safely
@@ -24,9 +24,9 @@ Prefer branch/worktree isolation for AI changes. Require explicit authorization 
 |---|---:|---|
 | Protocol | `NVP/1` | Frozen |
 | Core | `1.0.0` | Frozen |
-| Server node | `1.1.13` | **Published** as GitHub Release `server-v1.1.13` from CI bytes |
+| Server node | `1.1.13` | **Published** as GitHub Release `server-v1.1.13` (unchanged this task) |
 | Latest published GitHub Release | `server-v1.1.13` | Exact Server CI artifact bytes |
-| Control Plane | `1.3.2` | Unchanged by this release task |
+| Control Plane | `1.3.3` | Local candidate: SuperAdmin unknown-update reconciliation; schema 5 unchanged |
 | Windows client | `1.1.2` | Unchanged |
 | Android client | `1.0.0` | Unchanged |
 
@@ -34,37 +34,46 @@ Prefer branch/worktree isolation for AI changes. Require explicit authorization 
 
 - SHA256: `7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b`
 - Protected: `core/`, `server/third_party/nvp/`, `clients/windows/third_party/nvp/`
+- Local assert this session: **PASS**
 
-## Server 1.1.13 release provenance
+## Control Plane 1.3.3 (local)
 
-```
-Product SHA 8fc385335a91aa753b879234999f29a2d025abfb
-  → Server CI run 34588327249 (success, push, Go 1.24)
-  → artifact nyxveil-server-binaries id 10194603661
-     digest sha256:180c12fa157e0922b0a8ce582132d01c8f9e26385bdbd589b836d67a4589e74b
-     size 48269882
-  → annotated tag server-v1.1.13 → 8fc3853
-  → Server Release run 34614557064 (success, no rebuild)
-  → GitHub Release id 387133550
-     https://github.com/Moroz1212/Nyxveil/releases/tag/server-v1.1.13
-```
+Root cause addressed: terminal `UpdateNodeLatest` with `expired_outcome_unknown` / `outcome_unknown` / `rollback_failed` blocked location disruptive ops forever when no late node result arrives.
 
-Release workflow steps PASS: Frozen Core assert, download CI artifact + digest check, verify-release / verify-artifact-set / assert-release-bytes-identity, create release + upload.
+Implemented:
 
-Published assets: 18 (full UPLOAD-LIST). Downloaded assets verified against released SHA256SUMS = PASS.
+- `GetUnknownUpdateReconciliationPreviewAsync` / `ReconcileUnknownUpdateAsync`
+- SuperAdmin-only evidence-gated Confirm Rollback / Confirm Updated
+- Shared `RestoreAdminStateFromPayloadAsync`; forensic payload + audit `node.command.update.reconcile`
+- UI on Operations + NodeDetails
+- DB schema **unchanged** (still 5)
+
+Local verification this session:
+
+- Unit tests: 350 passed
+- Integration tests (LocalDB): 125 passed
+- `production-gate.ps1 -GateMode local`: RESULT=PARTIAL (expected SKIP without InstallDir DB)
+- Pack + extracted package required-file check: PASS
+- Frozen Core assert: PASS
 
 ### Not done
 
-- LIVE `1.1.9` → drain → `1.1.13` → undrain regression (**not** run)
-- Production deployment (**not** done)
-- Node `nv-test-227e939e` untouched
+- Push / tag / GitHub Release for Control Plane
+- Production CP deploy / production DB change
+- LIVE reconciliation of `nv-test-227e939e`
+- LIVE Server `1.1.9` → `1.1.13` update
 
-`RELEASE PUBLISHED` = YES  
-`READY FOR LIVE 1.1.9 → 1.1.13 TEST` = YES  
+`READY FOR CONTROL PLANE CI` = YES (local gates green)  
 `PRODUCTION READY` = NO
 
 ## Advisory next action
 
-Authorized disposable LIVE remote-update gate: Control Panel drain → old ctl handoff → Server 1.1.13 → terminal success → CP undrain → accepting/TLS/QUIC/heartbeat 1.1.13.
+1. Authoritative Control Plane CI on push/PR  
+2. Package/deploy rehearsal  
+3. Backup production CP/DB  
+4. Deploy Control Plane 1.3.3  
+5. UI reconcile old 1.1.9→1.1.12 command as `rolled_back_healthy`  
+6. Confirm node exits Drain  
+7. Separate LIVE test Server 1.1.9 → 1.1.13  
 
 This is advisory only.

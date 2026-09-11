@@ -81,7 +81,7 @@ jobs:
             'scripts\Nyxveil.ControlPlane.Deploy.psm1',
             'database\migrations\005_certificate_operation_states.sql',
             'database\migrations\validate_schema_v5.sql',
-            'docs\RELEASE-1.3.2.md'
+            'docs\RELEASE-1.3.3.md'
           )
           foreach ($rel in $required) {
             $p = Join-Path $extract $rel

@@ -856,4 +856,409 @@ public sealed class NodeCommandService : INodeCommandService
     private static string Escape(string? value) =>
         (value ?? string.Empty).Replace("\\", "\\\\", StringComparison.Ordinal)
             .Replace("\"", "\\\"", StringComparison.Ordinal);
+
+    private static readonly HashSet<string> UnknownOutcomeCodes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "expired_outcome_unknown",
+        "outcome_unknown",
+        "rollback_failed"
+    };
+
+    public async Task<UnknownUpdateReconciliationPreview> GetUnknownUpdateReconciliationPreviewAsync(
+        Guid commandId,
+        string nodeId,
+        CancellationToken cancellationToken = default)
+    {
+        var command = await GetOwnedCommandAsync(commandId, nodeId, cancellationToken).ConfigureAwait(false);
+        var node = await _db.Nodes.AsNoTracking().FirstAsync(n => n.NodeId == nodeId, cancellationToken)
+            .ConfigureAwait(false);
+        var cfg = await _db.NodeConfigs.AsNoTracking().FirstOrDefaultAsync(c => c.NodeId == nodeId, cancellationToken)
+            .ConfigureAwait(false);
+        var health = await _db.NodeHealth.AsNoTracking().FirstOrDefaultAsync(h => h.NodeId == nodeId, cancellationToken)
+            .ConfigureAwait(false);
+        return BuildReconciliationPreview(command, node, cfg, health, _clock.UtcNow);
+    }
+
+    public async Task<UnknownUpdateReconciliationResult> ReconcileUnknownUpdateAsync(
+        UnknownUpdateReconciliationRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (request is null)
+            throw new ValidationException("request is required");
+        if (string.IsNullOrWhiteSpace(request.NodeId))
+            throw new ValidationException("node_id is required");
+        if (string.IsNullOrWhiteSpace(request.Actor))
+            throw new ValidationException("actor is required");
+        if (string.IsNullOrWhiteSpace(request.Reason))
+            throw new ValidationException("reconciliation reason is required");
+        if (request.Action is not (UnknownUpdateReconciliationAction.ConfirmRollback
+            or UnknownUpdateReconciliationAction.ConfirmUpdated))
+            throw new ValidationException("unsupported reconciliation action");
+
+        AssertCanReconcileUnknownUpdate(request.Roles);
+
+        return await WithLocationLockAsync(request.NodeId.Trim(), async () =>
+        {
+            await ExpireStaleForNodeAsync(request.NodeId.Trim(), cancellationToken).ConfigureAwait(false);
+            return await ReconcileUnknownUpdateLockedAsync(request, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<UnknownUpdateReconciliationResult> ReconcileUnknownUpdateLockedAsync(
+        UnknownUpdateReconciliationRequest request,
+        CancellationToken cancellationToken)
+    {
+        var nodeId = request.NodeId.Trim();
+        var command = await GetOwnedCommandAsync(request.CommandId, nodeId, cancellationToken)
+            .ConfigureAwait(false);
+        var node = await _db.Nodes.FirstAsync(n => n.NodeId == nodeId, cancellationToken)
+            .ConfigureAwait(false);
+        var cfg = await _db.NodeConfigs.FirstOrDefaultAsync(c => c.NodeId == nodeId, cancellationToken)
+            .ConfigureAwait(false);
+        var health = await _db.NodeHealth.AsNoTracking().FirstOrDefaultAsync(h => h.NodeId == nodeId, cancellationToken)
+            .ConfigureAwait(false);
+
+        var preview = BuildReconciliationPreview(command, node, cfg, health, _clock.UtcNow);
+        if (preview.AlreadyReconciled)
+        {
+            if (TryReadReconciliationAction(command.PayloadJson, out var prior)
+                && prior == request.Action)
+            {
+                return new UnknownUpdateReconciliationResult { Command = command, IdempotentReplay = true };
+            }
+
+            throw new ConflictException("command was already reconciled with a different outcome");
+        }
+
+        if (request.Action == UnknownUpdateReconciliationAction.ConfirmRollback && !preview.CanConfirmRollback)
+            throw new ConflictException(preview.BlockingReason ?? "confirm rollback is not allowed for current evidence");
+        if (request.Action == UnknownUpdateReconciliationAction.ConfirmUpdated && !preview.CanConfirmUpdated)
+            throw new ConflictException(preview.BlockingReason ?? "confirm updated is not allowed for current evidence");
+
+        if (!TryReadAdminSnapshot(command.PayloadJson, out _, out _, out _))
+            throw new ConflictException("admin_state_before snapshot missing; refusing unsafe reconciliation");
+
+        var now = _clock.UtcNow;
+        var originalStatus = command.Status.ToString();
+        var originalCode = command.ResultCode;
+        var originalMessage = command.ResultMessage;
+        var originalCompleted = command.CompletedAt;
+
+        var success = request.Action == UnknownUpdateReconciliationAction.ConfirmUpdated;
+        var resultCode = success ? "updated_healthy" : "rolled_back_healthy";
+        var resultMessage = success
+            ? "operator confirmed successful update from current node evidence"
+            : "operator confirmed healthy rollback from current node evidence";
+
+        MergePayloadReconciliation(
+            command,
+            originalStatus,
+            originalCode,
+            originalMessage,
+            originalCompleted,
+            request.Action,
+            request.Actor.Trim(),
+            request.Reason.Trim(),
+            now,
+            preview);
+
+        command.ResultCode = resultCode;
+        command.ResultMessage = Truncate(resultMessage, 1024);
+        command.ProgressPhase = success ? "Completed" : "Failed";
+        command.ProgressUpdatedAt = now;
+        command.Status = success ? NodeCommandStatus.Succeeded : NodeCommandStatus.Failed;
+        command.CompletedAt ??= now;
+
+        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        // Shared restore path — preserves prior manual drain/maintenance from snapshot.
+        await RestoreAdminStateFromPayloadAsync(command, nodeId, cancellationToken)
+            .ConfigureAwait(false);
+
+        await _audit.WriteAsync(new AuditWriteRequest
+        {
+            Actor = request.Actor.Trim(),
+            Action = "node.command.update.reconcile",
+            EntityType = "NodeCommand",
+            EntityId = command.Id.ToString("N"),
+            Detail =
+                $"{{\"node_id\":\"{Escape(nodeId)}\",\"action\":\"{Escape(ActionWire(request.Action))}\",\"old_code\":\"{Escape(originalCode)}\",\"new_code\":\"{Escape(resultCode)}\",\"previous_version\":\"{Escape(command.PreviousVersion)}\",\"target_version\":\"{Escape(command.TargetVersion)}\",\"observed_version\":\"{Escape(preview.ObservedVersion)}\",\"reason\":\"{Escape(Truncate(request.Reason.Trim(), 256))}\"}}"
+        }, cancellationToken).ConfigureAwait(false);
+
+        return new UnknownUpdateReconciliationResult { Command = command, IdempotentReplay = false };
+    }
+
+    internal static UnknownUpdateReconciliationPreview BuildReconciliationPreview(
+        NodeCommand command,
+        Node node,
+        NodeConfig? cfg,
+        NodeHealth? health,
+        DateTime utcNow)
+    {
+        var observed = NodeVersionEvaluator.EffectiveInstalledVersion(
+            node.ReportedServerVersion, node.ServerVersion);
+        var heartbeatFresh = node.LastSeenAt is not null
+                             && utcNow - node.LastSeenAt.Value <= HeartbeatFreshness;
+        var hasSnapshot = TryReadAdminSnapshot(command.PayloadJson, out _, out _, out _);
+        var already = TryReadReconciliationAction(command.PayloadJson, out _);
+
+        var preview = new UnknownUpdateReconciliationPreview
+        {
+            CommandId = command.Id,
+            NodeId = command.NodeId,
+            PreviousVersion = command.PreviousVersion,
+            TargetVersion = command.TargetVersion,
+            ObservedVersion = observed,
+            ResultCode = command.ResultCode,
+            ResultMessage = command.ResultMessage,
+            Status = command.Status.ToString(),
+            LastSeenAt = node.LastSeenAt,
+            HeartbeatFresh = heartbeatFresh,
+            Draining = cfg?.Draining ?? node.Draining,
+            Enabled = cfg?.Enabled ?? node.Enabled,
+            MaintenanceMode = cfg?.MaintenanceMode ?? false,
+            CurrentSessions = node.CurrentSessions,
+            ConfigVersion = cfg?.ConfigVersion ?? node.ConfigVersion,
+            LifecycleState = node.LifecycleState.ToString(),
+            RuntimeStatus = node.Status.ToString(),
+            HasAdminStateSnapshot = hasSnapshot,
+            AlreadyReconciled = already
+        };
+
+        if (already)
+        {
+            preview.BlockingReason = "command already reconciled";
+            return preview;
+        }
+
+        if (command.Type != NodeCommandType.UpdateNodeLatest)
+        {
+            preview.BlockingReason = "only UpdateNodeLatest unknown outcomes can be reconciled";
+            return preview;
+        }
+
+        if (command.Status is NodeCommandStatus.Pending or NodeCommandStatus.Claimed
+            or NodeCommandStatus.Running or NodeCommandStatus.Executing or NodeCommandStatus.Accepted)
+        {
+            preview.BlockingReason = "active command cannot be reconciled; wait for terminal outcome";
+            return preview;
+        }
+
+        if (command.Status is NodeCommandStatus.Succeeded or NodeCommandStatus.NodeReturned)
+        {
+            preview.BlockingReason = "successful command does not need reconciliation";
+            return preview;
+        }
+
+        if (command.Status is not (NodeCommandStatus.Failed or NodeCommandStatus.Expired))
+        {
+            preview.BlockingReason = "command status is not eligible for reconciliation";
+            return preview;
+        }
+
+        if (string.IsNullOrWhiteSpace(command.ResultCode)
+            || !UnknownOutcomeCodes.Contains(command.ResultCode.Trim()))
+        {
+            preview.BlockingReason = "result code is not an unknown update outcome";
+            return preview;
+        }
+
+        if (node.LifecycleState is NodeLifecycleState.Deleted or NodeLifecycleState.Revoked)
+        {
+            preview.BlockingReason = "node deleted/revoked";
+            return preview;
+        }
+
+        if (node.LifecycleState != NodeLifecycleState.Active)
+        {
+            preview.BlockingReason = "node lifecycle is not Active";
+            return preview;
+        }
+
+        if (!heartbeatFresh)
+        {
+            preview.BlockingReason = "heartbeat is stale; refuse reconciliation without fresh evidence";
+            return preview;
+        }
+
+        if (node.Status != NodeRuntimeStatus.Healthy)
+        {
+            preview.BlockingReason = "node runtime status is not Healthy";
+            return preview;
+        }
+
+        if (node.CurrentSessions > 0)
+        {
+            preview.BlockingReason = "node still has active sessions; refuse unsafe admin-state restore";
+            return preview;
+        }
+
+        if (node.PublicIdentity is null || node.PublicIdentity.Length == 0)
+        {
+            preview.BlockingReason = "node public identity missing";
+            return preview;
+        }
+
+        if (health is not null)
+        {
+            if (health.TunReady == false || health.BridgeOk == false || health.CpConnected == false)
+            {
+                preview.BlockingReason = "node health reports TUN/bridge/CP failure";
+                return preview;
+            }
+            // Intentionally do not require TlsOk/QuicOk while drained.
+        }
+
+        if (!hasSnapshot)
+        {
+            preview.BlockingReason = "admin_state_before snapshot missing";
+            return preview;
+        }
+
+        if (string.IsNullOrWhiteSpace(observed)
+            || !SemVersion.TryParse(observed, out _))
+        {
+            preview.BlockingReason = "current effective server version is missing or invalid";
+            return preview;
+        }
+
+        var matchesPrevious = VersionsEqual(observed, command.PreviousVersion);
+        var matchesTarget = VersionsEqual(observed, command.TargetVersion);
+        if (!matchesPrevious && !matchesTarget)
+        {
+            preview.BlockingReason =
+                "observed version matches neither previous nor target; refuse arbitrary outcome";
+            return preview;
+        }
+
+        preview.CanConfirmRollback = matchesPrevious;
+        preview.CanConfirmUpdated = matchesTarget;
+        if (!preview.CanConfirmRollback && !preview.CanConfirmUpdated)
+            preview.BlockingReason = "no confirmable outcome for current evidence";
+        return preview;
+    }
+
+    public static bool IsUnknownUpdateOutcomeEligible(NodeCommand command)
+    {
+        if (command.Type != NodeCommandType.UpdateNodeLatest)
+            return false;
+        if (command.Status is not (NodeCommandStatus.Failed or NodeCommandStatus.Expired))
+            return false;
+        if (TryReadReconciliationAction(command.PayloadJson, out _))
+            return false;
+        return !string.IsNullOrWhiteSpace(command.ResultCode)
+               && UnknownOutcomeCodes.Contains(command.ResultCode.Trim());
+    }
+
+    internal static void AssertCanReconcileUnknownUpdate(IEnumerable<string> roles)
+    {
+        var roleSet = new HashSet<string>(
+            roles ?? Array.Empty<string>(),
+            StringComparer.OrdinalIgnoreCase);
+        if (!roleSet.Contains(AdminRole.SuperAdmin))
+            throw new ForbiddenException("only SuperAdmin can reconcile unknown update outcomes");
+    }
+
+    private static bool VersionsEqual(string? a, string? b)
+    {
+        if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b))
+            return false;
+        if (SemVersion.TryParse(a, out var sa) && SemVersion.TryParse(b, out var sb))
+            return sa.CompareTo(sb) == 0;
+        return string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ActionWire(UnknownUpdateReconciliationAction action) =>
+        action == UnknownUpdateReconciliationAction.ConfirmUpdated
+            ? "confirm_updated"
+            : "confirm_rollback";
+
+    public static bool TryReadReconciliationAction(
+        string? payloadJson,
+        out UnknownUpdateReconciliationAction action)
+    {
+        action = default;
+        if (string.IsNullOrWhiteSpace(payloadJson))
+            return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(payloadJson);
+            if (!doc.RootElement.TryGetProperty("reconciliation", out var rec)
+                || rec.ValueKind != JsonValueKind.Object)
+                return false;
+            if (!rec.TryGetProperty("action", out var a) || a.ValueKind != JsonValueKind.String)
+                return false;
+            var wire = a.GetString();
+            if (string.Equals(wire, "confirm_rollback", StringComparison.OrdinalIgnoreCase))
+            {
+                action = UnknownUpdateReconciliationAction.ConfirmRollback;
+                return true;
+            }
+
+            if (string.Equals(wire, "confirm_updated", StringComparison.OrdinalIgnoreCase))
+            {
+                action = UnknownUpdateReconciliationAction.ConfirmUpdated;
+                return true;
+            }
+
+            return false;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static void MergePayloadReconciliation(
+        NodeCommand command,
+        string originalStatus,
+        string? originalCode,
+        string? originalMessage,
+        DateTime? originalCompleted,
+        UnknownUpdateReconciliationAction action,
+        string actor,
+        string reason,
+        DateTime reconciledAt,
+        UnknownUpdateReconciliationPreview evidence)
+    {
+        JsonObject root;
+        try
+        {
+            root = string.IsNullOrWhiteSpace(command.PayloadJson)
+                ? new JsonObject()
+                : JsonNode.Parse(command.PayloadJson)?.AsObject() ?? new JsonObject();
+        }
+        catch (JsonException)
+        {
+            root = new JsonObject();
+        }
+
+        root["reconciliation"] = new JsonObject
+        {
+            ["original_status"] = originalStatus,
+            ["original_result_code"] = originalCode,
+            ["original_result_message"] = originalMessage,
+            ["original_completed_at"] = originalCompleted?.ToString("O"),
+            ["reconciled_at"] = reconciledAt.ToString("O"),
+            ["reconciled_by"] = actor,
+            ["action"] = ActionWire(action),
+            ["reason"] = reason.Length <= 512 ? reason : reason[..512],
+            ["evidence"] = new JsonObject
+            {
+                ["observed_version"] = evidence.ObservedVersion,
+                ["previous_version"] = evidence.PreviousVersion,
+                ["target_version"] = evidence.TargetVersion,
+                ["last_seen_at"] = evidence.LastSeenAt?.ToString("O"),
+                ["heartbeat_fresh"] = evidence.HeartbeatFresh,
+                ["lifecycle"] = evidence.LifecycleState,
+                ["runtime_status"] = evidence.RuntimeStatus,
+                ["sessions"] = evidence.CurrentSessions,
+                ["draining"] = evidence.Draining,
+                ["enabled"] = evidence.Enabled,
+                ["maintenance_mode"] = evidence.MaintenanceMode,
+                ["config_version"] = evidence.ConfigVersion
+            }
+        };
+        command.PayloadJson = root.ToJsonString();
+    }
 }

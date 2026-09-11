@@ -243,4 +243,77 @@ Create annotated tag `server-v1.1.13` on product SHA only; let Server Release wo
 
 LIVE `1.1.9` → CP drain → `1.1.13` → terminal success → undrain (authorized disposable host only).
 
+---
+
+## 2026-09-11 — Control Plane 1.3.3 unknown update reconciliation (local)
+
+### Goal
+
+Prepare Control Plane **1.3.3** with SuperAdmin evidence-based reconciliation of unknown
+`UpdateNodeLatest` outcomes that permanently blocked location disruptive operations
+(LIVE symptom on `nv-test-227e939e` after expired 1.1.9→1.1.12).
+
+### Baseline
+
+- Initial HEAD: `5cf0117f1898fcf3b5a2fdeb5e8c165961a8ad12`
+- Control Plane before: **1.3.2**
+- Server: **1.1.13** unchanged / published
+- Core: **1.0.0** / Protocol **NVP/1** unchanged
+
+### Behavior changed
+
+- Service contract: `GetUnknownUpdateReconciliationPreviewAsync`, `ReconcileUnknownUpdateAsync`
+- Eligible: `UpdateNodeLatest` + Failed/Expired + `expired_outcome_unknown` | `outcome_unknown` | `rollback_failed`
+- Confirm rollback → Failed / `rolled_back_healthy` when observed == PreviousVersion
+- Confirm updated → Succeeded / `updated_healthy` when observed == TargetVersion
+- Fresh heartbeat, Active lifecycle, Healthy runtime, sessions=0, identity, admin_state_before required
+- Restore via existing `RestoreAdminStateFromPayloadAsync` (preserves prior drain/maintenance)
+- Forensic `reconciliation` object in PayloadJson; audit `node.command.update.reconcile`
+- UI: Operations + NodeDetails SuperAdmin modal (no generic unlock)
+- Location lock clears only because unknown blocking result codes are replaced
+
+### Version metadata
+
+- Control Plane **1.3.2 → 1.3.3** (`VERSION`, gate/deploy scripts, Dashboard/Api contracts, RELEASE-1.3.3.md, CI package required docs)
+- DB schema: **unchanged** (still 5); migration: **none**
+
+### Files changed (primary)
+
+- `licensing/src/.../UnknownUpdateReconciliationContracts.cs` (new)
+- `licensing/src/.../INodeCommandService.cs`, `NodeCommandService.cs`
+- `licensing/.../NodeDetails.razor`, `Operations.razor`, `_Imports.razor`
+- `licensing/tests/.../UnknownUpdateReconciliationTests.cs` (new)
+- Version/docs/scripts/CI pins for 1.3.3
+- `AI_STATE.md`, `AI_CHANGELOG.md`, `PROJECT.md`
+
+### Tests actually run
+
+- `dotnet build` Web + Unit + Integration (Release): PASS
+- `dotnet test` UnitTests: **350 passed**, 0 failed, 0 skipped
+- `dotnet test` IntegrationTests (LocalDB): **125 passed**, 0 failed, 0 skipped
+- `bash server/scripts/assert-frozen-core.sh`: PASS (`7b13097…`)
+- `production-gate.ps1 -GateMode local`: RESULT=PARTIAL (schema/DB SKIP without InstallDir — expected)
+- `pack-release.ps1` + extracted package required paths including `docs/RELEASE-1.3.3.md`: PASS
+
+### Tests not run / SKIP
+
+- Authoritative GitHub Control Plane CI (no push)
+- Production deploy / production-gate production mode
+- LIVE reconciliation / LIVE server update
+
+### Compatibility
+
+- Server 1.1.13, Core 1.0.0, NVP/1 unchanged
+- Frozen Core paths untouched
+- Schema 5 compatible with existing production DB
+
+### Risks / blockers
+
+- Not production-deployed; LIVE node still drained until authorized reconcile after deploy
+- Concurrent SuperAdmin reconcile relies on location lock + idempotent payload marker (unit coverage for conflict/idempotent replay)
+
+### Next suggested action
+
+Push/PR → Control Plane CI → deploy rehearsal → backup → deploy CP 1.3.3 → UI reconcile LIVE unknown command as rollback → then separate LIVE 1.1.9→1.1.13 update.
+
 

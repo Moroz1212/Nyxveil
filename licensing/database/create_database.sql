@@ -3,7 +3,7 @@
   Nyxveil Control Plane — Database bootstrap (idempotent)
 ================================================================================
   Product:   Nyxveil Licensing / Control Plane
-  Version:   1.3.2 (see ../VERSION)
+  Version:   1.3.3 (see ../VERSION)
   Target:    Microsoft SQL Server 2019+ / Azure SQL
 
   TIMESTAMP CONVENTION
@@ -17,7 +17,7 @@
   Safe to re-run after a successful install: the EF migration marker gates DDL.
   Fresh database baseline only; do not stamp an older or partial schema as current.
   Domain tables/constraints come from the EF baseline; NyxveilSchemaVersion is
-  seeded afterward as the operational schema marker (version 5 for CP 1.3.2).
+  seeded afterward as the operational schema marker (version 5 for CP 1.3.3).
 
   USAGE
   -----
