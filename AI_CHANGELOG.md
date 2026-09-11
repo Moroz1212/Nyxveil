@@ -207,4 +207,40 @@ None (pre-existing product CI already green).
 
 Authorized `server-v1.1.13` release from CI artifact bytes, then LIVE `1.1.9`→`1.1.13` drained update gate.
 
+---
+
+## 2026-09-11 — Publish GitHub Release server-v1.1.13
+
+### Goal
+
+Create annotated tag `server-v1.1.13` on product SHA only; let Server Release workflow publish exact Server CI artifact bytes. No LIVE / no production deploy.
+
+### Baseline
+
+- Initial main HEAD: `9abbd35262f1229e73474fe6bdb9d59f4098f6cd`
+- Product SHA: `8fc385335a91aa753b879234999f29a2d025abfb`
+- Tag created on product SHA (not docs tip); main not moved.
+
+### Provenance
+
+- Server CI: `34588327249` success on `8fc3853`
+- Artifact: `10194603661` digest `sha256:180c12fa157e0922b0a8ce582132d01c8f9e26385bdbd589b836d67a4589e74b`
+- Tag: annotated `server-v1.1.13` → `8fc3853`
+- Server Release: `34614557064` success — https://github.com/Moroz1212/Nyxveil/actions/runs/34614557064
+- GitHub Release id `387133550` — https://github.com/Moroz1212/Nyxveil/releases/tag/server-v1.1.13
+- draft=false, prerelease=false; assets=18; SHA256SUMS verify of downloaded UPLOAD-LIST = PASS
+- Frozen Core assert in release workflow = PASS
+
+### Files changed (handoff)
+
+- `AI_STATE.md` / `AI_CHANGELOG.md` — this release record
+
+### Not done
+
+- LIVE update / production deploy / force push / tag move
+
+### Next suggested action
+
+LIVE `1.1.9` → CP drain → `1.1.13` → terminal success → undrain (authorized disposable host only).
+
 
