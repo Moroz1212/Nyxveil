@@ -11,7 +11,11 @@
 set -euo pipefail
 umask 077
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# nyxveilctl supplies normalized script bytes on stdin and the installed path as $1.
+# BASH_SOURCE is unset in that execution mode.
+GATE_SCRIPT="${BASH_SOURCE[0]:-${1:-}}"
+[[ -n "${GATE_SCRIPT}" ]] || { echo 'production gate path missing' >&2; exit 1; }
+ROOT="$(cd "$(dirname "${GATE_SCRIPT}")/.." && pwd)"
 MODE="${GATE_MODE:-source}"
 CTL="${NYXVEIL_CTL:-}"
 SERVER="${NYXVEIL_SERVER:-}"

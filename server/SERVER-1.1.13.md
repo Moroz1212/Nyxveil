@@ -16,6 +16,8 @@ active-node DataplaneOK remains strict. TLS material, SAN, validity, key pairing
 ownership and modes are checked independently of listener readiness.
 
 The installed gate has an explicit `updater` mode with no license prompt or stop test.
+Its initialization supports ctl's normalized stdin invocation, where BASH_SOURCE is
+unset and the installed path is supplied as the first argument.
 The updater does not undrain. Control Plane's existing `updated_healthy` completion
 restores the prior admin state, increments configuration version, and the runtime
 starts listeners when that configuration arrives. A prior manual drain remains set.

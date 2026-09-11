@@ -9,6 +9,10 @@ export WORK
 record() { :; }
 fail() { echo "FAIL $1" >&2; exit 1; }
 export -f record fail
+# Reproduce ctl's bash -s invocation with the actual gate initialization.
+sed -n '1,/^MODE=/p' "${ROOT}/scripts/production-gate.sh" >"${WORK}/init.sh"
+printf '\n[[ "${ROOT}" == "$2" ]]\n' >>"${WORK}/init.sh"
+MODE=updater bash -s -- "${ROOT}/scripts/production-gate.sh" "${ROOT}" <"${WORK}/init.sh"
 for scenario in drained maintenance active bad_identity bad_tun bad_bridge bad_cp bad_tickets bad_revocation bad_version; do
   python3 - "${WORK}/status.json" "${scenario}" <<'PY'
 import json,sys
