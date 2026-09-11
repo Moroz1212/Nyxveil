@@ -4,6 +4,8 @@
 @inject IServiceScopeFactory Scopes
 @inject IClock Clock
 @inject AuthenticationStateProvider AuthState
+@inject IHttpContextAccessor HttpContextAccessor
+@inject NavigationManager Nav
 
 <div class="page-header">
     <div>
@@ -14,6 +16,14 @@
         <button class="btn" @onclick="() => _showCreate = !_showCreate" disabled="@_busy">@(_showCreate ? "Закрыть" : "Добавить локацию")</button>
     </AuthorizeView>
 </div>
+
+@if (_stepUpNeeded)
+{
+    <div class="alert alert-warn">
+        Для rolling update нужна повторная проверка MFA.
+        <a href="@StepUpUrl">Повысить привилегии</a>
+    </div>
+}
 
 @if (_showCreate)
 {
@@ -42,7 +52,21 @@
                 <td>@loc.DisplayName</td>
                 <td>@loc.Country</td>
                 <td>@loc.City</td>
-                <td>@_nodeCounts.GetValueOrDefault(loc.LocationId)</td>
+                <td>
+                    @_nodeCounts.GetValueOrDefault(loc.LocationId)
+                    <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
+                        @if (_rolloutAvailable)
+                        {
+                            <div style="margin-top:.35rem">
+                                <button class="btn btn-ghost btn-sm" @onclick="() => PrepareRolloutAsync(loc)" disabled="@_busy">Обновить локацию</button>
+                            </div>
+                        }
+                    </AuthorizeView>
+                    @if (_rollouts.TryGetValue(loc.LocationId, out var rollout))
+                    {
+                        <div class="muted" style="margin-top:.25rem">Rollout: @rollout.Status · @(rollout.TargetVersion ?? "—")</div>
+                    }
+                </td>
                 <td>@(loc.Enabled ? "да" : "нет")</td>
                 <td>@loc.SortOrder</td>
                 <td>
@@ -57,13 +81,27 @@
     </table>
 </div>
 @if (!string.IsNullOrWhiteSpace(_error)) { <div class="alert alert-error">@_error</div> }
+@if (!string.IsNullOrWhiteSpace(_info)) { <div class="alert">@_info</div> }
+
+<ConfirmDialog @bind-Visible="_confirmRollout"
+               Title="Rolling update локации"
+               Message="@_rolloutMessage"
+               ConfirmText="Запустить"
+               OnConfirm="ConfirmRolloutAsync" />
 
 @code {
     private List<Location> _locations = new();
     private Dictionary<string, int> _nodeCounts = new();
+    private Dictionary<string, LocationRolloutDto> _rollouts = new();
     private string? _error;
+    private string? _info;
     private bool _showCreate;
     private bool _busy;
+    private bool _rolloutAvailable;
+    private bool _stepUpNeeded;
+    private bool _confirmRollout;
+    private string _rolloutLocationId = "";
+    private string _rolloutMessage = "";
     private string _id = "";
     private string _code = "";
     private string _country = "";
@@ -71,19 +109,106 @@
     private string _display = "";
     private int _sort;
 
+    private string StepUpUrl =>
+        $"/account/mfa/step-up?returnUrl={Uri.EscapeDataString("/admin/locations")}";
+
+    private bool EnsureStepUp()
+    {
+        if (!StepUpGuard.RequiresStepUp(HttpContextAccessor.HttpContext))
+        {
+            _stepUpNeeded = false;
+            return true;
+        }
+
+        _stepUpNeeded = true;
+        _error = "Требуется повторная проверка MFA (step-up).";
+        return false;
+    }
+
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
     private async Task ReloadAsync()
     {
-        _locations = await BlazorWork.RunAsync(Scopes, async sp =>
+        await BlazorWork.RunAsync(Scopes, async sp =>
         {
             var db = sp.GetRequiredService<ControlPlaneDbContext>();
             _nodeCounts = await db.Nodes
                 .Where(n => n.LifecycleState != NodeLifecycleState.Deleted)
                 .GroupBy(n => n.LocationId)
                 .ToDictionaryAsync(g => g.Key, g => g.Count());
-            return await db.Locations.OrderBy(l => l.SortOrder).ThenBy(l => l.Code).ToListAsync();
+            _locations = await db.Locations.OrderBy(l => l.SortOrder).ThenBy(l => l.Code).ToListAsync();
+            var rollout = sp.GetService<ILocationRolloutService>();
+            _rolloutAvailable = rollout is not null;
+            _rollouts = new Dictionary<string, LocationRolloutDto>(StringComparer.OrdinalIgnoreCase);
+            if (rollout is not null)
+            {
+                foreach (var item in await rollout.ListRecentAsync(40))
+                {
+                    if (!_rollouts.ContainsKey(item.LocationId) ||
+                        item.CreatedAt > _rollouts[item.LocationId].CreatedAt)
+                        _rollouts[item.LocationId] = item;
+                }
+            }
         });
+    }
+
+    private async Task PrepareRolloutAsync(Location loc)
+    {
+        _error = null;
+        _stepUpNeeded = false;
+        var count = _nodeCounts.GetValueOrDefault(loc.LocationId);
+        string target = "—";
+        await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            var release = await sp.GetRequiredService<IServerReleaseService>().GetLatestAsync();
+            target = release.LatestVersion ?? "—";
+        });
+        _rolloutLocationId = loc.LocationId;
+        _rolloutMessage =
+            $"Локация: {loc.DisplayName} ({loc.LocationId}). " +
+            $"Серверов в очереди (Active/Enabled): {count}. " +
+            $"Целевая версия: {target}. " +
+            "Обновление последовательное: следующий сервер только после успешного восстановления предыдущего. " +
+            "При failure/outcome_unknown/rollback_failed rollout останавливается.";
+        _confirmRollout = true;
+    }
+
+    private async Task ConfirmRolloutAsync()
+    {
+        if (!EnsureStepUp()) return;
+        await StartRolloutAsync(_rolloutLocationId);
+    }
+
+    private async Task StartRolloutAsync(string locationId)
+    {
+        if (_busy || !_rolloutAvailable) return;
+        _busy = true;
+        _error = null;
+        _info = null;
+        try
+        {
+            var state = await AuthState.GetAuthenticationStateAsync();
+            var actor = state.User.Identity?.Name ?? "admin";
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var rollout = sp.GetService<ILocationRolloutService>();
+                if (rollout is null) return;
+                var um = sp.GetRequiredService<UserManager<ApplicationUser>>();
+                var user = await um.GetUserAsync(state.User);
+                var roles = user is null ? Array.Empty<string>() : await um.GetRolesAsync(user);
+                var dto = await rollout.StartAsync(locationId, actor, roles);
+                _info = $"Запущен rollout локации {locationId}: {dto.Status} → {dto.TargetVersion}";
+            });
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = UiText.Error(ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
     }
 
     private async Task CreateAsync()

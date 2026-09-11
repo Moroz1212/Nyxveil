@@ -113,12 +113,17 @@ public sealed class AdminUiConcurrencyTests : IClassFixture<CustomWebApplication
             "/admin/locations",
             "/admin/nodes",
             "/admin/metrics",
+            "/admin/operations",
+            "/admin/infrastructure",
             "/admin/bootstrap-tokens",
             "/admin/audit",
             "/admin/revocations",
             "/admin/signing-keys",
             "/admin/settings",
-            "/admin/admin-users"
+            "/admin/admin-users",
+            "/account/mfa",
+            "/account/mfa/setup",
+            "/account/mfa/step-up"
         ];
 
         foreach (var path in paths)

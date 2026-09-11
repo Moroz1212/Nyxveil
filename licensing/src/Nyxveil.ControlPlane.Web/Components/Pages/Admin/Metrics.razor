@@ -81,12 +81,21 @@
         </div>
         <h2>Нагрузка: @_servers.First(s => s.NodeId == _selected).Name</h2>
         <p class="muted">Интервал: @MetricsQuery.BucketMinutes(_hours) мин. Получено измерений: @_points.Sum(p => p.Samples). Наведите указатель на точку для значения. Разрывы означают отсутствие данных.</p>
+        @if (_events.Count > 0)
+        {
+            <div class="event-legend">
+                @foreach (var g in _events.GroupBy(e => e.Label))
+                {
+                    <span style="color:@g.First().Color">@g.Key (@g.Count())</span>
+                }
+            </div>
+        }
         <div class="charts-grid" aria-busy="@_loading">
-            <MetricChart Title="Процессор" Unit="%" Points="_points" Value="p => p.Cpu" From="_from" Until="_until" Maximum="100" />
-            <MetricChart Title="Оперативная память" Unit="%" Points="_points" Value="p => p.Memory" From="_from" Until="_until" Maximum="100" Color="#79dcb5" />
-            <MetricChart Title="Активные сеансы" Unit="сеансов" Aggregation="Максимум за интервал" Points="_points" Value="p => p.Sessions" From="_from" Until="_until" Color="#f0c66a" />
-            <MetricChart Title="Приём данных" Unit="единицы сервера" Points="_points" Value="p => p.Rx" From="_from" Until="_until" />
-            <MetricChart Title="Передача данных" Unit="единицы сервера" Points="_points" Value="p => p.Tx" From="_from" Until="_until" Color="#c9a7ff" />
+            <MetricChart Title="Процессор" Unit="%" Points="_points" Value="p => p.Cpu" From="_from" Until="_until" Maximum="100" Events="_events" />
+            <MetricChart Title="Оперативная память" Unit="%" Points="_points" Value="p => p.Memory" From="_from" Until="_until" Maximum="100" Color="#79dcb5" Events="_events" />
+            <MetricChart Title="Активные сеансы" Unit="сеансов" Aggregation="Максимум за интервал" Points="_points" Value="p => p.Sessions" From="_from" Until="_until" Color="#f0c66a" Events="_events" />
+            <MetricChart Title="Приём данных" Unit="единицы сервера" Points="_points" Value="p => p.Rx" From="_from" Until="_until" Events="_events" />
+            <MetricChart Title="Передача данных" Unit="единицы сервера" Points="_points" Value="p => p.Tx" From="_from" Until="_until" Color="#c9a7ff" Events="_events" />
         </div>
         <details class="panel">
             <summary>Данные графиков — таблица интервалов</summary>
@@ -112,6 +121,7 @@
       ("memory", "Память, %"), ("sessions", "Сеансы"), ("rx", "Приём"), ("tx", "Передача"), ("time", "Снимок (UTC)") ];
     private List<ServerMetricRow> _servers = new();
     private List<MetricPoint> _points = new();
+    private List<MetricEventMarker> _events = new();
     private string _selected = "", _filter = "", _sort = "name";
     private int _hours = 24;
     private bool _descending, _loading, _loaded;
@@ -145,7 +155,6 @@
         _error = null;
         try
         {
-            // A new scope prevents overlapping Blazor/layout queries from sharing a DbContext.
             await using var scope = ScopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<ControlPlaneDbContext>();
             var until = Clock.UtcNow;
@@ -158,6 +167,9 @@
                 await MetricsQuery.History(db, _selected, from, until, minutes).ToListAsync();
             _servers = servers;
             _points = MetricsQuery.Points(buckets, from, until, minutes);
+            _events = string.IsNullOrEmpty(_selected)
+                ? new List<MetricEventMarker>()
+                : await LoadCommandEventsAsync(db, _selected, from, until);
             _from = from;
             _until = until;
             _loaded = true;
@@ -168,5 +180,38 @@
             _error = "Не удалось загрузить метрики. Нажмите «Обновить» для повторной попытки.";
         }
         finally { _loading = false; }
+    }
+
+    private static async Task<List<MetricEventMarker>> LoadCommandEventsAsync(
+        ControlPlaneDbContext db, string nodeId, DateTime from, DateTime until)
+    {
+        var commands = await db.NodeCommands.AsNoTracking()
+            .Where(c => c.NodeId == nodeId && c.CreatedAt <= until && (c.CompletedAt == null || c.CompletedAt >= from))
+            .OrderByDescending(c => c.CreatedAt)
+            .Take(40)
+            .ToListAsync();
+        var markers = new List<MetricEventMarker>();
+        foreach (var c in commands)
+        {
+            if (c.CreatedAt >= from && c.CreatedAt <= until)
+                markers.Add(new MetricEventMarker(c.CreatedAt, "UPDATE START", "#69a9ff"));
+            if (c.Type == NodeCommandType.UpdateNodeLatest)
+            {
+                var drainAt = string.Equals(c.ProgressPhase, "Draining", StringComparison.OrdinalIgnoreCase)
+                    ? c.ProgressUpdatedAt ?? c.ClaimedAt ?? c.StartedAt
+                    : c.ClaimedAt;
+                if (drainAt is { } d && d >= from && d <= until)
+                    markers.Add(new MetricEventMarker(d, "DRAIN", "#f0c66a"));
+                if (c.StartedAt is { } s && s >= from && s <= until)
+                    markers.Add(new MetricEventMarker(s, "UPDATE START", "#69a9ff"));
+            }
+            if (c.CompletedAt is { } done && done >= from && done <= until)
+            {
+                var label = c.Status == NodeCommandStatus.Succeeded ? "COMPLETED" : "FAILED";
+                var color = c.Status == NodeCommandStatus.Succeeded ? "#2f9e6b" : "#c44747";
+                markers.Add(new MetricEventMarker(done, label, color));
+            }
+        }
+        return markers.OrderBy(m => m.At).ToList();
     }
 }

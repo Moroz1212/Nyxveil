@@ -5,6 +5,7 @@ using Nyxveil.ControlPlane.Application.Abstractions;
 using Nyxveil.ControlPlane.Application.Common;
 using Nyxveil.ControlPlane.Application.Contracts.V1;
 using Nyxveil.ControlPlane.Application.Exceptions;
+using Nyxveil.ControlPlane.Application.Security;
 using Nyxveil.ControlPlane.Domain.Entities;
 using Nyxveil.ControlPlane.Domain.Enums;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
@@ -50,17 +51,23 @@ public sealed class NodeCommandService : INodeCommandService
     private readonly IClock _clock;
     private readonly IAuditService _audit;
     private readonly IServerReleaseService _releases;
+    private readonly IAdminRealtimeNotifier _realtime;
+    private readonly ICriticalOperationAuthorizer _criticalOps;
 
     public NodeCommandService(
         ControlPlaneDbContext db,
         IClock clock,
         IAuditService audit,
-        IServerReleaseService releases)
+        IServerReleaseService releases,
+        IAdminRealtimeNotifier? realtime = null,
+        ICriticalOperationAuthorizer? criticalOps = null)
     {
         _db = db;
         _clock = clock;
         _audit = audit;
         _releases = releases;
+        _realtime = realtime ?? new NullAdminRealtimeNotifier();
+        _criticalOps = criticalOps ?? AllowAllCriticalOperationAuthorizer.Instance;
     }
 
     public async Task<NodeCommand> EnqueueAsync(
@@ -83,6 +90,9 @@ public sealed class NodeCommandService : INodeCommandService
             throw new ValidationException("actor is required");
 
         AssertCanEnqueue(type, roles);
+        var critical = CriticalOperationPolicy.ForNodeCommand(type);
+        if (critical is CriticalOperation op)
+            _criticalOps.AssertAllowed(op, roles);
         await ExpireStaleForNodeAsync(nodeId, cancellationToken);
 
         if (!Enum.IsDefined(type))
@@ -466,6 +476,8 @@ public sealed class NodeCommandService : INodeCommandService
                     $"{{\"status\":\"{command.Status}\",\"success\":{(success ? "true" : "false")},\"code\":\"{Escape(command.ResultCode)}\"}}"
             }, cancellationToken).ConfigureAwait(false);
         }
+
+        await _realtime.NotifyCommandAsync(command.Id, nodeId, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task ExpireStaleAsync(CancellationToken cancellationToken = default)
@@ -896,6 +908,7 @@ public sealed class NodeCommandService : INodeCommandService
             throw new ValidationException("unsupported reconciliation action");
 
         AssertCanReconcileUnknownUpdate(request.Roles);
+        _criticalOps.AssertAllowed(CriticalOperation.ReconcileUnknownUpdate, request.Roles);
 
         return await WithLocationLockAsync(request.NodeId.Trim(), async () =>
         {

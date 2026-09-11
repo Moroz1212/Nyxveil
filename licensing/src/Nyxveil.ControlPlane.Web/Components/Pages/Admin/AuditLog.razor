@@ -11,50 +11,120 @@
 </div>
 
 <div class="toolbar">
-    <input placeholder="Поиск по исполнителю, действию или объекту" @bind="_filter" @bind:event="oninput" />
+    <input placeholder="Поиск" @bind="_search" @bind:event="oninput" />
+    <label>С<input type="date" @bind="_fromDate" /></label>
+    <label>По<input type="date" @bind="_toDate" /></label>
+    <label>Исполнитель<input @bind="_actor" @bind:event="oninput" /></label>
+    <label>Действие<input @bind="_action" @bind:event="oninput" /></label>
+    <label>Объект<input @bind="_entity" @bind:event="oninput" /></label>
+    <button class="btn" @onclick="ReloadAsync" disabled="@_busy">Применить</button>
 </div>
 
 <div class="table-wrap">
     <table class="data">
         <thead><tr><th>Время (UTC)</th><th>Исполнитель</th><th>Действие</th><th>Объект</th><th>Идентификатор</th><th>IP</th><th>Подробности</th></tr></thead>
         <tbody>
-        @foreach (var e in Filtered())
+        @foreach (var e in _rows)
         {
             <tr>
                 <td>@e.Timestamp.ToString("dd.MM.yyyy HH:mm:ss 'UTC'")</td>
                 <td>@e.Actor</td>
-                <td>@e.Action</td>
+                <td>@UiText.AuditAction(e.Action)<div class="mono muted">@e.Action</div></td>
                 <td>@e.EntityType</td>
                 <td class="mono">@(e.EntityId ?? "—")</td>
                 <td>@(e.IpAddress ?? "—")</td>
-                <td>@(e.DetailsJson ?? "—")</td>
+                <td>
+                    @if (string.IsNullOrWhiteSpace(e.DetailsJson))
+                    {
+                        <text>—</text>
+                    }
+                    else
+                    {
+                        <details>
+                            <summary>Показать JSON</summary>
+                            <pre class="mono" style="white-space:pre-wrap; max-width:28rem">@e.DetailsJson</pre>
+                        </details>
+                    }
+                </td>
             </tr>
         }
         </tbody>
     </table>
 </div>
+<div class="pagination">
+    <button class="btn btn-ghost" disabled="@(_page <= 1 || _busy)" @onclick="() => ChangePageAsync(-1)">Назад</button>
+    <span class="muted">Страница @_page · по @_pageSize · всего @_total</span>
+    <button class="btn btn-ghost" disabled="@(_page * _pageSize >= _total || _busy)" @onclick="() => ChangePageAsync(1)">Вперёд</button>
+</div>
 
 @code {
     private List<AuditLogEntry> _rows = new();
-    private string _filter = "";
+    private string _search = "", _actor = "", _action = "", _entity = "";
+    private DateTime? _fromDate;
+    private DateTime? _toDate;
+    private int _page = 1, _pageSize = 50, _total;
+    private bool _busy;
 
-    protected override async Task OnInitializedAsync()
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ChangePageAsync(int delta)
     {
-        _rows = await BlazorWork.RunAsync(Scopes, async sp =>
-        {
-            var db = sp.GetRequiredService<ControlPlaneDbContext>();
-            return await db.AuditLog.OrderByDescending(a => a.Timestamp).Take(500).ToListAsync();
-        });
+        _page = Math.Max(1, _page + delta);
+        await ReloadAsync();
     }
 
-    private IEnumerable<AuditLogEntry> Filtered()
+    private async Task ReloadAsync()
     {
-        if (string.IsNullOrWhiteSpace(_filter)) return _rows;
-        var f = _filter.Trim();
-        return _rows.Where(e =>
-            e.Actor.Contains(f, StringComparison.OrdinalIgnoreCase) ||
-            e.Action.Contains(f, StringComparison.OrdinalIgnoreCase) ||
-            e.EntityType.Contains(f, StringComparison.OrdinalIgnoreCase) ||
-            (e.EntityId?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false));
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var db = sp.GetRequiredService<ControlPlaneDbContext>();
+                var q = db.AuditLog.AsNoTracking().AsQueryable();
+                if (_fromDate is { } from)
+                    q = q.Where(a => a.Timestamp >= from.Date);
+                if (_toDate is { } to)
+                    q = q.Where(a => a.Timestamp < to.Date.AddDays(1));
+                if (!string.IsNullOrWhiteSpace(_actor))
+                {
+                    var a = _actor.Trim();
+                    q = q.Where(e => e.Actor.Contains(a));
+                }
+                if (!string.IsNullOrWhiteSpace(_action))
+                {
+                    var a = _action.Trim();
+                    q = q.Where(e => e.Action.Contains(a));
+                }
+                if (!string.IsNullOrWhiteSpace(_entity))
+                {
+                    var e = _entity.Trim();
+                    q = q.Where(x => x.EntityType.Contains(e) || (x.EntityId != null && x.EntityId.Contains(e)));
+                }
+                if (!string.IsNullOrWhiteSpace(_search))
+                {
+                    var f = _search.Trim();
+                    q = q.Where(e =>
+                        e.Actor.Contains(f) ||
+                        e.Action.Contains(f) ||
+                        e.EntityType.Contains(f) ||
+                        (e.EntityId != null && e.EntityId.Contains(f)) ||
+                        (e.DetailsJson != null && e.DetailsJson.Contains(f)));
+                }
+                _total = await q.CountAsync();
+                var skip = (_page - 1) * _pageSize;
+                if (skip >= _total && _page > 1)
+                {
+                    _page = 1;
+                    skip = 0;
+                }
+                _rows = await q.OrderByDescending(a => a.Timestamp).Skip(skip).Take(_pageSize).ToListAsync();
+            });
+        }
+        finally
+        {
+            _busy = false;
+        }
     }
 }

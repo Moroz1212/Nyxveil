@@ -1,0 +1,54 @@
+@namespace Nyxveil.ControlPlane.Web.Components.Shared
+
+@if (Visible && Result is not null)
+{
+    <div class="modal-backdrop" @onclick="Cancel">
+        <div class="modal" style="max-width:36rem" @onclick:stopPropagation="true">
+            <h3>Проверка перед обновлением</h3>
+            <p><strong>@Result.DisplayName</strong> <span class="mono muted">@Result.NodeId</span></p>
+            <p class="muted">Локация @Result.LocationId · @Result.InstalledVersion → @Result.TargetVersion (@(Result.ReleaseTag ?? "—"))</p>
+            <p class="muted">Heartbeat: @(Result.HeartbeatFresh ? "свежий" : "устаревший") · @Result.HeartbeatAgeText</p>
+            <p class="muted">TUN=@Result.Tun · TLS runtime=@Result.TlsRuntime · QUIC=@Result.Quic · CP=@Result.Cp</p>
+            <p class="muted">Активные сеансы: @Result.ActiveSessions</p>
+            <p class="@(Result.LocationSafe ? "muted" : "alert alert-error")">@Result.LocationSafetyDetail</p>
+            <p>Соседей здоровых: @Result.SiblingHealthyCount · свободная ёмкость: @Result.SiblingFreeCapacity</p>
+            <div class="alert alert-warn">@Result.DrainPolicyText</div>
+            @foreach (var note in Result.Notes)
+            {
+                <p class="muted">@note</p>
+            }
+            @if (!string.IsNullOrWhiteSpace(Result.BlockReason))
+            {
+                <div class="alert alert-error">@Result.BlockReason</div>
+            }
+            <div class="actions">
+                <button type="button" class="btn btn-ghost" @onclick="Cancel">Отмена</button>
+                <button type="button" class="btn" disabled="@(!Result.CanEnqueue || Busy)" @onclick="Confirm">
+                    Запустить обновление
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public EventCallback<bool> VisibleChanged { get; set; }
+    [Parameter] public UpdatePreflightResult? Result { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback OnConfirm { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private async Task Confirm()
+    {
+        if (Result is null || !Result.CanEnqueue) return;
+        await OnConfirm.InvokeAsync();
+        await VisibleChanged.InvokeAsync(false);
+    }
+
+    private async Task Cancel()
+    {
+        await OnCancel.InvokeAsync();
+        await VisibleChanged.InvokeAsync(false);
+    }
+}

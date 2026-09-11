@@ -1,0 +1,46 @@
+@namespace Nyxveil.ControlPlane.Web.Components.Shared
+
+@if (Items.Count > 0)
+{
+    <div class="panel attention-panel">
+        <h3>Требует внимания</h3>
+        <div class="attention-list">
+            @foreach (var item in Items)
+            {
+                <a class="attention-item severity-@item.Severity.ToString().ToLowerInvariant()" href="@item.Href">
+                    <div class="attention-head">
+                        <span class="attention-sev">@UiText.SeverityLabel(item.Severity)</span>
+                        <strong>@item.Title</strong>
+                    </div>
+                    <div class="muted">
+                        @(item.NodeName ?? item.NodeId ?? "—")
+                        @if (!string.IsNullOrWhiteSpace(item.LocationId))
+                        {
+                            <text> · @item.LocationId</text>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(item.AgeText))
+                        {
+                            <text> · @item.AgeText</text>
+                        }
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(item.Detail))
+                    {
+                        <div class="muted">@item.Detail</div>
+                    }
+                </a>
+            }
+        </div>
+    </div>
+}
+else if (ShowEmpty)
+{
+    <div class="panel attention-panel">
+        <h3>Требует внимания</h3>
+        <p class="muted">Сейчас нет событий, требующих внимания.</p>
+    </div>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<AttentionItem> Items { get; set; } = Array.Empty<AttentionItem>();
+    [Parameter] public bool ShowEmpty { get; set; } = true;
+}

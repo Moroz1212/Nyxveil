@@ -4,16 +4,26 @@
 @inject IServiceScopeFactory Scopes
 @inject IClock Clock
 @inject AuthenticationStateProvider AuthState
+@inject IHttpContextAccessor HttpContextAccessor
+@using Nyxveil.ControlPlane.Application.Security
 
 <div class="page-header">
     <div>
         <h1>Настройки системы</h1>
-        <div class="sub">Рабочие настройки в формате «ключ — значение», без секретов.</div>
+        <div class="sub">Рабочие настройки в формате «ключ — значение», без секретов. Security-sensitive keys требуют step-up.</div>
     </div>
     <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
         <button class="btn" @onclick="() => _showCreate = !_showCreate" disabled="@_busy">@(_showCreate ? "Закрыть" : "Добавить настройку")</button>
     </AuthorizeView>
 </div>
+
+@if (_stepUpNeeded)
+{
+    <div class="alert alert-warn">
+        Для security-sensitive настройки нужна повторная проверка MFA.
+        <a href="/account/mfa/step-up?returnUrl=%2Fadmin%2Fsettings">Повысить привилегии</a>
+    </div>
+}
 
 @if (_showCreate)
 {
@@ -24,6 +34,11 @@
             <div class="actions" style="align-self:end"><button class="btn" @onclick="SaveAsync" disabled="@_busy">Сохранить</button></div>
         </div>
     </AuthorizeView>
+}
+
+@if (!string.IsNullOrEmpty(_error))
+{
+    <div class="alert alert-error">@_error</div>
 }
 
 <div class="table-wrap">
@@ -47,8 +62,10 @@
     private List<SystemSetting> _settings = new();
     private bool _showCreate;
     private bool _busy;
+    private bool _stepUpNeeded;
     private string _key = "";
     private string _value = "";
+    private string? _error;
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
@@ -65,6 +82,7 @@
     {
         if (_busy) return;
         _busy = true;
+        _error = null;
         try
         {
             var state = await AuthState.GetAuthenticationStateAsync();
@@ -72,9 +90,23 @@
             var key = _key.Trim();
             var value = _value;
             var now = Clock.UtcNow;
+            var sensitive = CriticalOperationPolicy.IsSensitiveSettingKey(key);
+
+            if (sensitive && StepUpGuard.RequiresStepUp(HttpContextAccessor.HttpContext))
+            {
+                _stepUpNeeded = true;
+                _error = "Требуется повторная проверка MFA (step-up) для security-sensitive настройки.";
+                return;
+            }
 
             await BlazorWork.RunAsync(Scopes, async sp =>
             {
+                if (sensitive)
+                {
+                    sp.GetRequiredService<ICriticalOperationAuthorizer>()
+                        .AssertAllowed(CriticalOperation.SensitiveSettingsMutate, new[] { AdminRole.SuperAdmin });
+                }
+
                 var db = sp.GetRequiredService<ControlPlaneDbContext>();
                 var audit = sp.GetRequiredService<IAuditService>();
                 var existing = await db.SystemSettings.FirstOrDefaultAsync(s => s.Key == key);
@@ -99,13 +131,18 @@
                 await audit.WriteAsync(new AuditWriteRequest
                 {
                     Actor = actor,
-                    Action = "system_setting.upsert",
+                    Action = sensitive ? "system_setting.upsert.sensitive" : "system_setting.upsert",
                     EntityType = "SystemSetting",
                     EntityId = key
                 });
             });
             _showCreate = false;
+            _stepUpNeeded = false;
             await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = UiText.Error(ex.Message);
         }
         finally
         {

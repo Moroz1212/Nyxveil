@@ -1,6 +1,7 @@
 @page "/"
 @attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
 @rendermode InteractiveServer
+@implements IAsyncDisposable
 @inject IServiceScopeFactory Scopes
 @inject NavigationManager Nav
 @inject IConfiguration Configuration
@@ -22,8 +23,10 @@ else
         </div>
     </div>
 
+    <AttentionPanel Items="_attention" />
+
     <p><a class="btn" href="/admin/metrics">Метрики и графики серверов</a></p>
-        <div class="panel">
+    <div class="panel">
         <h3>Control Plane</h3>
         <p class="muted">Версия @_summary.ControlPlaneVersion · Узел @_summary.Hostname · URL @(_summary.PublicUrl.Length > 0 ? _summary.PublicUrl : "—") · Локальный порт @_summary.LocalPort · TLS @_summary.TlsStatus</p>
         <p class="muted">Сертификат: @_summary.CertificateHealth · Осталось дней: @(_summary.CertificateDaysRemaining?.ToString() ?? "—") · Issuer @(_summary.CertificateIssuer ?? "—")</p>
@@ -71,37 +74,39 @@ else
     }
 
     <div class="stats-grid">
-        <div class="stat"><div class="label">Всего серверов</div><div class="value">@_summary.TotalNodes</div></div>
-        <div class="stat"><div class="label">Работают штатно</div><div class="value">@_summary.HealthyNodes</div></div>
-        <div class="stat"><div class="label">Работают с ограничениями</div><div class="value">@_summary.DegradedNodes</div></div>
-        <div class="stat"><div class="label">Не в сети</div><div class="value">@_summary.OfflineNodes</div></div>
+        <div class="stat"><a href="/admin/nodes"><div class="label">Всего серверов</div><div class="value">@_summary.TotalNodes</div></a></div>
+        <div class="stat"><a href="/admin/nodes"><div class="label">Работают штатно</div><div class="value">@_summary.HealthyNodes</div></a></div>
+        <div class="stat"><a href="/admin/nodes"><div class="label">Работают с ограничениями</div><div class="value">@_summary.DegradedNodes</div></a></div>
+        <div class="stat"><a href="/admin/nodes"><div class="label">Не в сети</div><div class="value">@_summary.OfflineNodes</div></a></div>
         <div class="stat"><div class="label">Отключены</div><div class="value">@_summary.DisabledNodes</div></div>
         <div class="stat"><div class="label">Завершают сеансы</div><div class="value">@_summary.DrainingNodes</div></div>
         <div class="stat"><div class="label">Обслуживание</div><div class="value">@_summary.MaintenanceNodes</div></div>
-        <div class="stat"><div class="label">Удалены / отозваны</div><div class="value">@_summary.DeletedNodes / @_summary.RevokedNodes</div></div>
-        <div class="stat"><div class="label">Сертификаты истекают</div><div class="value">@_summary.CertificatesExpiring</div></div>
-        <div class="stat"><div class="label">Сертификаты истекли</div><div class="value">@_summary.CertificatesExpired</div></div>
-        <div class="stat"><div class="label">Нет связи &gt; 5 мин</div><div class="value">@_summary.StaleHeartbeatNodes</div></div>
-        <div class="stat"><div class="label">Устаревшая версия</div><div class="value">@_summary.OutdatedVersionNodes</div></div>
+        <div class="stat"><a href="/admin/infrastructure"><div class="label">Сертификаты истекают</div><div class="value">@_summary.CertificatesExpiring</div></a></div>
+        <div class="stat"><a href="/admin/infrastructure"><div class="label">Сертификаты истекли</div><div class="value">@_summary.CertificatesExpired</div></a></div>
+        <div class="stat"><a href="/admin/nodes"><div class="label">Нет связи &gt; 5 мин</div><div class="value">@_summary.StaleHeartbeatNodes</div></a></div>
+        <div class="stat"><a href="/admin/operations"><div class="label">Устаревшая версия</div><div class="value">@_summary.OutdatedVersionNodes</div></a></div>
         <div class="stat"><div class="label">Активные сеансы</div><div class="value">@_summary.ActiveSessions</div></div>
-        <div class="stat"><div class="label">Активные лицензии</div><div class="value">@_summary.ActiveLicenses</div></div>
-        <div class="stat"><div class="label">Истекают за 14 дней</div><div class="value">@_summary.ExpiringLicenses</div></div>
+        <div class="stat"><a href="/admin/licenses"><div class="label">Активные лицензии</div><div class="value">@_summary.ActiveLicenses</div></a></div>
+        <div class="stat"><a href="/admin/licenses"><div class="label">Истекают за 14 дней</div><div class="value">@_summary.ExpiringLicenses</div></a></div>
         <div class="stat"><div class="label">Отозванные лицензии</div><div class="value">@_summary.RevokedLicenses</div></div>
-        <div class="stat"><div class="label">Активные устройства</div><div class="value">@_summary.ActiveDevices</div></div>
-        <div class="stat"><div class="label">Активные токены регистрации</div><div class="value">@_summary.PendingBootstrapTokens</div></div>
+        <div class="stat"><a href="/admin/devices"><div class="label">Активные устройства</div><div class="value">@_summary.ActiveDevices</div></a></div>
+        <div class="stat"><a href="/admin/bootstrap-tokens"><div class="label">Активные токены регистрации</div><div class="value">@_summary.PendingBootstrapTokens</div></a></div>
     </div>
 }
 
 @code {
     private DashboardSummary? _summary;
     private InfrastructureOverviewDto? _infra;
+    private IReadOnlyList<AttentionItem> _attention = Array.Empty<AttentionItem>();
     private bool _infraCritical;
     private bool _needsSetup;
     private string _setupMessage = "Переход к первоначальной настройке…";
+    private readonly CancellationTokenSource _stop = new();
+    private Task? _poll;
+    private AdminRealtimeClient? _realtime;
 
     protected override async Task OnInitializedAsync()
     {
-        // Short-lived scope: never share circuit-scoped UserManager/DbContext with MainLayout.
         var adminCount = await BlazorWork.RunAsync(Scopes, async sp =>
         {
             var userManager = sp.GetRequiredService<UserManager<ApplicationUser>>();
@@ -124,15 +129,54 @@ else
             return;
         }
 
-        // DashboardQueryService uses IDbContextFactory (isolated context); still sequential.
+        await LoadAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _needsSetup) return;
+        _poll = PollAsync();
+        _realtime = await AdminRealtimeClient.ConnectAsync(Nav, async () =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadAsync();
+                StateHasChanged();
+            });
+        }, _stop.Token);
+    }
+
+    private async Task PollAsync()
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(_stop.Token))
+                await InvokeAsync(async () => { await LoadAsync(); StateHasChanged(); });
+        }
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
+    }
+
+    private async Task LoadAsync()
+    {
         await BlazorWork.RunAsync(Scopes, async sp =>
         {
-            _summary = await sp.GetRequiredService<IDashboardQueryService>().GetSummaryAsync();
+            var dash = sp.GetRequiredService<IDashboardQueryService>();
+            _summary = await dash.GetSummaryAsync();
+            _attention = await dash.GetAttentionAsync();
             _infra = await sp.GetRequiredService<IInfrastructureOverviewService>().GetOverviewAsync();
             _infraCritical = _infra.ControlPlaneCertificate.Health is
                                  nameof(CertificateHealthStatus.Critical) or nameof(CertificateHealthStatus.Expired)
                              || _infra.Nodes.Any(n =>
                                  n.Health is nameof(CertificateHealthStatus.Critical) or nameof(CertificateHealthStatus.Expired));
         });
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _stop.Cancel();
+        if (_realtime is not null) await _realtime.DisposeAsync();
+        if (_poll is not null) try { await _poll; } catch { /* ignore */ }
+        _stop.Dispose();
     }
 }

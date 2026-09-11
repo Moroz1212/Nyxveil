@@ -1,7 +1,7 @@
 <section class="panel metric-chart">
     <h3>@Title</h3>
     <div class="muted">@Unit · @Aggregation</div>
-    @if (_geometry.Dots.Count == 0)
+    @if (_geometry.Dots.Count == 0 && Events.Count == 0)
     {
         <div class="chart-empty">Нет данных за выбранный период</div>
     }
@@ -17,7 +17,17 @@
                     <text x="46" y="@(y + 4)" text-anchor="end">@UiText.Number(_geometry.Maximum * i / 4, "0.#")</text>
                 </g>
             }
-            <path d="@_geometry.Path" fill="none" stroke="@Color" stroke-width="2.5" />
+            @foreach (var ev in VisibleEvents())
+            {
+                var x = EventX(ev.At);
+                <line x1="@ChartGeometry.Svg(x)" x2="@ChartGeometry.Svg(x)" y1="26" y2="190" class="chart-event" stroke="@ev.Color">
+                    <title>@ev.Label · @ev.At.ToString("dd.MM.yyyy HH:mm:ss") UTC</title>
+                </line>
+            }
+            @if (!string.IsNullOrEmpty(_geometry.Path))
+            {
+                <path d="@_geometry.Path" fill="none" stroke="@Color" stroke-width="2.5" />
+            }
             @foreach (var dot in _geometry.Dots)
             {
                 <circle cx="@ChartGeometry.Svg(dot.X)" cy="@ChartGeometry.Svg(dot.Y)" r="3" fill="@Color">
@@ -40,6 +50,13 @@
     [Parameter] public DateTime From { get; set; }
     [Parameter] public DateTime Until { get; set; }
     [Parameter] public double? Maximum { get; set; }
+    [Parameter] public IReadOnlyList<MetricEventMarker> Events { get; set; } = Array.Empty<MetricEventMarker>();
     private ChartGeometry _geometry = new("", Array.Empty<ChartDot>(), 1);
     protected override void OnParametersSet() => _geometry = ChartGeometry.Create(Points, Value, From, Until, Maximum);
+
+    private IEnumerable<MetricEventMarker> VisibleEvents() =>
+        Events.Where(e => e.At >= From && e.At <= Until);
+
+    private double EventX(DateTime at) =>
+        52 + (at - From).TotalSeconds / Math.Max(1, (Until - From).TotalSeconds) * 564;
 }

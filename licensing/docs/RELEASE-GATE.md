@@ -1,12 +1,12 @@
-# Control Plane release gate (1.3.3)
+# Control Plane release gate (1.3.4)
 
-Release artifact: `Nyxveil-ControlPlane-v1.3.3-release.zip`
+Release artifact: `Nyxveil-ControlPlane-v1.3.4-release.zip`
 
 ## Required pins
 
-- Control Plane `VERSION` = **1.3.3**
-- Schema version = **5** (unchanged from 1.3.2)
-- Companion Server release: **server-v1.1.13** (not changed by this CP release)
+- Control Plane `VERSION` = **1.3.4**
+- Schema version = **5** (unchanged from 1.3.3)
+- Companion Server release: **server-v1.1.14** (not changed by this CP release)
 
 ## Local gate
 
@@ -24,11 +24,11 @@ cd licensing
 - `scripts\Nyxveil.ControlPlane.Deploy.psm1`
 - `database\migrations\005_certificate_operation_states.sql`
 - `database\migrations\validate_schema_v5.sql`
-- `docs\RELEASE-1.3.3.md`
+- `docs\RELEASE-1.3.4.md`
 
 ## Schema
 
-Schema remains at 5. No new migration for 1.3.3. Reconciliation metadata is stored in
-`NodeCommand.PayloadJson` and AuditLog.
+Schema remains at 5. No new migration for 1.3.4. Location rollout state remains in
+`SystemSettings`; critical-op elevation is cookie + service gate only.
 
-Earlier 1.0.0 live-deploy freeze documentation lived here. Current production gate for this tree is **1.3.3 / schema 5**. Older release notes remain under `docs/RELEASE-1.*.md` for history only.
+Older release notes remain under `docs/RELEASE-1.*.md` for history only.

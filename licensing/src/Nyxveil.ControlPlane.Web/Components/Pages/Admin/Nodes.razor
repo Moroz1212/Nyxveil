@@ -1,7 +1,10 @@
 @page "/admin/nodes"
 @attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
 @rendermode InteractiveServer
+@implements IAsyncDisposable
 @inject IServiceScopeFactory Scopes
+@inject NavigationManager Nav
+@inject IClock Clock
 
 <div class="page-header">
     <div>
@@ -11,13 +14,15 @@
 </div>
 
 <div class="toolbar">
-    <input placeholder="Поиск по серверу, локации или имени" @bind="_filter" @bind:event="oninput" />
+    <input placeholder="Поиск: имя, NodeId, локация, версия" @bind="_filter" @bind:event="oninput" />
     <label><input type="checkbox" @bind="_showTest" /> Показывать тестовые</label>
-    <label><input type="checkbox" @bind="_showDeleted" /> Показывать удалённые</label>
-    <select @bind="_lifecycleFilter">
-        <option value="">Все состояния</option>
-        @foreach (var state in Enum.GetNames<NodeLifecycleState>()) { <option value="@state">@state</option> }
-    </select>
+</div>
+
+<div class="quick-filters">
+    @foreach (var f in QuickFilters)
+    {
+        <button type="button" class="chip @(_quick == f.Key ? "active" : "")" @onclick="() => _quick = f.Key">@f.Label</button>
+    }
 </div>
 
 <div class="table-wrap">
@@ -26,40 +31,52 @@
             <tr>
                 <th>Сервер</th>
                 <th>Локация</th>
-                <th>Статус</th>
+                <th>Режим</th>
                 <th>CPU</th>
                 <th>Память</th>
                 <th>Сеансы</th>
                 <th>Версия</th>
-                <th>Актуальная</th>
                 <th>Статус версии</th>
-                <th>TLS</th>
+                <th>Runtime</th>
                 <th>Сертификат</th>
-                <th>Протокол</th>
-                <th>Последняя связь (UTC)</th>
+                <th>Последняя связь</th>
                 <th>Режимы</th>
             </tr>
         </thead>
         <tbody>
         @foreach (var n in Filtered())
         {
+            var mode = ModeOf(n);
+            var seen = n.Node.LastSeenAt ?? n.Health?.UpdatedAt;
+            var freshness = NodeFreshness.Evaluate(seen, Clock.UtcNow);
             <tr>
                 <td><a href="@($"/admin/nodes/{Uri.EscapeDataString(n.Node.NodeId)}")">@n.Node.DisplayName</a><div class="mono muted">@n.Node.NodeId</div></td>
                 <td>@n.Node.LocationId</td>
-                <td><StatusBadge Status="@n.Node.Status.ToString()" /> <span class="muted">@n.Node.LifecycleState</span></td>
+                <td><StatusBadge Status="@BadgeStatus(mode, n.Node)" /> <span class="muted">@UiText.OperatorMode(mode)</span></td>
                 <td>@(n.Health?.CpuPercent.ToString("0.0", UiText.Culture) ?? "—")%</td>
                 <td>@(n.Health?.MemoryPercent.ToString("0.0", UiText.Culture) ?? "—")%</td>
                 <td>@n.Node.CurrentSessions / @n.Node.Capacity</td>
                 <td>@InstalledVersion(n.Node)</td>
-                <td>@(_latest ?? "—")</td>
                 <td>@VersionStatusLabel(n.Node)</td>
-                <td>@TlsBadge(n)</td>
+                <td>
+                    <div class="health-matrix" title="TUN TLS QUIC BRG TKEY CP — только runtime-флаги">
+                        <div class="col"><span>TUN</span><HealthDot State="@RuntimeHealthPresentation.FromNullable(n.Health?.TunReady)" Label="TUN" /></div>
+                        <div class="col"><span>TLS</span><HealthDot State="@RuntimeHealthPresentation.FromNullable(n.Health?.TlsOk)" Label="TLS runtime" /></div>
+                        <div class="col"><span>QUIC</span><HealthDot State="@RuntimeHealthPresentation.FromNullable(n.Health?.QuicOk)" Label="QUIC" /></div>
+                        <div class="col"><span>BRG</span><HealthDot State="@RuntimeHealthPresentation.FromNullable(n.Health?.BridgeOk)" Label="Bridge" /></div>
+                        <div class="col"><span>TKEY</span><HealthDot State="@RuntimeHealthPresentation.FromNullable(n.Health?.TicketKeysLoaded)" Label="Ticket keys" /></div>
+                        <div class="col"><span>CP</span><HealthDot State="@RuntimeHealthPresentation.FromNullable(n.Health?.CpConnected)" Label="CP" /></div>
+                    </div>
+                </td>
                 <td>@CertDays(n.Node)</td>
-                <td>@n.Node.ProtocolVersion</td>
-                <td>@(n.Node.LastSeenAt?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? "—")</td>
+                <td>
+                    @(seen?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? "—")
+                    <div class="freshness-hint muted">@NodeFreshness.LabelRu(freshness, NodeFreshness.Age(seen, Clock.UtcNow))</div>
+                </td>
                 <td>
                     @(n.Node.Enabled ? "" : "отключён ")
                     @(n.Node.Draining ? "завершение сеансов " : "")
+                    @(n.Config?.MaintenanceMode == true ? "обслуживание " : "")
                     @(n.Node.TestOnly ? "тестовый" : "")
                 </td>
             </tr>
@@ -69,27 +86,68 @@
 </div>
 
 @code {
-    private sealed record Row(Node Node, NodeHealth? Health);
+    private sealed record Row(Node Node, NodeHealth? Health, NodeConfig? Config);
+
+    private static readonly (string Key, string Label)[] QuickFilters =
+    [
+        ("all", "Все"), ("problematic", "Проблемные"), ("healthy", "Healthy"), ("degraded", "Degraded"),
+        ("offline", "Offline"), ("stale", "Stale"), ("update", "Update available"), ("unsupported", "Unsupported"),
+        ("tls_fail", "TLS fail"), ("quic_fail", "QUIC fail"), ("tun_fail", "TUN fail"),
+        ("draining", "Draining"), ("maintenance", "Maintenance"), ("disabled", "Disabled"), ("test", "TestOnly")
+    ];
 
     private List<Row> _rows = new();
     private string _filter = "";
+    private string _quick = "all";
     private bool _showTest = true;
-    private bool _showDeleted;
-    private string _lifecycleFilter = "";
     private string? _latest;
     private string? _minSupported;
+    private readonly CancellationTokenSource _stop = new();
+    private Task? _poll;
+    private AdminRealtimeClient? _realtime;
 
-    protected override async Task OnInitializedAsync()
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _poll = PollAsync();
+        _realtime = await AdminRealtimeClient.ConnectAsync(Nav, async () =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadAsync();
+                StateHasChanged();
+            });
+        }, _stop.Token);
+    }
+
+    private async Task PollAsync()
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(_stop.Token))
+                await InvokeAsync(async () => { await LoadAsync(); StateHasChanged(); });
+        }
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
+    }
+
+    private async Task LoadAsync()
     {
         await BlazorWork.RunAsync(Scopes, async sp =>
         {
             var db = sp.GetRequiredService<ControlPlaneDbContext>();
-            var nodes = await db.Nodes.OrderBy(n => n.LocationId).ThenBy(n => n.DisplayName).ToListAsync();
-            var health = await db.NodeHealth.ToDictionaryAsync(h => h.NodeId);
-            _rows = nodes.Select(n => new Row(n, health.GetValueOrDefault(n.NodeId))).ToList();
+            var nodes = await db.Nodes.AsNoTracking()
+                .Where(n => n.LifecycleState != NodeLifecycleState.Deleted)
+                .OrderBy(n => n.LocationId).ThenBy(n => n.DisplayName)
+                .ToListAsync();
+            var health = await db.NodeHealth.AsNoTracking().ToDictionaryAsync(h => h.NodeId);
+            var configs = await db.NodeConfigs.AsNoTracking().ToDictionaryAsync(c => c.NodeId);
+            _rows = nodes.Select(n => new Row(n, health.GetValueOrDefault(n.NodeId), configs.GetValueOrDefault(n.NodeId))).ToList();
             var release = await sp.GetRequiredService<IServerReleaseService>().GetLatestAsync();
             _latest = release.LatestVersion;
-            _minSupported = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<Nyxveil.ControlPlane.Application.Options.ServerReleasePolicyOptions>>()
+            _minSupported = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<ServerReleasePolicyOptions>>()
                 .Value.MinimumSupportedVersion;
         });
     }
@@ -98,30 +156,66 @@
     {
         IEnumerable<Row> q = _rows;
         if (!_showTest) q = q.Where(r => !r.Node.TestOnly);
-        if (!_showDeleted) q = q.Where(r => r.Node.LifecycleState != NodeLifecycleState.Deleted);
-        if (!string.IsNullOrWhiteSpace(_lifecycleFilter) &&
-            Enum.TryParse<NodeLifecycleState>(_lifecycleFilter, out var lifecycle))
-            q = q.Where(r => r.Node.LifecycleState == lifecycle);
+        q = _quick switch
+        {
+            "problematic" => q.Where(IsProblematic),
+            "healthy" => q.Where(r => ModeOf(r) == OperatorNodeMode.Healthy),
+            "degraded" => q.Where(r => ModeOf(r) == OperatorNodeMode.Degraded),
+            "offline" => q.Where(r => ModeOf(r) == OperatorNodeMode.Offline),
+            "stale" => q.Where(r => NodeFreshness.Evaluate(r.Node.LastSeenAt ?? r.Health?.UpdatedAt, Clock.UtcNow) == DataFreshness.Stale),
+            "update" => q.Where(r => VersionStatus(r.Node) == NodeVersionStatus.UpdateAvailable),
+            "unsupported" => q.Where(r => VersionStatus(r.Node) == NodeVersionStatus.Unsupported),
+            "tls_fail" => q.Where(r => r.Health?.TlsOk == false),
+            "quic_fail" => q.Where(r => r.Health?.QuicOk == false),
+            "tun_fail" => q.Where(r => r.Health?.TunReady == false),
+            "draining" => q.Where(r => r.Node.Draining || ModeOf(r) == OperatorNodeMode.Draining),
+            "maintenance" => q.Where(r => r.Config?.MaintenanceMode == true),
+            "disabled" => q.Where(r => !r.Node.Enabled),
+            "test" => q.Where(r => r.Node.TestOnly),
+            _ => q
+        };
         if (!string.IsNullOrWhiteSpace(_filter))
         {
             var f = _filter.Trim();
             q = q.Where(r =>
                 r.Node.NodeId.Contains(f, StringComparison.OrdinalIgnoreCase) ||
                 r.Node.DisplayName.Contains(f, StringComparison.OrdinalIgnoreCase) ||
-                r.Node.LocationId.Contains(f, StringComparison.OrdinalIgnoreCase));
+                r.Node.LocationId.Contains(f, StringComparison.OrdinalIgnoreCase) ||
+                (InstalledVersion(r.Node)?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false));
         }
         return q;
     }
 
-    private static string InstalledVersion(Node node) =>
-        NodeVersionEvaluator.EffectiveInstalledVersion(node.ReportedServerVersion, node.ServerVersion) ?? "—";
-
-    private string VersionStatusLabel(Node node)
+    private bool IsProblematic(Row r)
     {
-        var installed = NodeVersionEvaluator.EffectiveInstalledVersion(node.ReportedServerVersion, node.ServerVersion);
-        var status = NodeVersionEvaluator.Evaluate(installed, _latest, _minSupported);
-        return NodeVersionEvaluator.DisplayRu(status);
+        var mode = ModeOf(r);
+        if (mode is OperatorNodeMode.Offline or OperatorNodeMode.Degraded or OperatorNodeMode.Disabled) return true;
+        if (r.Health?.TlsOk == false || r.Health?.QuicOk == false || r.Health?.TunReady == false) return true;
+        var ver = VersionStatus(r.Node);
+        return ver is NodeVersionStatus.Unsupported or NodeVersionStatus.UpdateAvailable;
     }
+
+    private OperatorNodeMode ModeOf(Row r) =>
+        RuntimeHealthPresentation.EvaluateMode(r.Node, r.Health, r.Config, Clock.UtcNow);
+
+    private static string BadgeStatus(OperatorNodeMode mode, Node node) => mode switch
+    {
+        OperatorNodeMode.Healthy => "Healthy",
+        OperatorNodeMode.Degraded or OperatorNodeMode.Recovering => "Degraded",
+        OperatorNodeMode.Offline => "Offline",
+        OperatorNodeMode.Draining => "Draining",
+        OperatorNodeMode.Maintenance => "Maintenance",
+        OperatorNodeMode.Disabled => "Disabled",
+        _ => node.Status.ToString()
+    };
+
+    private static string? InstalledVersion(Node node) =>
+        NodeVersionEvaluator.EffectiveInstalledVersion(node.ReportedServerVersion, node.ServerVersion);
+
+    private NodeVersionStatus VersionStatus(Node node) =>
+        NodeVersionEvaluator.Evaluate(InstalledVersion(node), _latest, _minSupported);
+
+    private string VersionStatusLabel(Node node) => NodeVersionEvaluator.DisplayRu(VersionStatus(node));
 
     private static string CertDays(Node node)
     {
@@ -132,18 +226,11 @@
         return $"{days} дн.";
     }
 
-    private static string TlsBadge(Row n)
+    public async ValueTask DisposeAsync()
     {
-        if (n.Health?.TlsOk == true) return "OK";
-        if (n.Health?.TlsOk == false) return "FAIL";
-        var health = CertificateExpiry.Evaluate(n.Node.CertNotAfter, DateTime.UtcNow);
-        return health switch
-        {
-            CertificateHealthStatus.Healthy => "OK",
-            CertificateHealthStatus.ExpiringSoon => "Warn",
-            CertificateHealthStatus.Critical => "Crit",
-            CertificateHealthStatus.Expired => "Expired",
-            _ => "—"
-        };
+        _stop.Cancel();
+        if (_realtime is not null) await _realtime.DisposeAsync();
+        if (_poll is not null) try { await _poll; } catch { /* ignore */ }
+        _stop.Dispose();
     }
 }

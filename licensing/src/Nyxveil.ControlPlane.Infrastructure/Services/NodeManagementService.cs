@@ -3,6 +3,7 @@ using Nyxveil.ControlPlane.Application.Abstractions;
 using Nyxveil.ControlPlane.Application.Common;
 using Nyxveil.ControlPlane.Application.Contracts.V1;
 using Nyxveil.ControlPlane.Application.Exceptions;
+using Nyxveil.ControlPlane.Application.Security;
 using Nyxveil.ControlPlane.Domain.Entities;
 using Nyxveil.ControlPlane.Domain.Enums;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
@@ -18,12 +19,18 @@ public sealed class NodeManagementService : INodeManagementService
     private readonly ControlPlaneDbContext _db;
     private readonly IClock _clock;
     private readonly IAuditService _audit;
+    private readonly ICriticalOperationAuthorizer _criticalOps;
 
-    public NodeManagementService(ControlPlaneDbContext db, IClock clock, IAuditService audit)
+    public NodeManagementService(
+        ControlPlaneDbContext db,
+        IClock clock,
+        IAuditService audit,
+        ICriticalOperationAuthorizer? criticalOps = null)
     {
         _db = db;
         _clock = clock;
         _audit = audit;
+        _criticalOps = criticalOps ?? AllowAllCriticalOperationAuthorizer.Instance;
     }
 
     public Task SetEnabledAsync(string nodeId, bool enabled, string actor, CancellationToken cancellationToken = default) =>
@@ -196,6 +203,9 @@ public sealed class NodeManagementService : INodeManagementService
     {
         if (string.IsNullOrWhiteSpace(nodeId))
             throw new ValidationException("node_id is required");
+
+        // Soft-delete and revoke remove production capacity / trust; require fresh step-up.
+        _criticalOps.AssertAllowed(CriticalOperation.DeleteNode);
 
         await using var tx = await LockLocationAsync(nodeId, cancellationToken);
         try

@@ -3,6 +3,8 @@
 @rendermode InteractiveServer
 @inject IServiceScopeFactory Scopes
 @inject AuthenticationStateProvider AuthState
+@inject IHttpContextAccessor HttpContextAccessor
+@using Nyxveil.ControlPlane.Application.Security
 
 <div class="page-header">
     <div>
@@ -11,6 +13,14 @@
     </div>
     <button class="btn" @onclick="() => _showCreate = !_showCreate" disabled="@_busy">@(_showCreate ? "Закрыть" : "Добавить администратора")</button>
 </div>
+
+@if (_stepUpNeeded)
+{
+    <div class="alert alert-warn">
+        Для управления администраторами нужна повторная проверка MFA.
+        <a href="/account/mfa/step-up?returnUrl=%2Fadmin%2Fadmin-users">Повысить привилегии</a>
+    </div>
+}
 
 @if (_showCreate)
 {
@@ -55,11 +65,25 @@
     private List<Row> _rows = new();
     private bool _showCreate;
     private bool _busy;
+    private bool _stepUpNeeded;
     private string _email = "";
     private string _displayName = "";
     private string _password = "";
     private string _role = AdminRole.Operator;
     private string? _error;
+
+    private bool EnsureStepUp()
+    {
+        if (!StepUpGuard.RequiresStepUp(HttpContextAccessor.HttpContext))
+        {
+            _stepUpNeeded = false;
+            return true;
+        }
+
+        _stepUpNeeded = true;
+        _error = "Требуется повторная проверка MFA (step-up).";
+        return false;
+    }
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
@@ -82,6 +106,7 @@
     private async Task CreateAsync()
     {
         if (_busy) return;
+        if (!EnsureStepUp()) return;
         _busy = true;
         _error = null;
         try
@@ -95,6 +120,9 @@
 
             var error = await BlazorWork.RunAsync(Scopes, async sp =>
             {
+                sp.GetRequiredService<ICriticalOperationAuthorizer>()
+                    .AssertAllowed(CriticalOperation.AdminSecurityMutate, new[] { AdminRole.SuperAdmin });
+
                 var userManager = sp.GetRequiredService<UserManager<ApplicationUser>>();
                 var audit = sp.GetRequiredService<IAuditService>();
                 var user = new ApplicationUser
@@ -129,6 +157,10 @@
             _showCreate = false;
             _password = "";
             await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = UiText.Error(ex.Message);
         }
         finally
         {

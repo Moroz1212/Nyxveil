@@ -1,0 +1,38 @@
+@page "/account/mfa/step-up"
+@layout EmptyLayout
+@attribute [Authorize(Policy = AuthPolicies.SuperAdminOnly)]
+
+<div class="auth-page">
+    <div class="auth-card">
+        <h1>Подтверждение MFA</h1>
+        <p class="muted">Введите код аутентификатора, чтобы подтвердить опасную операцию. Повышение действует 5 минут.</p>
+
+        @if (_error)
+        {
+            <div class="alert alert-error">Неверный код.</div>
+        }
+
+        <form method="post" action="/account/mfa/step-up">
+            <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+            <label>Код аутентификатора
+                <input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" required placeholder="123456" />
+            </label>
+            <button class="btn" type="submit">Подтвердить</button>
+        </form>
+        <p class="muted"><a href="/account/mfa">Назад к MFA</a></p>
+    </div>
+</div>
+
+@code {
+    private bool _error;
+
+    [SupplyParameterFromQuery(Name = "returnUrl")] public string? ReturnUrl { get; set; } = "/";
+    [SupplyParameterFromQuery(Name = "error")] public string? Error { get; set; }
+
+    protected override void OnInitialized()
+    {
+        _error = Error == "1";
+        if (string.IsNullOrWhiteSpace(ReturnUrl) || !ReturnUrl.StartsWith('/'))
+            ReturnUrl = "/";
+    }
+}
