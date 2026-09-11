@@ -821,3 +821,13 @@ Close missing step-up coverage, run operator HTTP smoke, green tests, bump CP to
 
 Push release commit + tag `control-plane-v1.3.4`, publish GitHub Release with ZIP, deploy on authorized CP host.
 
+
+### Release published
+
+- Branch: `control-plane-1.3.4`
+- Final HEAD: `7b954c53907e221c70a6d4a898ddaeefe16fa75b`
+- Tag: `control-plane-v1.3.4` → same commit
+- Release: https://github.com/Moroz1212/Nyxveil/releases/tag/control-plane-v1.3.4
+- Asset: `Nyxveil-ControlPlane-v1.3.4-release.zip` SHA256 `F0F42B196999860F7B6574BCC8107E0F241EEEBC9F06841B5FC8EB39DF05B4A5`
+- DEPLOY: BLOCKED (no local NyxveilControlPlane service)
+
