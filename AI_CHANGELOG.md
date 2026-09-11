@@ -317,4 +317,67 @@ Prepare Control Plane **1.3.3** with SuperAdmin evidence-based reconciliation of
 
 Push/PR → Control Plane CI → deploy rehearsal → backup → deploy CP 1.3.3 → UI reconcile LIVE unknown command as rollback → then separate LIVE 1.1.9→1.1.13 update.
 
+---
+
+## 2026-09-11 — Push Control Plane 1.3.3 + authoritative CI PASS
+
+### Goal
+
+Push Control Plane **1.3.3** to `origin/main`, obtain authoritative Control Plane CI green,
+and capture the CI release ZIP artifact. No production deploy / no LIVE reconciliation.
+
+### Baseline
+
+- Initial development HEAD: `5cf0117f1898fcf3b5a2fdeb5e8c165961a8ad12`
+- Product SHA: `3f9129e56afcdad49ed21a4cc8beedf557a343a9`
+- Pushed / CI SHA: `133deb3d1497b996b091b1c344ff474b5d70012b`
+- Control Plane: **1.3.3** (from 1.3.2)
+- Server **1.1.13** / Core **1.0.0** / NVP/1 unchanged
+- Local dirty `licensing/tests/CoreInterop/verify-signed/go.mod` path replace: **preserved, not committed**
+
+### Push
+
+- `git push origin main` (no force): `5cf0117..133deb3`
+
+### Control Plane CI
+
+- Run ID: `34619160877`
+- URL: https://github.com/Moroz1212/Nyxveil/actions/runs/34619160877
+- SHA: `133deb3d1497b996b091b1c344ff474b5d70012b`
+- Event: push
+- Conclusion: **success**
+- Steps: Restore / Build / Unit / LocalDB / Integration / Publish / Production gate / Pack / Validate extracted package / Upload — all **success**
+- Unit: **350 passed**, 0 failed, 0 skipped
+- Integration: **125 passed**, 0 failed, 0 skipped
+- Production gate local RESULT=PARTIAL (expected SKIP without InstallDir DB) with step conclusion success
+- Extracted package validation: **PASS**
+
+### Release ZIP artifact
+
+- Name: `control-plane-release-zip`
+- Artifact ID: `10272001651`
+- Digest: `sha256:fc6266fbbd73f5bbf9ee54d23f9eaa30383bf603cb7ebba947f0a3df765840a2`
+- Size (GitHub artifact archive metadata): `42135248` bytes
+- Contained file: `Nyxveil-ControlPlane-v1.3.3-release.zip` (downloaded zip size `42463397`)
+- Independent check: VERSION=1.3.3; required publish/scripts/migrations/`docs/RELEASE-1.3.3.md` present; no `*.trx` / `ef-baseline.tmp.sql`
+
+### Schema
+
+- Schema **5** unchanged; migration **none**
+
+### Frozen Core
+
+- PASS `7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b`
+
+### Not done
+
+- Production deployment
+- Production DB change
+- LIVE reconciliation / LIVE node change
+- CI-fix product commits (none required)
+
+### Next suggested action
+
+Production deploy rehearsal → backup → deploy CP 1.3.3 → UI reconcile LIVE unknown 1.1.9→1.1.12 as rollback → separate LIVE 1.1.9→1.1.13.
+
 
