@@ -1,6 +1,6 @@
 # AI_STATE.md — Nyxveil current project state
 
-> Updated 2026-09-11 after local Control Plane **1.3.3** implementation (unknown update reconciliation).  
+> Updated 2026-09-11 after local Control Plane **1.3.3** commit `3f9129e56afcdad49ed21a4cc8beedf557a343a9`.  
 > Server product / tag SHA remains: `8fc385335a91aa753b879234999f29a2d025abfb` (`server-v1.1.13`)  
 > Control Plane 1.3.3 is **local commit only** — not pushed, not tagged, not deployed.  
 > GitHub branch-protection note from prior audit: `main` reported **unprotected**

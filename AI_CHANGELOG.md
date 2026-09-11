@@ -256,7 +256,8 @@ Prepare Control Plane **1.3.3** with SuperAdmin evidence-based reconciliation of
 ### Baseline
 
 - Initial HEAD: `5cf0117f1898fcf3b5a2fdeb5e8c165961a8ad12`
-- Control Plane before: **1.3.2**
+- Final HEAD: `3f9129e56afcdad49ed21a4cc8beedf557a343a9`
+- Control Plane before: **1.3.2** / after: **1.3.3**
 - Server: **1.1.13** unchanged / published
 - Core: **1.0.0** / Protocol **NVP/1** unchanged
 
