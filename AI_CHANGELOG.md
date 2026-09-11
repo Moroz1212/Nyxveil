@@ -453,4 +453,69 @@ and verified but never automatically reported `updated_healthy` after legacy par
 
 Push → Server CI → package → disposable Ubuntu LIVE 1.1.9→1.1.14 automatic terminal report.
 
+---
+
+## 2026-09-11 — Authoritative Server CI PASS for 1.1.14
+
+### Goal
+
+Run authoritative GitHub Server CI against exact product SHA Server **1.1.14**
+`524d3151018d76d413e312b2d9bbd5e54fdd2cf5` via immutable CI branch. No tag/release/deploy/main push.
+
+### Baseline
+
+- Local HEAD at start: `9d1c511bc63a7f3c7b032dc5092314af9ae766a0`
+- Product SHA: `524d3151018d76d413e312b2d9bbd5e54fdd2cf5` (VERSION=1.1.14)
+- Handoff tip (not CI target): `9d1c511…`
+- Preserved dirty local: `licensing/tests/CoreInterop/verify-signed/go.mod` (not committed/pushed)
+
+### CI branch
+
+- Name: `ci/server-1.1.14-524d315`
+- Push: `git push origin 524d315…:refs/heads/ci/server-1.1.14-524d315` (no force)
+- Remote SHA verified exact: `524d3151018d76d413e312b2d9bbd5e54fdd2cf5`
+- `origin/main` unchanged: `8d83268ad7654cc9431f7fbd7a0eb4c9cdcde638`
+
+### Server CI
+
+- Workflow: Server CI
+- Run ID: `34633830504`
+- URL: https://github.com/Moroz1212/Nyxveil/actions/runs/34633830504
+- Event: push
+- Branch: `ci/server-1.1.14-524d315`
+- Head SHA: `524d3151018d76d413e312b2d9bbd5e54fdd2cf5`
+- Started: `2026-09-11T18:32:22Z` / Completed: `2026-09-11T18:34:47Z`
+- Conclusion: **success**
+- test job: **success**
+- build job: **success**
+
+### Artifact
+
+- Name: `nyxveil-server-binaries`
+- ID: `10276778433`
+- Digest: `sha256:7aa620916f764c012949d39651f60bf4723f95713613c2d524879a9216042844`
+- Size: `48322528` bytes
+- expired: false
+- Independent download validation: VERSION=1.1.14; amd64/arm64 server/ctl present; manifests; SHA256SUMS; THIRD_PARTY_CORE frozen hash present; no verify-signed go.mod
+
+### Frozen Core
+
+- PASS `7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b`
+- Core 1.0.0 / NVP/1 unchanged
+
+### What CI does NOT prove
+
+- Real systemd LIVE with published Server 1.1.9 artifact
+- Automatic `updated_healthy` on disposable Ubuntu with real CP
+- Production readiness
+
+### Not done
+
+- Tag / GitHub Release / production deploy / push main
+- LIVE 1.1.9 → 1.1.14 regression
+
+### Next suggested action
+
+Controlled immutable `server-v1.1.14` release from these CI bytes, then LIVE 1.1.9→1.1.14 gate.
+
 
