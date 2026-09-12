@@ -1009,3 +1009,17 @@ Fix LIVE Server ACME root-owned state via privileged update migration; fix CP se
 
 - `licensing/tests/CoreInterop/verify-signed/go.mod` (not committed)
 
+
+---
+
+## 2026-09-12 — Releases published: server-v1.1.16 + control-plane-v1.3.7
+
+- main HEAD: `d9a9902946d583de5a0ad321772be6a7e2d6782b`
+- Server CI: run `34684116451` PASS; artifact digest `sha256:e4a442a2abe7e2d2fcbcf5701080686403b902ec740d8c5461d9dc798d31a4f6`
+- Server release: https://github.com/Moroz1212/Nyxveil/releases/tag/server-v1.1.16
+- Control Plane CI: run `34684116427` PASS
+- CP release ZIP SHA256: `4FDBB98D303081C4102DFFAC4BF2CBC201852B420931011D55552C7CEC571465` (download-back matched)
+- CP release: https://github.com/Moroz1212/Nyxveil/releases/tag/control-plane-v1.3.7
+- LIVE deploy/update/renew: BLOCKED (no production access)
+- Frozen Core unchanged; server-v1.1.14 / server-v1.1.15 tags untouched
+
