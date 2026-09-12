@@ -30,14 +30,31 @@ public sealed class MigrationDeployHardeningTests
     {
         var deploy = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-deploy.ps1"));
         Assert.Contains("Install-NyxveilControlPlaneUpdaterService", deploy, StringComparison.Ordinal);
-        Assert.Contains("NyxveilControlPlaneUpdater", File.ReadAllText(
-            Path.Combine(LicensingRoot, "scripts", "Nyxveil.ControlPlane.Deploy.psm1")), StringComparison.Ordinal);
+        Assert.Contains("updater_service_rollback", deploy, StringComparison.Ordinal);
+        Assert.Contains("Remove-NyxveilWindowsService", deploy, StringComparison.Ordinal);
+        Assert.Contains("Get-NyxveilWindowsServiceSnapshot", deploy, StringComparison.Ordinal);
+
+        var module = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "Nyxveil.ControlPlane.Deploy.psm1"));
+        Assert.Contains("NyxveilControlPlaneUpdater", module, StringComparison.Ordinal);
+        Assert.Contains("CreateService", module, StringComparison.Ordinal);
+        Assert.Contains("Get-NyxveilServiceBinaryPathName", module, StringComparison.Ordinal);
+        Assert.DoesNotContain("binPath= $binPath", module, StringComparison.Ordinal);
 
         var apply = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "self-update-apply.ps1"));
         Assert.Contains("rollbackAttempted", apply, StringComparison.Ordinal);
         Assert.Contains("primaryFailure", apply, StringComparison.Ordinal);
         Assert.Contains("rolled_back_healthy", apply, StringComparison.Ordinal);
         Assert.DoesNotContain("Process.Start", apply, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestLegacyScExeQuotingDefectIsDocumentedInServiceTest()
+    {
+        var test = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "test-windows-service-create.ps1"));
+        Assert.Contains("LEGACY_SC_QUOTING_DEFECT=CONFIRMED", test, StringComparison.Ordinal);
+        Assert.Contains("New-NyxveilWindowsService", test, StringComparison.Ordinal);
+        Assert.Contains("WINDOWS_SERVICE_CREATE_TEST=PASS", test, StringComparison.Ordinal);
+        Assert.Contains("binPath= \"\"", test, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -117,7 +134,7 @@ public sealed class MigrationDeployHardeningTests
     public void TestProductionDeployRequiresMigrationRehearsalBeforeStop()
     {
         var deploy = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-deploy.ps1"));
-        Assert.Contains("1.3.7", deploy, StringComparison.Ordinal);
+        Assert.Contains("1.3.8", deploy, StringComparison.Ordinal);
         Assert.Contains("migration_rehearsal", deploy, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("publish_payload_sha256", deploy, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("rollback_complete", deploy, StringComparison.OrdinalIgnoreCase);

@@ -1023,3 +1023,33 @@ Fix LIVE Server ACME root-owned state via privileged update migration; fix CP se
 - LIVE deploy/update/renew: BLOCKED (no production access)
 - Frozen Core unchanged; server-v1.1.14 / server-v1.1.15 tags untouched
 
+
+---
+
+## 2026-09-12 — Control Plane 1.3.8 hotfix (sc.exe 1639 updater install)
+
+- baseline HEAD: `3f63029f90c137adbbb3deaaaefb1d9d0981035b`
+- branch: `control-plane-1.3.8`
+
+### LIVE evidence
+
+production-deploy 1.3.6→1.3.7 failed at install_updater_service with sc.exe create exit=1639; rollback restored 1.3.6.
+
+### Root cause
+
+PowerShell 5.1 native binding emitted `binPath= ""C:\Program Files\...\Updater.exe" --service"`; sc.exe GetCommandLineW parse → ERROR_INVALID_COMMAND_LINE.
+
+### Fix
+
+CreateService/ChangeServiceConfig API; BinaryPathName builder; CIM verify; updater rollback in production-deploy; test-windows-service-create.ps1.
+
+### Tests run locally
+
+- Unit 476 PASS; Integration 130 PASS; production-gate local PARTIAL (expected without InstallDir)
+- Real SCM test: deferred to windows-latest CI (local host not admin)
+
+### Not run / BLOCKED
+
+- LIVE 1.3.6→1.3.8 production-deploy
+- Future self-update after privileged bootstrap
+
