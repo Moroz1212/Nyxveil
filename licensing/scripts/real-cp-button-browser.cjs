@@ -211,26 +211,71 @@ async function expectEnabled(locator, label) {
     }
     console.log('CP_BUTTON_BROWSER_CLICK=PASS');
 
+    // CRITICAL: do not navigate away until Blazor finishes StartUpdateAsync handoff kickoff.
+    // Immediate goto previously aborted the circuit before download/handoff began, while
+    // "Latest stable: 1.3.9" already matched a naive body.includes(targetVersion) check.
+    try {
+      await Promise.race([
+        page.getByText('Обновление авторизовано').waitFor({ state: 'visible', timeout: 600000 }),
+        page.getByText(/Загрузка/).waitFor({ state: 'visible', timeout: 600000 }),
+        page.getByRole('heading', { name: /Транзакция/ }).waitFor({
+          state: 'visible',
+          timeout: 600000,
+        }),
+        page.getByText(/package_verification_failed|PreflightFailed|ConcurrentUpdate/i).waitFor({
+          state: 'visible',
+          timeout: 600000,
+        }),
+      ]);
+    } catch (e) {
+      await dumpDiag(page, 'post_confirm_no_progress');
+      throw e;
+    }
+    const earlyBody = ((await page.textContent('body').catch(() => '')) || '').toLowerCase();
+    if (
+      earlyBody.includes('package_verification_failed') ||
+      earlyBody.includes('preflightfailed') ||
+      (earlyBody.includes('alert-error') && earlyBody.includes('fail'))
+    ) {
+      await dumpDiag(page, 'update_start_error');
+      throw new Error('Control Plane update failed to start after confirm');
+    }
+    console.log('CP_BUTTON_BROWSER_UPDATE_STARTED=PASS');
+
+    const installedRe = new RegExp('Installed:\\s*' + targetVersion.replace(/\./g, '\\.'));
     let ok = false;
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < 150; i++) {
       try {
-        await page.goto(base + '/admin/control-plane', {
-          waitUntil: 'domcontentloaded',
-          timeout: 20000,
+        // Prefer soft reload so we do not tear down an in-flight Blazor update circuit early.
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(async () => {
+          await page.goto(base + '/admin/control-plane', {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000,
+          });
         });
         const body = (await page.textContent('body')) || '';
-        if (body.includes(targetVersion)) {
+        if (installedRe.test(body)) {
           ok = true;
           break;
+        }
+        if (i % 6 === 0) {
+          console.error(
+            'CP_BUTTON_BROWSER_WAIT_INSTALLED i=' +
+              i +
+              ' snippet=' +
+              body.replace(/\s+/g, ' ').slice(0, 240)
+          );
         }
       } catch (_) {}
       await page.waitForTimeout(5000);
     }
     if (!ok) {
-      await dumpDiag(page, 'post_update_missing_version');
-      throw new Error('browser did not observe VERSION ' + targetVersion + ' after button update');
+      await dumpDiag(page, 'post_update_missing_installed_version');
+      throw new Error(
+        'browser did not observe Installed: ' + targetVersion + ' after button update'
+      );
     }
-    console.log('CP_BUTTON_BROWSER_OBSERVED_' + targetVersion.replace(/\./g, '_') + '=PASS');
+    console.log('CP_BUTTON_BROWSER_OBSERVED_INSTALLED_' + targetVersion.replace(/\./g, '_') + '=PASS');
   } catch (err) {
     await dumpDiag(page, 'failure');
     throw err;

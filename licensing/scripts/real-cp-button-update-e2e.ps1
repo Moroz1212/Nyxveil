@@ -298,7 +298,7 @@ try {
 }
 
 Write-Host 'CP_BUTTON_STEP=verify_post_update'
-$deadline = [datetime]::UtcNow.AddMinutes(10)
+$deadline = [datetime]::UtcNow.AddMinutes(15)
 $after = ''
 while ([datetime]::UtcNow -lt $deadline) {
     try {
@@ -307,10 +307,41 @@ while ([datetime]::UtcNow -lt $deadline) {
             $after = (Get-Content -LiteralPath $verPath -Raw).Trim()
             if ($after -eq '1.3.9') { break }
         }
-    } catch { }
+        Write-Host "CP_BUTTON_WAIT_VERSION service=$($svc.Status) version=$after"
+    } catch {
+        Write-Host "CP_BUTTON_WAIT_VERSION_ERR=$($_.Exception.Message)"
+    }
     Start-Sleep -Seconds 5
 }
-if ($after -ne '1.3.9') { Fail "post-update VERSION want=1.3.9 have=$after" }
+if ($after -ne '1.3.9') {
+    $pd = Join-Path $env:ProgramData 'Nyxveil\ControlPlane'
+    $su = Join-Path $pd 'self-update'
+    Write-Host "CP_BUTTON_DIAG_SELF_UPDATE_DIR=$su"
+    if (Test-Path -LiteralPath $su) {
+        Get-ChildItem -LiteralPath $su -Recurse -File -ErrorAction SilentlyContinue |
+            Select-Object -First 40 FullName, Length, LastWriteTime |
+            ForEach-Object { Write-Host "CP_BUTTON_SU_FILE=$($_.FullName) len=$($_.Length) t=$($_.LastWriteTimeUtc.ToString('o'))" }
+        foreach ($name in @('request.json', 'handoff.json', 'result.json', 'active.json')) {
+            $p = Join-Path $su $name
+            if (Test-Path -LiteralPath $p) {
+                Write-Host "CP_BUTTON_SU_CONTENT_$name<<EOF"
+                Get-Content -LiteralPath $p -Raw -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Substring(0, [Math]::Min(4000, $_.Length)) }
+                Write-Host 'EOF'
+            }
+        }
+    }
+    $logDir = Join-Path $pd 'logs'
+    if (Test-Path -LiteralPath $logDir) {
+        Get-ChildItem -LiteralPath $logDir -File | Sort-Object LastWriteTime -Descending | Select-Object -First 2 | ForEach-Object {
+            Write-Host "CP_BUTTON_LOG_FILE=$($_.FullName)"
+            Get-Content -LiteralPath $_.FullName -Tail 80 | ForEach-Object { Write-Host "CP_BUTTON_LOG=$_" }
+        }
+    }
+    try {
+        sc.exe query NyxveilControlPlaneUpdater | ForEach-Object { Write-Host "CP_BUTTON_UPD_SC=$_" }
+    } catch { }
+    Fail "post-update VERSION want=1.3.9 have=$after"
+}
 if ($ExpectedTargetVersion -ne '1.3.9') {
     Fail "ExpectedTargetVersion must remain 1.3.9 for this immutable published gate (got $ExpectedTargetVersion)"
 }
