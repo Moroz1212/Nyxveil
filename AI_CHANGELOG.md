@@ -1570,3 +1570,30 @@ same lock defect > `rollback_complete=false`, VERSION stayed 1.3.8.
 ### DEVELOPMENT COMPLETE
 
 - **NO** until CI + release PASS; LIVE USER ACCEPTANCE remains **PENDING**
+
+---
+
+## 2026-09-13 — control-plane-v1.3.12 published
+
+### Goal
+
+Close the LIVE production-deploy updater file-lock defect with an official release.
+
+### Product HEAD
+
+- `468ab73e3363499decb32739524189ce20e1bd6c`
+
+### Release
+
+- Tag: `control-plane-v1.3.12`
+- URL: https://github.com/Moroz1212/Nyxveil/releases/tag/control-plane-v1.3.12
+- ZIP SHA256: `F0B6BC01BFB011640605CF9B537542968E86FB1A64AD7392E6E7ED4A3D0D9AD5`
+- CI: https://github.com/Moroz1212/Nyxveil/actions/runs/34714894628 (PASS), including updater file-lock regression
+
+### LIVE recovery
+
+- Elevated `production-deploy.ps1` from 1.3.12 directly (no 1.3.10/1.3.11 hop; no manual repair)
+
+### DEVELOPMENT COMPLETE
+
+- **YES** (lab/CI/release). LIVE USER ACCEPTANCE = **PENDING**.
