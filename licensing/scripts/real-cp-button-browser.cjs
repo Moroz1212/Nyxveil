@@ -159,15 +159,43 @@ async function expectEnabled(locator, label) {
       state: 'visible',
       timeout: 60000,
     });
+    // Wait for Blazor InteractiveServer status panel (not just static chrome).
+    await page.getByRole('heading', { name: 'Версия' }).waitFor({
+      state: 'visible',
+      timeout: 120000,
+    });
 
     const checkBtn = page.getByRole('button', { name: 'Проверить обновления' });
     await checkBtn.waitFor({ state: 'visible', timeout: 60000 });
     await checkBtn.click();
-    // Allow discovery / cache refresh
-    await page.waitForTimeout(8000);
+    // Allow GitHub discovery / cache refresh (LocalSystem has no GH_TOKEN; public API).
+    await page.waitForTimeout(10000);
 
-    const updateBtn = page.getByTestId('control-plane-update');
-    await updateBtn.waitFor({ state: 'visible', timeout: 120000 });
+    // Published 1.3.8 lacks data-testid="control-plane-update"; click by Russian button text.
+    // Prefer testid when present (newer builds), else "Обновить до <version>".
+    const updateByTestId = page.getByTestId('control-plane-update');
+    const updateByText = page.getByRole('button', {
+      name: new RegExp('Обновить до\\s+' + targetVersion.replace(/\./g, '\\.')),
+    });
+    const updateAny = page.getByRole('button', { name: /Обновить до/ });
+    let updateBtn = updateByTestId;
+    try {
+      await updateByTestId.waitFor({ state: 'visible', timeout: 5000 });
+    } catch (_) {
+      updateBtn = updateByText;
+      try {
+        await updateByText.waitFor({ state: 'visible', timeout: 90000 });
+      } catch (e) {
+        await dumpDiag(page, 'update_button_missing');
+        const buttons = await page.locator('button').allTextContents().catch(() => []);
+        console.error('CP_BUTTON_BROWSER_BUTTONS=' + JSON.stringify(buttons));
+        // Fall back to any "Обновить до …" if target-specific text mismatched.
+        updateBtn = updateAny;
+        await updateAny.waitFor({ state: 'visible', timeout: 30000 }).catch(async () => {
+          throw e;
+        });
+      }
+    }
     await expectEnabled(updateBtn, 'control-plane-update');
     await updateBtn.click();
 
