@@ -139,8 +139,15 @@ jobs:
           mkdir -p evidence
           sudo apt-get update -qq
           sudo apt-get install -y -qq jq
+          set +e
           sudo -E bash server/scripts/real-operator-node-e2e.sh \
             --evidence-dir "$GITHUB_WORKSPACE/evidence"
+          rc=$?
+          set -e
+          # Script runs as root; make evidence readable for upload-artifact.
+          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE/evidence" || true
+          sudo chmod -R a+rX "$GITHUB_WORKSPACE/evidence" || true
+          exit "$rc"
 
       - name: Upload node operator evidence
         if: always()
