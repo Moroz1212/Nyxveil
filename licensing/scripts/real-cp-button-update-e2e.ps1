@@ -122,22 +122,29 @@ if (-not $sqlSvc) {
     if ($LASTEXITCODE -ne 0) { Fail "SQL Express setup failed exit=$LASTEXITCODE" }
 }
 
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installScript `
-    -InstallMode Fresh `
-    -PublishDir $publish138 `
-    -InstallDir $InstallDir `
-    -Port $Port `
-    -PublicHostname $PublicHostname `
-    -GenerateSelfSignedCertificate `
-    -DatabaseServer $DatabaseServer `
-    -Database $Database `
-    -DatabaseAuth $DatabaseAuth `
-    -TrustSqlServerCertificate `
-    -AdminUser $AdminUser `
-    -AdminPassword $securePass `
-    -NonInteractive `
-    -SkipFirewall
-if ($LASTEXITCODE -ne 0) { Fail "install-windows.ps1 failed exit=$LASTEXITCODE" }
+# Call install in-process so SecureString AdminPassword survives (powershell.exe -File cannot).
+$env:NYXVEIL_ADMIN_PASSWORD = $AdminPasswordPlain
+try {
+    & $installScript `
+        -InstallMode Fresh `
+        -PublishDir $publish138 `
+        -InstallDir $InstallDir `
+        -Port $Port `
+        -PublicHostname $PublicHostname `
+        -GenerateSelfSignedCertificate `
+        -DatabaseServer $DatabaseServer `
+        -Database $Database `
+        -DatabaseAuth $DatabaseAuth `
+        -TrustSqlServerCertificate `
+        -AdminUser $AdminUser `
+        -AdminPassword $securePass `
+        -NonInteractive `
+        -SkipFirewall
+    if ($LASTEXITCODE -ne 0) { Fail "install-windows.ps1 failed exit=$LASTEXITCODE" }
+}
+finally {
+    Remove-Item Env:NYXVEIL_ADMIN_PASSWORD -ErrorAction SilentlyContinue
+}
 
 # Accelerate GitHub discovery cache for the button gate (1.3.8 already defaults to Moroz1212/Nyxveil).
 $appsettings = Join-Path $InstallDir 'appsettings.Production.json'
