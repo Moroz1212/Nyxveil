@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Nyxveil.ControlPlane.Application.Abstractions;
 using Nyxveil.ControlPlane.Application.Common;
 using Nyxveil.ControlPlane.Application.Options;
@@ -127,10 +128,20 @@ public static class ServiceCollectionExtensions
         services.Configure<AcmeOptions>(configuration.GetSection(AcmeOptions.SectionName));
         services.Configure<ServerReleasePolicyOptions>(configuration.GetSection(ServerReleasePolicyOptions.SectionName));
         services.Configure<SigningKeyRotationOptions>(configuration.GetSection(SigningKeyRotationOptions.SectionName));
-        services.AddHttpClient("GitHubReleases", c =>
+        services.AddHttpClient("GitHubReleases", (sp, c) =>
         {
             c.Timeout = TimeSpan.FromSeconds(30);
             c.DefaultRequestHeaders.UserAgent.ParseAdd("Nyxveil-ControlPlane");
+            var opts = sp.GetRequiredService<IOptions<ServerReleasePolicyOptions>>().Value;
+            var token = FirstNonEmpty(
+                opts.GitHubToken,
+                Environment.GetEnvironmentVariable("GITHUB_TOKEN"),
+                Environment.GetEnvironmentVariable("GH_TOKEN"));
+            if (!string.IsNullOrWhiteSpace(token))
+            {
+                c.DefaultRequestHeaders.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token.Trim());
+            }
         });
         services.AddSingleton<IServerReleaseService, ServerReleaseService>();
         var acme = configuration.GetSection(AcmeOptions.SectionName).Get<AcmeOptions>() ?? new AcmeOptions();
@@ -140,6 +151,16 @@ public static class ServiceCollectionExtensions
             services.AddSingleton<IAcmeDns01Provider, CertesAcmeDns01Provider>();
 
         return services;
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        foreach (var v in values)
+        {
+            if (!string.IsNullOrWhiteSpace(v))
+                return v;
+        }
+        return null;
     }
 
     private static void ConfigureDataProtection(IServiceCollection services, IConfiguration configuration)

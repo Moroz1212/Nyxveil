@@ -77,6 +77,8 @@ jobs:
   windows-cp-button-e2e:
     runs-on: windows-latest
     timeout-minutes: 90
+    # Serialize with bootstrap probe to avoid shared unauthenticated GitHub API rate limits.
+    needs: windows-cp-bootstrap-probe
     steps:
       - uses: actions/checkout@v4
 

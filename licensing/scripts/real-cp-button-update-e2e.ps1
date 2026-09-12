@@ -193,6 +193,17 @@ finally {
 
 Write-Host 'CP_BUTTON_NOTE=INITIAL_INSTALL_HARNESS=workspace_install_windows+published_PublishDir; NO InstallDir overlay'
 
+# Lab infrastructure: machine-level GitHub token for release discovery when the
+# installed product supports ServerReleasePolicy:GitHubToken / GITHUB_TOKEN (1.3.12+).
+# Harmless on older builds that ignore the env var.
+$token = $env:GH_TOKEN
+if ([string]::IsNullOrWhiteSpace($token)) { $token = $env:GITHUB_TOKEN }
+if (-not [string]::IsNullOrWhiteSpace($token)) {
+    [Environment]::SetEnvironmentVariable('GITHUB_TOKEN', $token, 'Machine')
+    [Environment]::SetEnvironmentVariable('GH_TOKEN', $token, 'Machine')
+    Write-Host 'CP_BUTTON_NOTE=lab_machine_GITHUB_TOKEN_set_for_release_discovery'
+}
+
 Import-Module (Join-Path $scriptRoot 'Nyxveil.ControlPlane.Deploy.psm1') -Force
 $updaterExe = Join-Path $InstallDir 'updater\Nyxveil.ControlPlane.Updater.exe'
 if (-not (Test-Path -LiteralPath $updaterExe)) {
@@ -331,7 +342,7 @@ function Write-CpButtonSelfUpdateDiag([string]$Reason) {
     if (Test-Path -LiteralPath $su) {
         Get-ChildItem -LiteralPath $su -Recurse -File -ErrorAction SilentlyContinue |
             Select-Object -First 60 FullName, Length, LastWriteTime |
-            ForEach-Object { Write-Host "CP_BUTTON_SU_FILE=$($_.FullName) len=$($_.Length) t=$($_.LastWriteTimeUtc.ToString('o'))" }
+            ForEach-Object { Write-Host "CP_BUTTON_SU_FILE=$($_.FullName) len=$($_.Length) t=$($_.LastWriteTime.ToUniversalTime().ToString('o'))" }
         foreach ($name in @('request.json', 'handoff.json', 'result.json', 'active.json')) {
             $p = Join-Path $su $name
             if (Test-Path -LiteralPath $p) {
@@ -381,8 +392,20 @@ try {
     Pop-Location
 }
 if ($browserExit -ne 0) {
-    Write-CpButtonSelfUpdateDiag 'playwright_failed'
+    try { Write-CpButtonSelfUpdateDiag 'playwright_failed' } catch {
+        Write-Host "CP_BUTTON_DIAG_THROW=$($_.Exception.Message)"
+    }
     if ($ExpectBootstrapLimitation) {
+        $clickMarker = if ($env:CP_CLICK_MARKER) { $env:CP_CLICK_MARKER } else { Join-Path $work 'click.marker' }
+        $clicked = Test-Path -LiteralPath $clickMarker
+        $verNow = if (Test-Path -LiteralPath $verPath) { (Get-Content -LiteralPath $verPath -Raw).Trim() } else { '' }
+        $mainStopped = $false
+        try {
+            $mainStopped = ((Get-Service NyxveilControlPlane -ErrorAction SilentlyContinue).Status -ne 'Running')
+        } catch { }
+        if (-not $clicked -and -not $mainStopped -and $verNow -eq $SourceVersion) {
+            Fail "bootstrap probe never started an update attempt (likely GitHub Latest discovery failure); not confirming 1.3.8 limitation"
+        }
         Write-Host 'CP_1_3_8_BOOTSTRAP_LIMITATION=CONFIRMED'
         $evidence = [ordered]@{
             gate = 'cp_bootstrap_limitation'
@@ -396,12 +419,16 @@ if ($browserExit -ne 0) {
             sha256_source_zip = $gotSrc
             sha256_target_zip = $gotTgt
             source_install_hashes = $sourceHashes
+            clicked = $clicked
+            main_stopped = $mainStopped
+            version_after_attempt = $verNow
             note = 'Immutable source apply script cannot load target package fixes; button update from byte-exact source is not possible without modifying InstallDir.'
             finished_at = [datetime]::UtcNow.ToString('o')
         }
         # Emit purity gates as separate evidence files for aggregator (button itself remains FAIL).
         $evDir = Split-Path -Parent $EvidencePath
         if (-not $evDir) { $evDir = $work }
+        New-Item -ItemType Directory -Force -Path $evDir | Out-Null
         [ordered]@{ gate = 'cp_no_overlay'; result = 'PASS'; finished_at = [datetime]::UtcNow.ToString('o') } |
             ConvertTo-Json -Compress | Set-Content (Join-Path $evDir 'cp_no_overlay-evidence.json') -Encoding utf8
         [ordered]@{ gate = 'cp_artifact_purity'; result = 'PASS'; scope = 'source_install'; finished_at = [datetime]::UtcNow.ToString('o') } |

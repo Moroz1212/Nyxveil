@@ -13,6 +13,12 @@ public sealed class ServerReleasePolicyOptions
 
     public string GitHubRepo { get; set; } = "Nyxveil";
 
+    /// <summary>
+    /// Optional GitHub API token for release discovery (avoids unauthenticated rate limits).
+    /// Prefer environment GITHUB_TOKEN / GH_TOKEN when unset.
+    /// </summary>
+    public string? GitHubToken { get; set; }
+
     public bool AllowPrerelease { get; set; }
 }
 

@@ -65,6 +65,38 @@ async function expectEnabled(locator, label) {
   throw new Error(`${label} stayed disabled`);
 }
 
+async function waitForLatestTarget(page, targetVersion) {
+  const latestRe = new RegExp('Latest stable:\\s*' + targetVersion.replace(/\./g, '\\.'));
+  const checkBtn = page.getByRole('button', { name: 'Проверить обновления' });
+  for (let i = 0; i < 60; i++) {
+    const body = ((await page.textContent('body').catch(() => '')) || '');
+    if (latestRe.test(body)) {
+      console.log('CP_BUTTON_BROWSER_LATEST_VISIBLE=' + targetVersion);
+      return;
+    }
+    if (i % 5 === 0) {
+      console.error(
+        'CP_BUTTON_BROWSER_WAIT_LATEST i=' +
+          i +
+          ' snippet=' +
+          body.replace(/\s+/g, ' ').slice(0, 280)
+      );
+    }
+    try {
+      if (await checkBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+        const busy = await checkBtn.isDisabled().catch(() => true);
+        if (!busy) {
+          await checkBtn.click({ timeout: 10000 }).catch(() => {});
+          await page.waitForTimeout(3000);
+        }
+      }
+    } catch (_) {}
+    await page.waitForTimeout(5000);
+  }
+  await dumpDiag(page, 'latest_target_not_visible');
+  throw new Error('Latest stable did not become ' + targetVersion + ' (GitHub discovery failed)');
+}
+
 (async () => {
   const base = process.env.CP_BASE;
   const email = process.env.CP_EMAIL;
@@ -167,9 +199,9 @@ async function expectEnabled(locator, label) {
 
     const checkBtn = page.getByRole('button', { name: 'Проверить обновления' });
     await checkBtn.waitFor({ state: 'visible', timeout: 60000 });
-    await checkBtn.click();
-    // Allow GitHub discovery / cache refresh (LocalSystem has no GH_TOKEN; public API).
-    await page.waitForTimeout(10000);
+    // Poll GitHub discovery via UI refresh until Latest stable matches target.
+    // GHA runners share unauthenticated api.github.com quotas; retries absorb that.
+    await waitForLatestTarget(page, targetVersion);
 
     // Published 1.3.8 lacks data-testid="control-plane-update"; click by Russian button text.
     // Prefer testid when present (newer builds), else "Обновить до <version>".
