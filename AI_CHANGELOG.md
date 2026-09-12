@@ -1053,3 +1053,16 @@ CreateService/ChangeServiceConfig API; BinaryPathName builder; CIM verify; updat
 - LIVE 1.3.6→1.3.8 production-deploy
 - Future self-update after privileged bootstrap
 
+---
+
+## 2026-09-12 — Release published: control-plane-v1.3.8
+
+- main HEAD: `a6b776b16d5ce2ed8ffd6166f5e475a4f8a8e232`
+- Control Plane CI: run `34686627398` PASS
+- Unit **476**; Integration **130**; `WINDOWS_SERVICE_CREATE_TEST=PASS` (LEGACY_SC_QUOTING_DEFECT=CONFIRMED under powershell.exe 5.1)
+- ZIP SHA256: `FEF6C6D3F40F3BBA7A721E84ECB54F64DC20569CCDAC1FA93D5397225D70018A` (download-back matched)
+- Release: https://github.com/Moroz1212/Nyxveil/releases/tag/control-plane-v1.3.8
+- LIVE 1.3.6→1.3.8: BLOCKED (no production access)
+- Frozen Core unchanged; control-plane-v1.3.6 / v1.3.7 and server-v1.1.14..16 tags untouched
+- Dirty preserved: `licensing/tests/CoreInterop/verify-signed/go.mod`
+
