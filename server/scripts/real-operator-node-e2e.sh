@@ -332,31 +332,44 @@ chmod 0755 "${ASSET_DIR}/install.sh"
 ensure_pebble_host_network() {
   log "ensuring Pebble ACME lab CA with --network host"
   docker rm -f nyxveil-lab-pebble >/dev/null 2>&1 || true
-  local started=0
-  if docker run -d --name nyxveil-lab-pebble --network host \
+  local out="" rc=1
+  # Prefer Docker Hub image with default entrypoint (no custom config path).
+  # Host networking so HTTP-01 validation reaches the node on :80.
+  set +e
+  out="$(docker run -d --name nyxveil-lab-pebble --network host \
       -e PEBBLE_VA_NOSLEEP=1 \
-      ghcr.io/letsencrypt/pebble:latest \
-      pebble -config /test/config/pebble-config.json \
-      >/dev/null 2>&1; then
-    started=1
-  elif docker run -d --name nyxveil-lab-pebble --network host \
-      -e PEBBLE_VA_NOSLEEP=1 \
-      letsencrypt/pebble:latest \
-      >/dev/null 2>&1; then
-    started=1
+      letsencrypt/pebble:v2.7.0 2>&1)"
+  rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    docker rm -f nyxveil-lab-pebble >/dev/null 2>&1 || true
+    out="$(docker run -d --name nyxveil-lab-pebble --network host \
+        -e PEBBLE_VA_NOSLEEP=1 \
+        letsencrypt/pebble:latest 2>&1)"
+    rc=$?
   fi
-  if [[ "${started}" -ne 1 ]]; then
+  if [[ "${rc}" -ne 0 ]]; then
+    docker rm -f nyxveil-lab-pebble >/dev/null 2>&1 || true
+    out="$(docker run -d --name nyxveil-lab-pebble --network host \
+        -e PEBBLE_VA_NOSLEEP=1 \
+        ghcr.io/letsencrypt/pebble:v2.7.0 2>&1)"
+    rc=$?
+  fi
+  set -e
+  if [[ "${rc}" -ne 0 ]]; then
+    log "pebble docker run failed: ${out}"
     return 1
   fi
-  # Wait briefly for directory endpoint.
+  log "pebble container started: ${out}"
   local i
-  for i in $(seq 1 30); do
+  for i in $(seq 1 45); do
     if curl -skf "https://127.0.0.1:14000/dir" >/dev/null 2>&1; then
       PEBBLE_DIR_URL="https://127.0.0.1:14000/dir"
       return 0
     fi
     sleep 1
   done
+  log "pebble directory not reachable on https://127.0.0.1:14000/dir"
+  docker logs nyxveil-lab-pebble 2>&1 | tail -n 40 || true
   return 1
 }
 
@@ -971,21 +984,4 @@ if [[ "${DURABLE_RESTART_RESULT}" == "PASS" ]] && { [[ "${ENABLE_PEBBLE}" == "1"
   fi
   if [[ "${UI_STUCK}" == "true" ]]; then
     fail_acme_gate rollback_recovery "ui_stuck_renewing" \
-      command_status="${FAIL_STATUS}" command_result_code="${FAIL_RESULT_CODE}" \
-      served_thumbprint="${POST_FAIL_FP}"
-    exit 1
-  fi
-
-  ROLLBACK_RECOVERY_RESULT=PASS
-  write_json "${EVIDENCE_DIR}/rollback_recovery-evidence.json" \
-    gate=rollback_recovery result=PASS \
-    served_thumbprint="${POST_FAIL_FP}" \
-    command_status="${FAIL_STATUS}" \
-    command_result_code="${FAIL_RESULT_CODE}" \
-    dead_acme_directory="${DEAD_DIR_URL}" \
-    ui_stuck_renewing=json:false \
-    finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  log "rollback_recovery PASS thumbprint unchanged result=${FAIL_RESULT_CODE}"
-fi
-
-exit 0
+      command_status="${FAIL_STATUS}" command_result_c

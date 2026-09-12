@@ -2259,13 +2259,19 @@ function Set-NyxveilDirectoryAcls {
         }
     }
 
+    $aclAccount = $ServiceAccount
+    if ($ServiceAccount -match '^(?i)LocalSystem$' -or
+        $ServiceAccount -match '^(?i)NT AUTHORITY\\SYSTEM$') {
+        $aclAccount = '*S-1-5-18'
+    }
+
     Invoke-NativeChecked -Name "icacls InstallDir RX" -Script {
-        & icacls $InstallDir /grant "${ServiceAccount}:(OI)(CI)RX" /T /C | Out-Null
+        & icacls $InstallDir /grant "${aclAccount}:(OI)(CI)RX" /T /C | Out-Null
     }
     foreach ($rw in @($DataDir, $LogsDir)) {
         if ($rw) {
             Invoke-NativeChecked -Name "icacls $rw M" -Script {
-                & icacls $rw /grant "${ServiceAccount}:(OI)(CI)M" /T /C | Out-Null
+                & icacls $rw /grant "${aclAccount}:(OI)(CI)M" /T /C | Out-Null
             }
         }
     }
@@ -2273,7 +2279,7 @@ function Set-NyxveilDirectoryAcls {
     foreach ($sensitive in @($SecretsDir, $KeysDir, $DataProtectionDir)) {
         if ($sensitive) {
             Invoke-NativeChecked -Name "icacls $sensitive service M" -Script {
-                & icacls $sensitive /grant "${ServiceAccount}:(OI)(CI)M" /T /C | Out-Null
+                & icacls $sensitive /grant "${aclAccount}:(OI)(CI)M" /T /C | Out-Null
             }
             foreach ($principal in @(
                     '*S-1-5-32-545', # Users
