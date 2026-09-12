@@ -3,10 +3,12 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Nyxveil.ControlPlane.Application.Abstractions;
 using Nyxveil.ControlPlane.Application.Common;
 using Nyxveil.ControlPlane.Application.Options;
+using Nyxveil.ControlPlane.Application.Security;
 using Nyxveil.ControlPlane.Infrastructure.Identity;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
 using Nyxveil.ControlPlane.Infrastructure.Security;
@@ -68,6 +70,7 @@ public static class ServiceCollectionExtensions
         services
             .AddIdentityCore<ApplicationUser>(options =>
             {
+                options.SignIn.RequireConfirmedAccount = false;
                 options.User.RequireUniqueEmail = true;
                 options.Password.RequiredLength = 12;
                 options.Password.RequireDigit = true;
@@ -107,10 +110,19 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAuditService, AuditService>();
         services.AddScoped<IDashboardQueryService, DashboardQueryService>();
         services.AddScoped<INodeCommandService, NodeCommandService>();
+        services.AddScoped<IUpdatePreflightService, UpdatePreflightService>();
+        services.AddScoped<ILocationRolloutService, LocationRolloutService>();
+        services.AddScoped<IFleetOverviewService, FleetOverviewService>();
         services.AddScoped<IControlPlaneCertificateStatusService, ControlPlaneCertificateStatusService>();
         services.AddScoped<IInfrastructureOverviewService, InfrastructureOverviewService>();
         services.AddScoped<IControlPlaneAcmeWizardService, ControlPlaneAcmeWizardService>();
         services.AddSingleton<IDnsTxtLookup, SystemDnsTxtLookup>();
+        services.TryAddSingleton<IAdminRealtimeNotifier, NullAdminRealtimeNotifier>();
+        // Hosts without HTTP elevation (unit tests) allow critical ops; Web/Worker replace this.
+        services.TryAddSingleton<ICriticalOperationAuthorizer, AllowAllCriticalOperationAuthorizer>();
+        services.AddSingleton<ISelfUpdateTransactionStore, SelfUpdate.FileSelfUpdateTransactionStore>();
+        services.AddSingleton<IControlPlaneReleaseService, ControlPlaneReleaseService>();
+        services.AddScoped<IControlPlaneSelfUpdateService, ControlPlaneSelfUpdateService>();
 
         services.Configure<AcmeOptions>(configuration.GetSection(AcmeOptions.SectionName));
         services.Configure<ServerReleasePolicyOptions>(configuration.GetSection(ServerReleasePolicyOptions.SectionName));

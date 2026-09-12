@@ -1,0 +1,289 @@
+@page "/admin/fleet"
+@attribute [Authorize(Policy = AuthPolicies.AnyAdmin)]
+@rendermode InteractiveServer
+@inject IServiceScopeFactory Scopes
+@inject NavigationManager Nav
+@implements IAsyncDisposable
+
+<div class="page-header">
+    <div>
+        <h1>Обзор сети</h1>
+        <div class="sub">Производственная карта локаций и VPN-серверов · @_generatedLabel</div>
+    </div>
+    <div class="actions">
+        <button class="btn btn-ghost" @onclick="RefreshAsync" disabled="@_busy">Обновить</button>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_error))
+{
+    <div class="alert alert-error">@_error</div>
+}
+
+@if (_overview is null)
+{
+    <p class="muted">Загрузка…</p>
+}
+else
+{
+    <div class="fleet-summary">
+        <div class="stat"><div class="label">Локации</div><div class="value">@_overview.Summary.Locations</div></div>
+        <div class="stat"><div class="label">Серверы</div><div class="value">@_overview.Summary.Nodes</div></div>
+        <div class="stat"><div class="label">Healthy</div><div class="value">@_overview.Summary.Healthy</div></div>
+        <div class="stat"><div class="label">Degraded</div><div class="value">@_overview.Summary.Degraded</div></div>
+        <div class="stat"><div class="label">Offline</div><div class="value">@_overview.Summary.Offline</div></div>
+        <div class="stat"><div class="label">Sessions</div><div class="value">@_overview.Summary.ActiveSessions</div></div>
+        <div class="stat"><div class="label">Capacity</div><div class="value">@CapacityLabel(_overview.Summary.CapacityUsedPercent)</div></div>
+        <div class="stat"><div class="label">Updates</div><div class="value">@_overview.Summary.UpdateAvailable</div></div>
+    </div>
+
+    <div class="panel form-grid" style="margin-bottom:1rem">
+        <label>Фильтр
+            <select @bind="_filter" @bind:after="RefreshAsync">
+                <option value="all">Все</option>
+                <option value="healthy">Healthy</option>
+                <option value="degraded">Degraded</option>
+                <option value="critical">Critical</option>
+                <option value="offline">Offline</option>
+                <option value="update">Update available</option>
+                <option value="draining">Draining</option>
+                <option value="maintenance">Maintenance</option>
+                <option value="certificate">Certificate warning</option>
+            </select>
+        </label>
+        <label>Поиск<input @bind="_search" @bind:event="oninput" placeholder="node / location / version" /></label>
+        <label>Сортировка
+            <select @bind="_sort" @bind:after="RefreshAsync">
+                <option value="status">Status</option>
+                <option value="name">Name</option>
+                <option value="sessions">Sessions</option>
+                <option value="capacity">Capacity</option>
+                <option value="nodes">Node count</option>
+            </select>
+        </label>
+        <div class="actions" style="align-self:end"><button class="btn" @onclick="RefreshAsync" disabled="@_busy">Применить</button></div>
+    </div>
+
+    @if (_overview.Attention.Count > 0)
+    {
+        <div class="panel">
+            <h3>Требует внимания</h3>
+            <ul>
+                @foreach (var a in _overview.Attention.Take(12))
+                {
+                    <li><a href="@(a.Href ?? "/admin/fleet")">@a.Title</a></li>
+                }
+            </ul>
+        </div>
+    }
+
+    @if (_showTopology)
+    {
+        <div class="panel mono">
+            <h3>Топология</h3>
+            <pre>@_topologyText</pre>
+        </div>
+    }
+    <div class="actions" style="margin-bottom:.75rem">
+        <button class="btn btn-ghost btn-sm" @onclick="() => _showTopology = !_showTopology">@(_showTopology ? "Скрыть топологию" : "Показать топологию")</button>
+    </div>
+
+    @foreach (var loc in _overview.Locations)
+    {
+        <div class="panel fleet-card">
+            <div class="fleet-card-head">
+                <div>
+                    <h3>@loc.DisplayName</h3>
+                    <div class="muted">@loc.Country · @loc.City · @loc.LocationId</div>
+                </div>
+                <span class="badge @HealthClass(loc.Health)">@loc.Health</span>
+            </div>
+            <p>
+                @loc.HealthyCount / @loc.NodeCount servers healthy · Sessions @loc.ActiveSessions ·
+                Capacity @(CapacityLabel(loc.CapacityUsedPercent)) · Version @(loc.DominantVersion ?? "—")
+            </p>
+            <p class="muted">
+                Cert: @loc.CertificateAggregate
+                @if (loc.NearestCertDaysRemaining is int d)
+                {
+                    <text> · nearest expiry @d days</text>
+                }
+                @if (loc.UpdateAvailableCount > 0)
+                {
+                    <text> · @loc.UpdateAvailableCount require update</text>
+                }
+                @if (loc.HasActiveOperation)
+                {
+                    <text> · active operation</text>
+                }
+            </p>
+            <div class="table-wrap">
+                <table class="data">
+                    <thead>
+                    <tr>
+                        <th>Сервер</th><th>Статус</th><th>Ver</th><th>Sessions</th><th>Capacity</th>
+                        <th>TUN</th><th>TLS</th><th>QUIC</th><th>CP</th><th>Freshness</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var n in loc.Nodes)
+                    {
+                        <tr @onclick="() => OpenNode(n.NodeId)" style="cursor:pointer">
+                            <td>@n.DisplayName <span class="mono muted">@n.NodeId</span></td>
+                            <td>@UiText.OperatorMode(n.Mode) @(n.Draining ? "· drain" : "") @(n.ActiveOperation is not null ? "· " + n.ActiveOperation : "")</td>
+                            <td class="mono">@(n.ServerVersion ?? "—")</td>
+                            <td>@n.CurrentSessions</td>
+                            <td>@n.Capacity</td>
+                            <td>@Flag(n.TunOk)</td>
+                            <td>@Flag(n.TlsOk)</td>
+                            <td>@Flag(n.QuicOk)</td>
+                            <td>@Flag(n.CpConnected)</td>
+                            <td class="muted">@n.FreshnessLabel</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+            <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
+                <div class="actions" style="margin-top:.5rem">
+                    <a class="btn btn-ghost btn-sm" href="/admin/locations">Rolling update → Локации</a>
+                </div>
+            </AuthorizeView>
+        </div>
+    }
+
+    @if (_overview.VersionDistribution.Count > 0)
+    {
+        <div class="panel">
+            <h3>Распределение версий</h3>
+            <ul>
+                @foreach (var v in _overview.VersionDistribution)
+                {
+                    <li class="mono">@v.Version — @v.Count@(v.UpdateAvailable ? " · update available" : "")</li>
+                }
+            </ul>
+        </div>
+    }
+}
+
+@code {
+    private FleetOverviewDto? _overview;
+    private bool _busy;
+    private string? _error;
+    private string _filter = "all";
+    private string _search = "";
+    private string _sort = "status";
+    private string _generatedLabel = "";
+    private bool _showTopology;
+    private string _topologyText = "";
+    private AdminRealtimeClient? _realtime;
+    private CancellationTokenSource? _pollCts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+        _pollCts = new CancellationTokenSource();
+        _ = PollLoopAsync(_pollCts.Token);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _realtime is not null) return;
+        _realtime = await AdminRealtimeClient.ConnectAsync(Nav, async () =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await RefreshAsync();
+                StateHasChanged();
+            });
+        }, _pollCts?.Token ?? CancellationToken.None);
+    }
+
+    private async Task PollLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(15), ct);
+                await InvokeAsync(async () =>
+                {
+                    await RefreshAsync();
+                    StateHasChanged();
+                });
+            }
+            catch (OperationCanceledException) { break; }
+            catch { /* keep polling */ }
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            _overview = await BlazorWork.RunAsync(Scopes, sp =>
+                sp.GetRequiredService<IFleetOverviewService>().GetOverviewAsync(new FleetQuery
+                {
+                    Filter = _filter,
+                    Search = _search,
+                    Sort = _sort
+                }));
+            _generatedLabel = _overview is null
+                ? ""
+                : $"данные на {_overview.GeneratedAt:HH:mm:ss} UTC";
+            _topologyText = BuildTopology(_overview);
+        }
+        catch (Exception ex)
+        {
+            _error = UiText.Error(ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string BuildTopology(FleetOverviewDto? o)
+    {
+        if (o is null) return "";
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("Nyxveil Fleet");
+        sb.AppendLine();
+        foreach (var loc in o.Locations)
+        {
+            sb.AppendLine($"├ {loc.DisplayName,-28} {loc.Health}");
+            for (var i = 0; i < loc.Nodes.Count; i++)
+            {
+                var n = loc.Nodes[i];
+                var branch = i == loc.Nodes.Count - 1 ? "└" : "├";
+                var mark = n.Mode is OperatorNodeMode.Healthy or OperatorNodeMode.Recovering ? "●" : "✕";
+                sb.AppendLine($"│ {branch} {n.NodeId,-22} {mark}");
+            }
+            sb.AppendLine("│");
+        }
+        return sb.ToString();
+    }
+
+    private void OpenNode(string nodeId) => Nav.NavigateTo($"/admin/nodes/{nodeId}");
+
+    private static string CapacityLabel(double? pct) => pct is null ? "Нет данных" : $"{pct:0.#}%";
+    private static string Flag(bool? v) => v is null ? "—" : v.Value ? "✓" : "✕";
+    private static string HealthClass(FleetLocationHealth h) => h switch
+    {
+        FleetLocationHealth.Healthy => "ok",
+        FleetLocationHealth.Degraded => "warn",
+        FleetLocationHealth.Critical or FleetLocationHealth.Offline => "err",
+        _ => "muted"
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        _pollCts?.Cancel();
+        _pollCts?.Dispose();
+        if (_realtime is not null)
+            await _realtime.DisposeAsync();
+    }
+}

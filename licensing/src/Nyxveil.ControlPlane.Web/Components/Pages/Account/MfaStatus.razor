@@ -1,0 +1,57 @@
+@page "/account/mfa"
+@attribute [Authorize(Policy = AuthPolicies.SuperAdminOnly)]
+@inject IServiceScopeFactory Scopes
+@inject AuthenticationStateProvider AuthState
+
+<div class="page-header">
+    <div>
+        <div class="eyebrow">Безопасность</div>
+        <h1>MFA</h1>
+        <div class="sub">Двухфакторная аутентификация главного администратора</div>
+    </div>
+</div>
+
+@if (_loading)
+{
+    <p class="muted">Загрузка…</p>
+}
+else
+{
+    <section class="panel">
+        <p>Статус: <strong>@(_enabled ? "включена" : "не настроена")</strong></p>
+        @if (_enabled)
+        {
+            <p class="muted">Для опасных операций (update, rolling update, signing keys, delete, reboot, reconciliation, admin security, sensitive settings) требуется повторная проверка кода (step-up, 5 минут).</p>
+            <div class="actions">
+                <a class="btn" href="/account/mfa/step-up">Повысить привилегии (step-up)</a>
+                <a class="btn btn-ghost" href="/account/mfa/setup">Сбросить и настроить заново</a>
+            </div>
+            <form method="post" action="/account/mfa/reset" style="margin-top:1rem">
+                <p class="muted">Сброс отключает MFA и создаёт новый секрет. Потребуется повторная настройка.</p>
+                <button class="btn btn-danger" type="submit">Сбросить MFA</button>
+            </form>
+        }
+        else
+        {
+            <div class="alert alert-warn">MFA не включена. Для SuperAdmin она обязательна.</div>
+            <a class="btn" href="/account/mfa/setup?required=1">Настроить MFA</a>
+        }
+    </section>
+}
+
+@code {
+    private bool _loading = true;
+    private bool _enabled;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await AuthState.GetAuthenticationStateAsync();
+        _enabled = await BlazorWork.RunAsync(Scopes, async sp =>
+        {
+            var um = sp.GetRequiredService<UserManager<ApplicationUser>>();
+            var user = await um.GetUserAsync(state.User);
+            return user is not null && await um.GetTwoFactorEnabledAsync(user);
+        });
+        _loading = false;
+    }
+}

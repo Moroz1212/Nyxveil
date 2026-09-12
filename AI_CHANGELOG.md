@@ -380,4 +380,516 @@ and capture the CI release ZIP artifact. No production deploy / no LIVE reconcil
 
 Production deploy rehearsal → backup → deploy CP 1.3.3 → UI reconcile LIVE unknown 1.1.9→1.1.12 as rollback → separate LIVE 1.1.9→1.1.13.
 
+---
+
+## 2026-09-11 — Server 1.1.14 legacy update terminal recovery (local)
+
+### Goal
+
+Fix LIVE compatibility defect where successful Server **1.1.9 → 1.1.13** update installed
+and verified but never automatically reported `updated_healthy` after legacy parent deleted
+`update-command.json` during canceled in-process fallback.
+
+### Baseline
+
+- Initial HEAD: `8d83268ad7654cc9431f7fbd7a0eb4c9cdcde638`
+- Product / Final HEAD: `524d3151018d76d413e312b2d9bbd5e54fdd2cf5`
+- Server before: **1.1.13** (published) → after: **1.1.14** (local candidate)
+- Control Plane **1.3.3** / Core **1.0.0** / NVP/1 unchanged
+- Preserved unrelated dirty file: `licensing/tests/CoreInterop/verify-signed/go.mod` (not committed)
+
+### Root cause (code-proven)
+
+1. Only `update-command.json` held CP `command_id`.
+2. Ctl transaction journal retained `phase=committed` without `command_id`.
+3. Server 1.1.9 deleted the marker after failed/canceled result POST.
+4. `completePendingUpdate` returned when marker missing → no automatic terminal report.
+
+### Fix
+
+- `captureCommandCorrelationFromMarker` in `update-resume` **before** restart
+- Additive journal fields: `command_id`, `command_started_at`, `result_queued_at`, `result_reported_at`
+- Marker-missing recovery via exact correlated terminal journals + version/node evidence
+- Fail closed on missing/ambiguous correlation
+- Durable pending-result queue + consume-after-ack; nyxveil ownership on journals
+- Intact marker path retained; Drain/Maintenance 1.1.13 semantics preserved
+
+### Files changed (primary)
+
+- `server/cmd/nyxveilctl/update_handoff.go`, `main.go`, `update_correlation_test.go`
+- `server/internal/runtime/update_command.go`, `update_recovery_test.go`, `lifecycle_blocker_test.go`
+- Version pins → 1.1.14 + `SERVER-1.1.14.md`
+- `AI_STATE.md`, `AI_CHANGELOG.md`, `PROJECT.md`
+
+### Tests actually run
+
+- `gofmt` on changed non-frozen Go files
+- `go vet` selected packages
+- `go test -timeout 120s ./...` (server module): **PASS**
+- Host + linux-amd64 + linux-arm64 builds of `nyxveil-server` / `nyxveilctl`: **PASS**
+- `bash scripts/test-update-lifecycle-gate.sh`: **PASS**
+- `bash scripts/test-installer-version-resolution.sh`: **PASS**
+- `bash scripts/assert-frozen-core.sh`: **PASS**
+
+### Not verified / SKIP
+
+- Authoritative GitHub Server CI (no push)
+- Real systemd LIVE with published `server-v1.1.9` artifact
+- Production package/deploy
+- Linux permission / ACME / nftables host gates requiring sudo Ubuntu
+
+### Compatibility
+
+- Frozen Core hash unchanged
+- No Control Plane API change; CP reconciliation remains emergency fallback
+- Old journals without `command_id` ignored (fail closed)
+
+### Risks
+
+- Until LIVE 1.1.9→1.1.14 gate, production readiness is **NO**
+- Requires new ctl 1.1.14 on the handoff path (target of the upgrade)
+
+### Next suggested action
+
+Push → Server CI → package → disposable Ubuntu LIVE 1.1.9→1.1.14 automatic terminal report.
+
+---
+
+## 2026-09-11 — Authoritative Server CI PASS for 1.1.14
+
+### Goal
+
+Run authoritative GitHub Server CI against exact product SHA Server **1.1.14**
+`524d3151018d76d413e312b2d9bbd5e54fdd2cf5` via immutable CI branch. No tag/release/deploy/main push.
+
+### Baseline
+
+- Local HEAD at start: `9d1c511bc63a7f3c7b032dc5092314af9ae766a0`
+- Product SHA: `524d3151018d76d413e312b2d9bbd5e54fdd2cf5` (VERSION=1.1.14)
+- Handoff tip (not CI target): `9d1c511…`
+- Preserved dirty local: `licensing/tests/CoreInterop/verify-signed/go.mod` (not committed/pushed)
+
+### CI branch
+
+- Name: `ci/server-1.1.14-524d315`
+- Push: `git push origin 524d315…:refs/heads/ci/server-1.1.14-524d315` (no force)
+- Remote SHA verified exact: `524d3151018d76d413e312b2d9bbd5e54fdd2cf5`
+- `origin/main` unchanged: `8d83268ad7654cc9431f7fbd7a0eb4c9cdcde638`
+
+### Server CI
+
+- Workflow: Server CI
+- Run ID: `34633830504`
+- URL: https://github.com/Moroz1212/Nyxveil/actions/runs/34633830504
+- Event: push
+- Branch: `ci/server-1.1.14-524d315`
+- Head SHA: `524d3151018d76d413e312b2d9bbd5e54fdd2cf5`
+- Started: `2026-09-11T18:32:22Z` / Completed: `2026-09-11T18:34:47Z`
+- Conclusion: **success**
+- test job: **success**
+- build job: **success**
+
+### Artifact
+
+- Name: `nyxveil-server-binaries`
+- ID: `10276778433`
+- Digest: `sha256:7aa620916f764c012949d39651f60bf4723f95713613c2d524879a9216042844`
+- Size: `48322528` bytes
+- expired: false
+- Independent download validation: VERSION=1.1.14; amd64/arm64 server/ctl present; manifests; SHA256SUMS; THIRD_PARTY_CORE frozen hash present; no verify-signed go.mod
+
+### Frozen Core
+
+- PASS `7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b`
+- Core 1.0.0 / NVP/1 unchanged
+
+### What CI does NOT prove
+
+- Real systemd LIVE with published Server 1.1.9 artifact
+- Automatic `updated_healthy` on disposable Ubuntu with real CP
+- Production readiness
+
+### Not done
+
+- Tag / GitHub Release / production deploy / push main
+- LIVE 1.1.9 → 1.1.14 regression
+
+### Next suggested action
+
+Controlled immutable `server-v1.1.14` release from these CI bytes, then LIVE 1.1.9→1.1.14 gate.
+
+---
+
+## 2026-09-11 — Server 1.1.14 immutable Release PASS; LIVE BLOCKED
+
+### Goal
+
+Stage A: immutable `server-v1.1.14` from authoritative CI bytes.  
+Stage B: LIVE 1.1.9 → 1.1.14 with automatic `updated_healthy`.
+
+### Baseline / final local
+
+- Initial/final local HEAD: `5a576257a3dae9a22055f42af6010b34f9436148` (docs-only; **not** Product SHA)
+- Initial/final dirty: `licensing/tests/CoreInterop/verify-signed/go.mod` **preserved**
+- Product SHA: `524d3151018d76d413e312b2d9bbd5e54fdd2cf5`
+- `origin/main` before/after: `8d83268ad7654cc9431f7fbd7a0eb4c9cdcde638` (**unchanged**)
+- No new product commits; Frozen Core untouched
+
+### Pre-release verification
+
+- CI run `34633830504`: push; head `524d315…`; test/build/overall **success**
+- Artifact `nyxveil-server-binaries` id `10276778433`; digest `sha256:7aa620916f764c012949d39651f60bf4723f95713613c2d524879a9216042844`; expired=false; belongs to that run
+- Downloaded artifact: VERSION=1.1.14; hashes match prompt; frozen Core hash present; no `verify-signed`
+- Product SHA VERSION + THIRD_PARTY_CORE via `git show 524d315:…`
+- Gates: CI_IDENTITY / ARTIFACT_IDENTITY / ARTIFACT_CONTENT / PRODUCT_IDENTITY / FROZEN_CORE / PRE_RELEASE_GATE = **PASS**
+
+### Tag + Release
+
+- Annotated tag `server-v1.1.14` → `524d3151018d76d413e312b2d9bbd5e54fdd2cf5` (TAG_TARGET=PASS)
+- Server Release workflow `34635265818` success (downloads CI artifact; **no rebuild**)
+- GitHub Release: https://github.com/Moroz1212/Nyxveil/releases/tag/server-v1.1.14
+- Independent download-back: all four binaries + VERSION SHA256 match CI → RELEASE_BYTES_IDENTITY=**PASS**
+- RELEASE_GATE=**PASS**
+
+### LIVE
+
+- Attempted SSH to `46.8.218.27`, `fi-hel-01.nyxveil.ru`, `fi-hel-02.nyxveil.ru`, `157.228.189.103` as root/ubuntu
+- After known_hosts refresh for host-key change: hosts respond, but **Permission denied (publickey,password)** with local `id_ed25519`
+- CP reachable `https://cp.nyxveil.ru:18443`; admin API unauthenticated → 401/400
+- No deploy key / SuperAdmin session available on this workstation without extracting secrets
+- LIVE baseline / UpdateNodeLatest / `updated_healthy` **not executed**
+- LIVE_GATE=**BLOCKED**; AUTOMATIC_TERMINAL_REPORTING=**BLOCKED**; PRODUCTION READY=**NO**
+
+### Decision lines
+
+```
+SERVER 1.1.14 AUTHORITATIVE CI = PASS
+SERVER 1.1.14 IMMUTABLE RELEASE = PASS
+LIVE 1.1.9 -> 1.1.14 = BLOCKED
+AUTOMATIC updated_healthy = BLOCKED
+PRODUCTION READY = NO
+```
+
+### Next step
+
+Restore SSH (or CP operator) access to the real 1.1.9 node and complete the LIVE gate against published `server-v1.1.14` only. Do not rebuild or retag.
+
+---
+
+## 2026-09-11 — Stage B ACCESS_GATE BLOCKED (no LIVE mutation)
+
+### Goal
+
+Stage B only: LIVE Server 1.1.9 → immutable `server-v1.1.14` with automatic `updated_healthy`. Stage A not re-run.
+
+### Local / release context
+
+- Initial/final HEAD: `5a576257a3dae9a22055f42af6010b34f9436148`
+- Dirty preserved: `licensing/tests/CoreInterop/verify-signed/go.mod`; handoff docs updated
+- `origin/main`: `8d83268ad7654cc9431f7fbd7a0eb4c9cdcde638` unchanged
+- Release: `server-v1.1.14` / Product SHA `524d315…` / CI `34633830504` — **not modified**
+
+### ACCESS_GATE
+
+- SSH private key present locally; pubkey `SHA256:iP955NjmEGzRZchOwLeQZqxna8SsRc5uDmDEz4Fhu1E`
+- No ssh config / ProxyJump / bastion
+- `root@fi-hel-01.nyxveil.ru`: Permission denied (publickey)
+- CP UI reachable; no SuperAdmin/Operator authenticated path on this workstation
+- Only Credential Manager target related to Nyxveil: `Nyxveil/LicenseCredential` (not CP admin)
+- No operator env tokens; no repo deploy key for LIVE
+
+**ACCESS_GATE = BLOCKED** — production not touched; UpdateNodeLatest not issued; no CommandID.
+
+### Decision
+
+```
+SERVER 1.1.14 AUTHORITATIVE CI = PASS
+SERVER 1.1.14 IMMUTABLE RELEASE = PASS
+LIVE 1.1.9 -> 1.1.14 = BLOCKED
+AUTOMATIC updated_healthy = BLOCKED
+PRODUCTION READY = NO
+```
+
+### Required to unblock
+
+Authorized SSH (or jump) to confirmed 1.1.9 node **and/or** CP SuperAdmin/Operator credentials/session for UpdateNodeLatest + node identity proof.
+
+---
+
+## 2026-09-12 — Control Plane operator panel maturity (local)
+
+### Goal
+
+Production-oriented Control Plane admin UX/safety: Deleted filtering, attention dashboard, update pre-flight/timeline, recovering, TLS vs cert, rolling location update, SignalR+poll, SuperAdmin TOTP MFA — without breaking Node API, licensing, or Frozen Core.
+
+### Baseline
+
+- HEAD: `5a576257a3dae9a22055f42af6010b34f9436148`
+- CP VERSION left at **1.3.3** (no bump this stage)
+- Schema **5** unchanged (rollout state in SystemSettings)
+- Preserved dirty: `licensing/tests/CoreInterop/verify-signed/go.mod`
+- Server release/tag not touched
+
+### Behavior added
+
+- Operator inventory excludes `NodeLifecycleState.Deleted` (queries + UI; DB rows retained)
+- Deleted NodeDetails → «Сервер не найден.»
+- Dashboard attention items from real health/certs/versions/commands
+- Update pre-flight mirrors location safety + 120s drain soft-timeout policy
+- Update timeline from real NodeCommand timestamps/phases only
+- Recovering mode when recent `updated_healthy` but runtime flags still FAIL
+- TLS runtime never inferred from certificate validity alone
+- Sequential location rolling update; stops on failure/unknown/unhealthy recovery
+- SignalR refresh hints + 15s polling fallback
+- SuperAdmin MFA (Identity TOTP) + step-up for delete/reboot/reconcile
+
+### Tests
+
+- `dotnet build` Web: PASS
+- UnitTests: 382 PASS
+- IntegrationTests: 125 PASS
+
+### Deferred
+
+- Canary fleet percentages (25/50/100) as first-class product feature
+- CP version bump / release packaging / production deploy
+- LIVE Server gate (still access-blocked)
+
+### Next
+
+Branch review → optional 1.3.4 release prep → LIVE when access exists.
+
+---
+
+## 2026-09-12 — Control Plane operator UI upgrades
+
+### Goal
+
+Implement Control Plane Web operator UI upgrades in `licensing/` (Nodes, Dashboard, NodeDetails, Operations, Audit, Locations, Metrics) using new Application helpers (`NodeInventory`, `NodeFreshness`, `RuntimeHealthPresentation`, `UpdateCommandTimeline`, attention/preflight/rollout services).
+
+### Baseline
+
+- HEAD: `5a576257a3dae9a22055f42af6010b34f9436148`
+- VERSION: **not** bumped (remains Control Plane `1.3.3` source)
+- Frozen Core: **not** touched
+- Preserved dirty: `licensing/tests/CoreInterop/verify-signed/go.mod`
+
+### Behavior changed
+
+- Metrics overview excludes `LifecycleState.Deleted`
+- Nodes: deleted never shown; quick filters; runtime health matrix (TLS ≠ cert expiry); freshness; 15s poll + optional SignalR `/hubs/node-status`
+- Dashboard: «Требует внимания» from `GetAttentionAsync`; clickable stats; poll/SignalR
+- NodeDetails: deleted → NotFound-only; Runtime vs Certificate separated; Recovering mode; update preflight modal; danger zone typed confirm (delete / reboot)
+- Operations: hide commands for deleted nodes; filters + pagination; update timeline cards
+- AuditLog: page size 50, date/actor/action/entity filters, JSON expand
+- Locations: SuperAdmin «Обновить локацию» via `ILocationRolloutService` when registered
+- Metrics charts: command event markers from real `NodeCommand` timestamps
+
+### Tests
+
+- Run: `dotnet build src/Nyxveil.ControlPlane.Web/Nyxveil.ControlPlane.Web.csproj --no-restore` → PASS
+- Not run: full Control Plane CI, live UI smoke, production deploy
+
+### Compatibility
+
+- NVP/1 / Frozen Core unchanged
+- Additive UI + DI registration (`IUpdatePreflightService`, `ILocationRolloutService`, `IAdminRealtimeNotifier`)
+- Fixed `LocationRolloutService` audit `WriteAsync` to `AuditWriteRequest` (was non-compiling)
+
+### Unresolved / blockers
+
+- Live browser validation not performed
+- Stage B LIVE upgrade still ACCESS_GATE blocked (unrelated)
+- SignalR refresh depends on something calling `IAdminRealtimeNotifier` (poll remains fallback)
+
+### Suggested next action
+
+Smoke-test admin pages against a local/disposable CP, or wire notifier calls into heartbeat/command completion paths if realtime push is required beyond polling.
+
+---
+
+## 2026-09-12 — Control Plane SuperAdmin TOTP MFA
+
+Repository snapshot:
+
+- repository: `Moroz1212/Nyxveil`
+- branch: `main` (dirty local worktree)
+- HEAD: `5a576257a3dae9a22055f42af6010b34f9436148`
+
+### Goal
+
+Add ASP.NET Core Identity authenticator TOTP MFA for SuperAdmin, with mandatory enroll, recovery codes, and short-lived step-up for dangerous ops.
+
+### Files changed (MFA task)
+
+- `licensing/src/Nyxveil.ControlPlane.Web/Program.cs` — login RequiresTwoFactor / MFA redirect; endpoints login-2fa, mfa/setup, mfa/reset, mfa/step-up; middleware; MemoryCache + step-up DI
+- `licensing/src/Nyxveil.ControlPlane.Web/Security/MfaPathRules.cs`, `MfaEnforcementMiddleware.cs`, `StepUpAuthentication.cs`
+- `licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Account/Login2Fa.razor`, `MfaSetup.razor`, `MfaStatus.razor`, `MfaStepUp.razor`
+- `licensing/src/Nyxveil.ControlPlane.Web/Components/Layout/NavMenu.razor`, `MainLayout.razor`
+- `licensing/src/Nyxveil.ControlPlane.Web/Components/Pages/Admin/NodeDetails.razor`, `Operations.razor` — step-up before delete/reboot/reconcile
+- `licensing/src/Nyxveil.ControlPlane.Infrastructure/.../ServiceCollectionExtensions.cs` — `RequireConfirmedAccount = false`
+- `licensing/src/Nyxveil.ControlPlane.Web/wwwroot/app.css` — auth textarea
+- `licensing/tests/Nyxveil.ControlPlane.UnitTests/MfaGateHelperTests.cs`
+- Minor fix: `OperatorPanelUxTests.cs` property names (`SupportsNodeCommands` / `ManagementCapabilities`) so unit project compiles
+
+### Behavior changed
+
+- SuperAdmin without `TwoFactorEnabled` redirected to `/account/mfa/setup?required=1` after password login and blocked from panel by `MfaEnforcementMiddleware` (only `/account/mfa*`, logout, login, static/api/health exempt)
+- Login `RequiresTwoFactor` → `/account/login-2fa` (authenticator or recovery code); not treated as password error
+- Secrets stay in Identity `AspNetUserTokens`; recovery codes shown once via short-lived memory cache token
+- Step-up: cookie `nyxveil_stepup` valid 5 minutes after `/account/mfa/step-up` verify
+- Nav: «Безопасность (MFA)» for SuperAdmin
+- Operator/ReadOnly MFA not forced; `/setup` and CLI admin create untouched
+
+### Version metadata
+
+- Not changed (Control Plane remains `1.3.3` source)
+
+### Tests
+
+- Run: `dotnet build src/Nyxveil.ControlPlane.Web/Nyxveil.ControlPlane.Web.csproj` → PASS
+- Run: `dotnet test … --filter FullyQualifiedName~MfaGateHelperTests` → PASS (21)
+- Not run: full `control-plane-ci.yml`, live MFA browser smoke, production deploy
+
+### Compatibility
+
+- NVP/1 / Frozen Core unchanged
+- No schema migration (Identity token tables already present)
+
+### Unresolved / blockers
+
+- Live enroll/login/step-up not browser-tested
+- Stage B LIVE upgrade still ACCESS_GATE blocked (unrelated)
+
+### Suggested next action
+
+Disposable CP smoke: create SuperAdmin → forced MFA setup → login-2fa → step-up on reboot/delete/reconcile.
+
+
+
+## 2026-09-12 — Control Plane 1.3.4 security/acceptance gate
+
+### Goal
+
+Close missing step-up coverage, run operator HTTP smoke, green tests, bump CP to **1.3.4**, package immutable release. Canary % not in scope. Server/Core untouched.
+
+### Baseline
+
+- Initial HEAD: `5a576257a3dae9a22055f42af6010b34f9436148`
+- Initial CP VERSION: `1.3.3` / schema `5`
+- origin/main at start: `8d83268ad7654cc9431f7fbd7a0eb4c9cdcde638`
+
+### Behavior changed
+
+- `ICriticalOperationAuthorizer` + user-bound step-up cookie (DataProtection, 5m TTL)
+- Server-side gates: UpdateNode, RollingUpdate start, Reboot, Restart, Delete, Reconcile, SigningKey rotate, sensitive Settings, AdminUsers create
+- RolloutContinuationScope allows worker ticks without re-MFA
+- MFA reset requires step-up; logout clears step-up
+- UI EnsureStepUp for Update / Locations rollout / Infrastructure reboot / SigningKeys / AdminUsers / Settings
+
+### Version metadata
+
+- Control Plane `1.3.3` → `1.3.4`
+- Schema remains `5` (no migration)
+- Server/Core/NVP unchanged
+
+### Tests actually run
+
+- `dotnet build` Web: PASS (0 errors, 0 warnings on last build)
+- UnitTests: **403 PASS**
+- IntegrationTests: **130 PASS** (includes `OperatorPanelSmokeTests`)
+- `production-gate.ps1 -GateMode local`: PARTIAL (expected skips)
+- Package extract validation: PASS
+- ZIP SHA256: `F0F42B196999860F7B6574BCC8107E0F241EEEBC9F06841B5FC8EB39DF05B4A5`
+
+### Tests not run
+
+- Headed interactive browser on a live desktop
+- Production `update-windows.ps1` (no local CP service)
+
+### Compatibility
+
+- NVP/1 / Frozen Core unchanged
+- Existing panel features preserved; step-up only tightens critical mutations
+
+### Unresolved
+
+- DEPLOY = BLOCKED on this host
+- Headed browser smoke not executed (HTTP smoke covered)
+
+### Suggested next action
+
+Push release commit + tag `control-plane-v1.3.4`, publish GitHub Release with ZIP, deploy on authorized CP host.
+
+
+### Release published
+
+- Branch: `control-plane-1.3.4`
+- Final HEAD: `7b954c53907e221c70a6d4a898ddaeefe16fa75b`
+- Tag: `control-plane-v1.3.4` → same commit
+- Release: https://github.com/Moroz1212/Nyxveil/releases/tag/control-plane-v1.3.4
+- Asset: `Nyxveil-ControlPlane-v1.3.4-release.zip` SHA256 `F0F42B196999860F7B6574BCC8107E0F241EEEBC9F06841B5FC8EB39DF05B4A5`
+- DEPLOY: BLOCKED (no local NyxveilControlPlane service)
+
+
+---
+
+## 2026-09-12 — Control Plane 1.3.5 (self-update + Fleet Overview)
+
+### Goal
+
+Ship Control Plane **1.3.5** with safe self-update and Fleet Overview, without Canary and without Server/Core/NVP changes.
+
+### Baseline
+
+- Branch created: `control-plane-1.3.5` from tip `00dbd3c2fbf852743f427700a96b45349841cb2d` (contains release commit `7b954c5`)
+- Initial dirty preserved: `licensing/tests/CoreInterop/verify-signed/go.mod`
+- origin/main at start: `8d83268ad7654cc9431f7fbd7a0eb4c9cdcde638` (stale vs CP history)
+
+### Files / areas changed
+
+- Self-update: Application SelfUpdate models/policy, `ControlPlaneReleaseService`, `ControlPlaneSelfUpdateService`, `FileSelfUpdateTransactionStore`, `Nyxveil.ControlPlane.Updater`, `scripts/self-update-apply.ps1`, `ControlPlaneUpdate.razor`, critical op `ControlPlaneSelfUpdate`
+- Fleet: `FleetOverviewService`, `FleetContracts`, `Fleet.razor`, nav
+- MFA: local QR + regenerate secret endpoint
+- Version pins / gate / pack / CI for 1.3.5; `release-manifest.json`; `docs/RELEASE-1.3.5.md`
+
+### Behavior changed
+
+- Operators can view Fleet overview; SuperAdmin can check/start CP self-update under MFA+step-up
+- External updater handoff; durable ProgramData transactions; zip-slip checks; no UI downgrade
+- Deleted nodes remain excluded from Fleet
+
+### Version metadata
+
+- Control Plane `1.3.4` → `1.3.5`
+- Schema remains `5`
+- Server/Core/NVP unchanged
+
+### Tests actually run
+
+- UnitTests: **447 PASS**
+- IntegrationTests: **130 PASS**
+- `production-gate.ps1 -GateMode local`: PARTIAL
+- Package extract validation: PASS
+- ZIP SHA256: `24C1BB42EB69599B9D8B8B807C27334A99AF6CB5C860578B83718E7988F64F9A`
+
+### Tests not run
+
+- Headed/browser Playwright E2E
+- Live Windows Service self-update / rollback on production host
+
+### Compatibility
+
+- NVP/1 / Frozen Core unchanged
+- First `1.3.4→1.3.5` install still uses existing deploy scripts; UI self-update starts after 1.3.5 is installed
+
+### Unresolved / deferred
+
+- Canary 25/50/100%
+- Main synchronization (pending PR)
+- LIVE deploy blocked unless explicitly authorized
+
+### Suggested next action
+
+Commit + tag `control-plane-v1.3.5`, publish GitHub Release with validated ZIP, open PR to `main`.
 

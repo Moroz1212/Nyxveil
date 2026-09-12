@@ -3,11 +3,13 @@ namespace Nyxveil.ControlPlane.Application.Abstractions;
 public interface IDashboardQueryService
 {
     Task<DashboardSummary> GetSummaryAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<Nyxveil.ControlPlane.Application.Contracts.V1.AttentionItem>> GetAttentionAsync(
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class DashboardSummary
 {
-    public string ControlPlaneVersion { get; set; } = "1.3.3";
+    public string ControlPlaneVersion { get; set; } = "1.3.5";
     public string Hostname { get; set; } = string.Empty;
     public string PublicUrl { get; set; } = string.Empty;
     public int LocalPort { get; set; } = 8443;

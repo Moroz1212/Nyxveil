@@ -12,13 +12,46 @@
     <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="9.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.11" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.UI" Version="10.0.11" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.11" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.11">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.11" />
+    <PackageReference Include="QRCoder" Version="1.6.0" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="9.0.3" />
   </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Nyxveil.ControlPlane.Updater\Nyxveil.ControlPlane.Updater.csproj"
+                      ReferenceOutputAssembly="false"
+                      Private="false"
+                      SetTargetFramework="TargetFramework=net10.0" />
+  </ItemGroup>
+
+  <Target Name="PublishUpdaterWithWeb" AfterTargets="Publish">
+    <MSBuild Projects="..\Nyxveil.ControlPlane.Updater\Nyxveil.ControlPlane.Updater.csproj"
+             Targets="Publish"
+             Properties="Configuration=$(Configuration);PublishDir=$(PublishDir)updater\" />
+    <!-- Self-update apply must live under InstallDir/scripts after production-deploy copies PublishDir. -->
+    <MakeDir Directories="$(PublishDir)scripts" />
+    <Copy SourceFiles="..\..\scripts\self-update-apply.ps1"
+          DestinationFolder="$(PublishDir)scripts"
+          SkipUnchangedFiles="true"
+          Condition="Exists('..\..\scripts\self-update-apply.ps1')" />
+    <Copy SourceFiles="..\..\scripts\Nyxveil.ControlPlane.Deploy.psm1"
+          DestinationFolder="$(PublishDir)scripts"
+          SkipUnchangedFiles="true"
+          Condition="Exists('..\..\scripts\Nyxveil.ControlPlane.Deploy.psm1')" />
+    <Copy SourceFiles="..\..\scripts\backup-db.ps1"
+          DestinationFolder="$(PublishDir)scripts"
+          SkipUnchangedFiles="true"
+          Condition="Exists('..\..\scripts\backup-db.ps1')" />
+    <Copy SourceFiles="..\..\VERSION"
+          DestinationFolder="$(PublishDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('..\..\VERSION')" />
+  </Target>
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>

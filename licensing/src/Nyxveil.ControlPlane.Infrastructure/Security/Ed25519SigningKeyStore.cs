@@ -4,6 +4,7 @@ using Nyxveil.ControlPlane.Application.Abstractions;
 using Nyxveil.ControlPlane.Application.Contracts.V1;
 using Nyxveil.ControlPlane.Application.Exceptions;
 using Nyxveil.ControlPlane.Application.Options;
+using Nyxveil.ControlPlane.Application.Security;
 using Nyxveil.ControlPlane.Domain.Entities;
 using Nyxveil.ControlPlane.Domain.Enums;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
@@ -29,19 +30,22 @@ public sealed class Ed25519SigningKeyStore : ISigningKeyService
     private readonly IClock _clock;
     private readonly SigningKeyRotationOptions _rotation;
     private readonly TicketOptions _tickets;
+    private readonly ICriticalOperationAuthorizer _criticalOps;
 
     public Ed25519SigningKeyStore(
         IServiceScopeFactory scopeFactory,
         IDataProtectionProvider dataProtection,
         IClock clock,
         IOptions<SigningKeyRotationOptions>? rotation = null,
-        IOptions<TicketOptions>? tickets = null)
+        IOptions<TicketOptions>? tickets = null,
+        ICriticalOperationAuthorizer? criticalOps = null)
     {
         _scopeFactory = scopeFactory;
         _protector = dataProtection.CreateProtector(DataProtectionPurpose);
         _clock = clock;
         _rotation = rotation?.Value ?? new SigningKeyRotationOptions();
         _tickets = tickets?.Value ?? new TicketOptions();
+        _criticalOps = criticalOps ?? AllowAllCriticalOperationAuthorizer.Instance;
     }
 
     public async Task<SigningMaterialDto> GetCurrentSigningMaterialAsync(CancellationToken cancellationToken = default)
@@ -73,6 +77,7 @@ public sealed class Ed25519SigningKeyStore : ISigningKeyService
 
     public async Task<RotateSigningKeyResult> RotateAsync(CancellationToken cancellationToken = default)
     {
+        _criticalOps.AssertAllowed(CriticalOperation.SigningKeyMutate);
         _rotation.EnsureGraceSafe(TimeSpan.FromMinutes(Math.Max(1, _tickets.TtlMinutes)));
 
         using var scope = _scopeFactory.CreateScope();

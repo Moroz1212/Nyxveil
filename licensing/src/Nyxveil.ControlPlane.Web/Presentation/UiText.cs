@@ -1,5 +1,7 @@
 using System.Globalization;
 using Microsoft.AspNetCore.Identity;
+using Nyxveil.ControlPlane.Application.Common;
+using Nyxveil.ControlPlane.Application.Contracts.V1;
 using Nyxveil.ControlPlane.Domain.Enums;
 
 namespace Nyxveil.ControlPlane.Web.Presentation;
@@ -27,6 +29,7 @@ public static class UiText
         "expiring" => "Скоро истекает",
         "maintenance" => "Обслуживание",
         "draining" => "Завершение сеансов",
+        "recovering" => "Восстановление после обновления",
         "exhausted" => "Лимит исчерпан",
         "current" => "Текущий",
         "next" => "Следующий",
@@ -90,5 +93,96 @@ public static class UiText
         "cannot enable revoked license" => "Нельзя включить отозванную лицензию.",
         _ when message.StartsWith("location not found: ", StringComparison.Ordinal) => "Локация не найдена: " + message[20..],
         _ => "Не удалось выполнить действие. Проверьте введённые данные."
+    };
+
+    public static string CommandType(NodeCommandType type) => type switch
+    {
+        NodeCommandType.UpdateNodeLatest => "Обновление",
+        NodeCommandType.RenewCertificate => "Обновление сертификата",
+        NodeCommandType.RestartNyxveilService => "Перезапуск службы",
+        NodeCommandType.RebootHost => "Перезагрузка ОС",
+        _ => type.ToString()
+    };
+
+    public static string ResultCode(string? code) => string.IsNullOrWhiteSpace(code) ? "—" : code.Trim().ToLowerInvariant() switch
+    {
+        "updated_healthy" => "Обновлено, сервер здоров",
+        "already_current" => "Уже актуальная версия",
+        "ahead" => "Версия новее целевой",
+        "rolled_back_healthy" => "Откат выполнен, сервер здоров",
+        "no_mutation_failed" => "Без изменений (ошибка до обновления)",
+        "target_missing" => "Целевой выпуск недоступен",
+        "expired_outcome_unknown" => "Неопределённый результат (истекло)",
+        "outcome_unknown" => "Неопределённый результат",
+        "rollback_failed" => "Откат не удался",
+        "expired_no_mutation" => "Истекло без изменений",
+        "expired" => "Истекло",
+        "location_safety" => "Заблокировано правилом локации",
+        "failed_unhealthy_drained" => "Ошибка после drain",
+        "health_failed" => "Проверка здоровья не пройдена",
+        "version_not_confirmed" => "Версия не подтверждена",
+        _ => code
+    };
+
+    public static string UnknownOutcome() => "Неопределённый результат";
+
+    public static string Freshness(DataFreshness freshness) => freshness switch
+    {
+        DataFreshness.Fresh => "Свежие данные",
+        DataFreshness.Warning => "Данные устаревают",
+        DataFreshness.Stale => "Данные устарели",
+        _ => "Нет данных о свежести"
+    };
+
+    public static string RuntimeFlag(RuntimeFlagState state) => RuntimeHealthPresentation.FlagLabelRu(state);
+
+    public static string OperatorMode(OperatorNodeMode mode) => RuntimeHealthPresentation.ModeLabelRu(mode);
+
+    public static string Lifecycle(NodeLifecycleState state) => state switch
+    {
+        NodeLifecycleState.Active => "Активен",
+        NodeLifecycleState.Revoked => "Отозван",
+        NodeLifecycleState.Deleted => "Удалён",
+        _ => state.ToString()
+    };
+
+    public static string SeverityLabel(AttentionSeverity severity) => severity switch
+    {
+        AttentionSeverity.Critical => "Критично",
+        AttentionSeverity.Warning => "Внимание",
+        AttentionSeverity.Info => "Информация",
+        _ => severity.ToString()
+    };
+
+    public static string AuditAction(string? action) => string.IsNullOrWhiteSpace(action) ? "—" : action.Trim() switch
+    {
+        "location.created" => "Создание локации",
+        "location.deleted" => "Удаление локации",
+        "location.rollout.start" => "Запуск обновления локации",
+        "license.create" => "Создание лицензии",
+        "node.command.enqueue" => "Постановка команды",
+        "node.command.complete" => "Завершение команды",
+        "node.command.update.drain" => "Drain перед обновлением",
+        "node.command.update.restore_admin_state" => "Восстановление admin state",
+        "node.command.update.reconcile" => "Разрешение неопределённого результата",
+        "node.spki.updated" => "Обновление SPKI",
+        _ => action
+    };
+
+    public static string TimelineEvent(string id) => id.ToLowerInvariant() switch
+    {
+        "created" => "Создана",
+        "issued" => "Выдана",
+        "draining" or "drain" => "Drain",
+        "claimed" => "Получена node",
+        "started" or "start" => "Старт обновления",
+        "terminal" or "completed" or "complete" => "Завершена",
+        "restored" => "Admin state восстановлен",
+        "progress" => "Прогресс",
+        "update_start" => "UPDATE START",
+        "update_drain" => "DRAIN",
+        "update_completed" => "COMPLETED",
+        "update_failed" => "FAILED",
+        _ => id
     };
 }

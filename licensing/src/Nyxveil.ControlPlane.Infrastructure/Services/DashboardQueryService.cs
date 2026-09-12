@@ -3,7 +3,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Nyxveil.ControlPlane.Application.Abstractions;
 using Nyxveil.ControlPlane.Application.Common;
+using Nyxveil.ControlPlane.Application.Contracts.V1;
 using Nyxveil.ControlPlane.Application.Options;
+using Nyxveil.ControlPlane.Domain.Entities;
 using Nyxveil.ControlPlane.Domain.Enums;
 using Nyxveil.ControlPlane.Infrastructure.Hosting.TlsConfigure;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
@@ -83,19 +85,20 @@ public sealed class DashboardQueryService : IDashboardQueryService
             OfflineNodes = nodes.Count(n => n.LifecycleState == NodeLifecycleState.Active && n.Status == NodeRuntimeStatus.Offline),
             OnlineNodes = nodes.Count(n => n.LifecycleState == NodeLifecycleState.Active &&
                 (n.Status == NodeRuntimeStatus.Healthy || n.Status == NodeRuntimeStatus.Degraded)),
-            TotalNodes = nodes.Count,
-            DisabledNodes = nodes.Count(n => !n.Enabled),
-            DrainingNodes = nodes.Count(n => n.Draining),
-            MaintenanceNodes = configs.Count(c => c.MaintenanceMode),
+            TotalNodes = active.Count,
+            DisabledNodes = active.Count(n => !n.Enabled),
+            DrainingNodes = active.Count(n => n.Draining),
+            MaintenanceNodes = configs.Count(c =>
+                c.MaintenanceMode && active.Any(n => n.NodeId == c.NodeId)),
             DeletedNodes = nodes.Count(n => n.LifecycleState == NodeLifecycleState.Deleted),
             RevokedNodes = nodes.Count(n => n.LifecycleState == NodeLifecycleState.Revoked),
-            CertificatesExpiring = nodes.Count(n =>
+            CertificatesExpiring = active.Count(n =>
                 CertificateExpiry.Evaluate(n.CertNotAfter, now, _expiry) is
                     CertificateHealthStatus.ExpiringSoon or CertificateHealthStatus.Critical),
-            CertificatesExpired = nodes.Count(n =>
+            CertificatesExpired = active.Count(n =>
                 CertificateExpiry.Evaluate(n.CertNotAfter, now, _expiry) == CertificateHealthStatus.Expired),
-            StaleHeartbeatNodes = nodes.Count(n =>
-                n.LifecycleState == NodeLifecycleState.Active && (n.LastSeenAt == null || n.LastSeenAt < now.AddMinutes(-5))),
+            StaleHeartbeatNodes = active.Count(n =>
+                n.LastSeenAt == null || n.LastSeenAt < now.AddMinutes(-5)),
             OutdatedVersionNodes = updateAvailable + unsupported,
             UpdateAvailableNodes = updateAvailable,
             UnsupportedVersionNodes = unsupported,
@@ -138,6 +141,215 @@ public sealed class DashboardQueryService : IDashboardQueryService
         return summary;
     }
 
+    public async Task<IReadOnlyList<AttentionItem>> GetAttentionAsync(CancellationToken cancellationToken = default)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var now = _clock.UtcNow;
+        var heartbeat = new NodeHeartbeatOptions();
+        var release = await _releases.GetLatestAsync(cancellationToken).ConfigureAwait(false);
+        var latest = release.LatestVersion;
+        var minSupported = _releasePolicy.MinimumSupportedVersion;
+
+        var nodes = await db.Nodes.AsNoTracking()
+            .Where(n => n.LifecycleState != NodeLifecycleState.Deleted)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var health = await db.NodeHealth.AsNoTracking().ToDictionaryAsync(h => h.NodeId, cancellationToken)
+            .ConfigureAwait(false);
+        var configs = await db.NodeConfigs.AsNoTracking().ToDictionaryAsync(c => c.NodeId, cancellationToken)
+            .ConfigureAwait(false);
+
+        var unknownCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "expired_outcome_unknown", "outcome_unknown", "rollback_failed"
+        };
+        var problemCommands = await db.NodeCommands.AsNoTracking()
+            .Where(c => c.CompletedAt != null
+                        && c.CompletedAt > now.AddDays(-7)
+                        && c.ResultCode != null
+                        && (c.Status == NodeCommandStatus.Failed
+                            || c.Status == NodeCommandStatus.Expired
+                            || unknownCodes.Contains(c.ResultCode)))
+            .OrderByDescending(c => c.CompletedAt)
+            .Take(50)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+        var items = new List<AttentionItem>();
+        string Name(Node n) => string.IsNullOrWhiteSpace(n.DisplayName) ? n.NodeId : n.DisplayName;
+
+        foreach (var n in nodes.Where(n => n.LifecycleState == NodeLifecycleState.Active))
+        {
+            var h = health.GetValueOrDefault(n.NodeId);
+            var cfg = configs.GetValueOrDefault(n.NodeId);
+            var age = NodeFreshness.Age(n.LastSeenAt ?? h?.UpdatedAt, now);
+            var ageText = NodeFreshness.FormatAgeRu(age);
+            var href = $"/admin/nodes/{Uri.EscapeDataString(n.NodeId)}";
+
+            if (n.Status == NodeRuntimeStatus.Offline || NodeFreshness.Evaluate(n.LastSeenAt, now, heartbeat) == DataFreshness.Stale)
+            {
+                items.Add(new AttentionItem
+                {
+                    Severity = AttentionSeverity.Critical,
+                    Title = "Сервер не в сети",
+                    Detail = "Нет свежего heartbeat.",
+                    NodeId = n.NodeId,
+                    NodeName = Name(n),
+                    LocationId = n.LocationId,
+                    AgeText = ageText,
+                    Href = href,
+                    Kind = "offline"
+                });
+            }
+            else if (n.Status == NodeRuntimeStatus.Degraded)
+            {
+                items.Add(new AttentionItem
+                {
+                    Severity = AttentionSeverity.Warning,
+                    Title = "Ограниченная работа",
+                    Detail = "Статус Degraded.",
+                    NodeId = n.NodeId,
+                    NodeName = Name(n),
+                    LocationId = n.LocationId,
+                    AgeText = ageText,
+                    Href = href,
+                    Kind = "degraded"
+                });
+            }
+
+            if (h?.TlsOk == false)
+                items.Add(MakeRuntime(n, Name(n), ageText, href, "TLS runtime FAIL", AttentionSeverity.Critical, "tls"));
+            if (h?.QuicOk == false)
+                items.Add(MakeRuntime(n, Name(n), ageText, href, "QUIC runtime FAIL", AttentionSeverity.Critical, "quic"));
+            if (h?.TunReady == false)
+                items.Add(MakeRuntime(n, Name(n), ageText, href, "TUN FAIL", AttentionSeverity.Critical, "tun"));
+            if (h?.CpConnected == false)
+                items.Add(MakeRuntime(n, Name(n), ageText, href, "Нет связи с Control Plane", AttentionSeverity.Critical, "cp"));
+
+            var cert = CertificateExpiry.Evaluate(n.CertNotAfter, now, _expiry);
+            if (cert == CertificateHealthStatus.Expired)
+            {
+                items.Add(new AttentionItem
+                {
+                    Severity = AttentionSeverity.Critical,
+                    Title = "Сертификат истёк",
+                    Detail = "Требуется обновление TLS-сертификата.",
+                    NodeId = n.NodeId,
+                    NodeName = Name(n),
+                    LocationId = n.LocationId,
+                    AgeText = ageText,
+                    Href = "/admin/infrastructure",
+                    Kind = "cert_expired"
+                });
+            }
+            else if (cert is CertificateHealthStatus.Critical or CertificateHealthStatus.ExpiringSoon)
+            {
+                items.Add(new AttentionItem
+                {
+                    Severity = AttentionSeverity.Warning,
+                    Title = "Сертификат скоро истечёт",
+                    Detail = $"Осталось дней: {CertificateExpiry.DaysRemaining(n.CertNotAfter, now)?.ToString() ?? "—"}",
+                    NodeId = n.NodeId,
+                    NodeName = Name(n),
+                    LocationId = n.LocationId,
+                    AgeText = ageText,
+                    Href = "/admin/infrastructure",
+                    Kind = "cert_expiring"
+                });
+            }
+
+            var installed = NodeVersionEvaluator.EffectiveInstalledVersion(n.ReportedServerVersion, n.ServerVersion);
+            var ver = NodeVersionEvaluator.Evaluate(installed, latest, minSupported);
+            if (ver == NodeVersionStatus.Unsupported)
+            {
+                items.Add(new AttentionItem
+                {
+                    Severity = AttentionSeverity.Critical,
+                    Title = "Неподдерживаемая версия",
+                    Detail = $"Установлено: {installed ?? "—"}",
+                    NodeId = n.NodeId,
+                    NodeName = Name(n),
+                    LocationId = n.LocationId,
+                    AgeText = ageText,
+                    Href = href,
+                    Kind = "unsupported"
+                });
+            }
+            else if (ver == NodeVersionStatus.UpdateAvailable)
+            {
+                items.Add(new AttentionItem
+                {
+                    Severity = AttentionSeverity.Info,
+                    Title = "Доступно обновление",
+                    Detail = $"{installed} → {latest}",
+                    NodeId = n.NodeId,
+                    NodeName = Name(n),
+                    LocationId = n.LocationId,
+                    AgeText = ageText,
+                    Href = href,
+                    Kind = "update"
+                });
+            }
+
+            if (n.Draining && cfg?.MaintenanceMode != true)
+            {
+                items.Add(new AttentionItem
+                {
+                    Severity = AttentionSeverity.Info,
+                    Title = "Завершение сеансов (Drain)",
+                    Detail = "Сервер не принимает новые подключения.",
+                    NodeId = n.NodeId,
+                    NodeName = Name(n),
+                    LocationId = n.LocationId,
+                    AgeText = ageText,
+                    Href = href,
+                    Kind = "draining"
+                });
+            }
+        }
+
+        var visibleNodeIds = nodes.Select(n => n.NodeId).ToHashSet(StringComparer.Ordinal);
+        foreach (var c in problemCommands.Where(c => visibleNodeIds.Contains(c.NodeId)))
+        {
+            var n = nodes.First(x => x.NodeId == c.NodeId);
+            var sev = unknownCodes.Contains(c.ResultCode ?? "")
+                ? AttentionSeverity.Critical
+                : AttentionSeverity.Warning;
+            items.Add(new AttentionItem
+            {
+                Severity = sev,
+                Title = unknownCodes.Contains(c.ResultCode ?? "")
+                    ? "Неопределённый результат обновления"
+                    : "Операция завершилась с ошибкой",
+                Detail = $"{c.Type}: {c.ResultCode}",
+                NodeId = c.NodeId,
+                NodeName = Name(n),
+                LocationId = n.LocationId,
+                AgeText = NodeFreshness.FormatAgeRu(c.CompletedAt is null ? null : now - c.CompletedAt.Value),
+                Href = "/admin/operations",
+                Kind = "command"
+            });
+        }
+
+        return items
+            .OrderByDescending(i => i.Severity)
+            .ThenBy(i => i.NodeName)
+            .Take(100)
+            .ToList();
+    }
+
+    private static AttentionItem MakeRuntime(Node n, string name, string ageText, string href, string title,
+        AttentionSeverity severity, string kind) => new()
+    {
+        Severity = severity,
+        Title = title,
+        Detail = "По данным последнего health-отчёта.",
+        NodeId = n.NodeId,
+        NodeName = name,
+        LocationId = n.LocationId,
+        AgeText = ageText,
+        Href = href,
+        Kind = kind
+    };
+
     private string ReadControlPlaneVersion()
     {
         try
@@ -157,7 +369,7 @@ public sealed class DashboardQueryService : IDashboardQueryService
         {
         }
 
-        return "1.3.3";
+        return "1.3.5";
     }
 
     private void TryPopulateControlPlaneCertificate(DashboardSummary summary, DateTime now)

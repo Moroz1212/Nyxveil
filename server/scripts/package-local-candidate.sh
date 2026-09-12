@@ -9,11 +9,11 @@ mkdir -p "${STAGE}"
 cp -a dist/release/. "${STAGE}/"
 cp scripts/run-local-candidate-gate.sh "${STAGE}/run-local-candidate-gate.sh"
 cat >"${STAGE}/LOCAL-CANDIDATE.txt" <<'EOF'
-Nyxveil Server 1.1.13 — LOCAL candidate, not a GitHub Release.
+Nyxveil Server 1.1.14 — LOCAL candidate, not a GitHub Release.
 Only for a clean disposable Ubuntu 24.04 host with systemd PID1 and /dev/net/tun.
 Required tools: bash, coreutils, util-linux, curl, jq, openssl, nftables,
 libcap2-bin, python3, iproute2, ca-certificates. Public DNS must point to the host;
-TCP 80/443 and UDP 443 must be reachable. Use an existing Control Plane 1.3.2
+TCP 80/443 and UDP 443 must be reachable. Use an existing Control Plane 1.3.3
 and a NEW bootstrap token. Nothing is sent or provisioned by this bundle alone.
 
 Verify the outer archive SHA256 against the local report before extracting.

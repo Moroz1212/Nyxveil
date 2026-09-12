@@ -1,0 +1,25 @@
+@namespace Nyxveil.ControlPlane.Web.Components.Shared
+@using Nyxveil.ControlPlane.Application.Common
+
+<span class="health-dot health-@Css" title="@Title" aria-label="@Title"></span>
+
+@code {
+    [Parameter] public RuntimeFlagState State { get; set; } = RuntimeFlagState.Unknown;
+    [Parameter] public string? Label { get; set; }
+
+    private string Css => State switch
+    {
+        RuntimeFlagState.Ok => "ok",
+        RuntimeFlagState.Fail => "fail",
+        _ => "unknown"
+    };
+
+    private string Title
+    {
+        get
+        {
+            var flag = UiText.RuntimeFlag(State);
+            return string.IsNullOrWhiteSpace(Label) ? flag : $"{Label}: {flag}";
+        }
+    }
+}

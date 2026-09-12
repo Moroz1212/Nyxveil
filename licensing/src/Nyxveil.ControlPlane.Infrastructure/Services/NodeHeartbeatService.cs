@@ -16,11 +16,13 @@ public sealed class NodeHeartbeatService : INodeHeartbeatService
 {
     private readonly ControlPlaneDbContext _db;
     private readonly IClock _clock;
+    private readonly IAdminRealtimeNotifier _realtime;
 
-    public NodeHeartbeatService(ControlPlaneDbContext db, IClock clock)
+    public NodeHeartbeatService(ControlPlaneDbContext db, IClock clock, IAdminRealtimeNotifier? realtime = null)
     {
         _db = db;
         _clock = clock;
+        _realtime = realtime ?? new NullAdminRealtimeNotifier();
     }
 
     public async Task<NodeHeartbeatResponse> ProcessHeartbeatAsync(
@@ -121,6 +123,7 @@ public sealed class NodeHeartbeatService : INodeHeartbeatService
         });
 
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await _realtime.NotifyNodeAsync(node.NodeId, cancellationToken).ConfigureAwait(false);
 
         var configVersion = cfg?.ConfigVersion ?? node.ConfigVersion;
         return new NodeHeartbeatResponse

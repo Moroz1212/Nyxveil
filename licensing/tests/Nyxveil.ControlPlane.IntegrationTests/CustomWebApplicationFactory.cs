@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Nyxveil.ControlPlane.Application.Security;
 using Nyxveil.ControlPlane.Infrastructure.Persistence;
 
 namespace Nyxveil.ControlPlane.IntegrationTests;
@@ -45,6 +46,11 @@ public sealed class CustomWebApplicationFactory : WebApplicationFactory<Program>
             {
                 options.Cookie.SecurePolicy = Microsoft.AspNetCore.Http.CookieSecurePolicy.SameAsRequest;
             });
+
+            // Integration host exercises APIs/UI without interactive MFA step-up cookies.
+            // Dedicated unit tests cover HttpCriticalOperationAuthorizer enforcement.
+            services.RemoveAll<ICriticalOperationAuthorizer>();
+            services.AddSingleton<ICriticalOperationAuthorizer, AllowAllCriticalOperationAuthorizer>();
         });
     }
 

@@ -1,0 +1,24 @@
+@namespace Nyxveil.ControlPlane.Web.Components.Shared
+
+@if (Steps.Count > 0)
+{
+    <ol class="update-timeline">
+        @foreach (var step in Steps)
+        {
+            <li class="@(step.Current ? "current" : "") @(step.Reached ? "reached" : "pending")">
+                <div class="tl-title">@step.Title</div>
+                <div class="muted">
+                    @(step.AtUtc?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") ?? (step.Reached ? "—" : "ожидание"))
+                    @if (!string.IsNullOrWhiteSpace(step.Message))
+                    {
+                        <text> · @step.Message</text>
+                    }
+                </div>
+            </li>
+        }
+    </ol>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<UpdateTimelineStep> Steps { get; set; } = Array.Empty<UpdateTimelineStep>();
+}

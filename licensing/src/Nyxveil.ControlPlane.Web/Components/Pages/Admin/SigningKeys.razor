@@ -3,6 +3,7 @@
 @rendermode InteractiveServer
 @inject IServiceScopeFactory Scopes
 @inject AuthenticationStateProvider AuthState
+@inject IHttpContextAccessor HttpContextAccessor
 
 <div class="page-header">
     <div>
@@ -16,6 +17,14 @@
         Безопасно сменить ключ
     </button>
 </div>
+
+@if (_stepUpNeeded)
+{
+    <div class="alert alert-warn">
+        Для ротации ключей нужна повторная проверка MFA.
+        <a href="/account/mfa/step-up?returnUrl=%2Fadmin%2Fsigning-keys">Повысить привилегии</a>
+    </div>
+}
 
 @if (!string.IsNullOrEmpty(_info))
 {
@@ -85,9 +94,23 @@
     private bool _confirm;
     private bool _busy;
     private bool _canRotate;
+    private bool _stepUpNeeded;
     private string _confirmMessage = "";
     private string? _error;
     private string? _info;
+
+    private bool EnsureStepUp()
+    {
+        if (!StepUpGuard.RequiresStepUp(HttpContextAccessor.HttpContext))
+        {
+            _stepUpNeeded = false;
+            return true;
+        }
+
+        _stepUpNeeded = true;
+        _error = "Требуется повторная проверка MFA (step-up).";
+        return false;
+    }
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
@@ -118,6 +141,7 @@
     private async Task RotateAsync()
     {
         if (_busy) return;
+        if (!EnsureStepUp()) return;
         _busy = true;
         _error = null;
         try

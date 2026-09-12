@@ -4,10 +4,16 @@
 @inject IServiceScopeFactory Scopes
 @inject AuthenticationStateProvider AuthState
 @inject NavigationManager Nav
+@inject IClock Clock
+@inject IHttpContextAccessor HttpContextAccessor
 
-@if (_node is null)
+@if (_notFound)
 {
     <p class="muted">Сервер не найден.</p>
+}
+else if (_node is null)
+{
+    <p class="muted">Загрузка…</p>
 }
 else
 {
@@ -15,6 +21,7 @@ else
         <div>
             <h1>@_node.DisplayName</h1>
             <div class="sub mono">@_node.NodeId · @_node.LocationId</div>
+            <div class="sub">@UiText.OperatorMode(_mode) · <span class="freshness-hint">@_freshnessLabel</span></div>
         </div>
         <div class="actions">
             <button class="btn btn-ghost" disabled="@_busy" @onclick="LoadAsync">Обновить статус</button>
@@ -27,103 +34,68 @@ else
     {
         <div class="alert alert-error" role="alert">@_error</div>
     }
+    @if (_stepUpNeeded)
+    {
+        <div class="alert alert-warn" role="status">
+            Для этой операции нужна повторная проверка MFA.
+            <a href="@StepUpUrl">Подтвердить код аутентификатора</a>
+        </div>
+    }
     @if (!string.IsNullOrEmpty(_cmdInfo))
     {
         <div class="alert" role="status">@_cmdInfo</div>
     }
+    @if (_mode == OperatorNodeMode.Recovering)
+    {
+        <div class="alert alert-warn mode-recovering">Восстановление после обновления: runtime-флаги ещё не стабилизировались.</div>
+    }
+
     <nav class="section-nav" aria-label="Разделы сервера">
-        <a href="#node-management">Обновление и TLS</a>
-        <a href="#node-history">История операций</a>
-        <a href="#node-config">Конфигурация</a>
-        <a href="#node-endpoints">Адреса подключения</a>
+        <a href="#sec-a">Обзор</a>
+        <a href="#sec-b">Runtime</a>
+        <a href="#sec-c">Сертификат</a>
+        <a href="#sec-d">Версия</a>
+        <a href="#sec-e">Управление</a>
+        <a href="#sec-f">Адреса</a>
+        <a href="#sec-g">История</a>
+        <a href="#sec-h">Опасная зона</a>
     </nav>
 
-    <div class="stats-grid">
-        <div class="stat"><div class="label">Состояние</div><div class="value" style="font-size:1.1rem"><StatusBadge Status="@_node.Status.ToString()" /></div></div>
+    @* A. Overview *@
+    <div class="stats-grid" id="sec-a">
+        <div class="stat"><div class="label">Режим</div><div class="value" style="font-size:1.05rem">@UiText.OperatorMode(_mode)</div></div>
         <div class="stat"><div class="label">Сеансы</div><div class="value">@_node.CurrentSessions / @(_cfg?.Capacity ?? _node.Capacity)</div></div>
         <div class="stat"><div class="label">Версия конфигурации</div><div class="value" style="font-size:1rem">v@(_cfg?.ConfigVersion ?? _node.ConfigVersion)</div></div>
         <div class="stat"><div class="label">CPU</div><div class="value">@(_health?.CpuPercent.ToString("0.0", UiText.Culture) ?? "—")%</div></div>
-        <div class="stat"><div class="label">Жизненный цикл</div><div class="value" style="font-size:1rem">@_node.LifecycleState</div></div>
+        <div class="stat"><div class="label">Жизненный цикл</div><div class="value" style="font-size:1rem">@UiText.Lifecycle(_node.LifecycleState)</div></div>
     </div>
 
-    @if (_cfg is not null)
-    {
-        <div class="panel" id="node-config">
-            <h3>Настройки сервера</h3>
-            <p class="muted">
-                Включён=@(_cfg.Enabled ? "да" : "нет") ·
-                Завершение сеансов=@(_cfg.Draining ? "да" : "нет") ·
-                Обслуживание=@(_cfg.MaintenanceMode ? "да" : "нет") ·
-                Тестовый=@(_node.TestOnly ? "да" : "нет") ·
-                Лимит=@_cfg.Capacity
-            </p>
+    @* B. Runtime health *@
+    <div class="panel" id="sec-b">
+        <h3>Runtime</h3>
+        <p class="muted">Только флаги здоровья среды. Срок сертификата сюда не входит.</p>
+        <div class="health-matrix" style="justify-content:flex-start; gap:1rem; margin:.75rem 0">
+            <div class="col"><span>TUN</span><HealthDot State="@RuntimeHealthPresentation.FromNullable(_health?.TunReady)" Label="TUN" /></div>
+            <div class="col"><span>TLS</span><HealthDot State="@RuntimeHealthPresentation.FromNullable(_health?.TlsOk)" Label="TLS runtime" /></div>
+            <div class="col"><span>QUIC</span><HealthDot State="@RuntimeHealthPresentation.FromNullable(_health?.QuicOk)" Label="QUIC" /></div>
+            <div class="col"><span>BRG</span><HealthDot State="@RuntimeHealthPresentation.FromNullable(_health?.BridgeOk)" Label="Bridge" /></div>
+            <div class="col"><span>TKEY</span><HealthDot State="@RuntimeHealthPresentation.FromNullable(_health?.TicketKeysLoaded)" Label="Ticket keys" /></div>
+            <div class="col"><span>CP</span><HealthDot State="@RuntimeHealthPresentation.FromNullable(_health?.CpConnected)" Label="CP" /></div>
         </div>
-    }
-
-    <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
-        <div class="panel actions">
-            <button class="btn btn-ghost" @onclick="() => SetEnabledAsync(!(_cfg?.Enabled ?? true))" disabled="@_busy">@((_cfg?.Enabled ?? true) ? "Отключить" : "Включить")</button>
-            <button class="btn btn-ghost" @onclick="() => SetDrainingAsync(!(_cfg?.Draining ?? false))" disabled="@_busy">@((_cfg?.Draining ?? false) ? "Разрешить новые сеансы" : "Завершать текущие сеансы")</button>
-            <button class="btn btn-ghost" @onclick="() => SetTestOnlyAsync(!_node.TestOnly)" disabled="@_busy">@(_node.TestOnly ? "Снять тестовый режим" : "Включить тестовый режим")</button>
-            @if (_cfg?.MaintenanceMode == true)
-            {
-                <button class="btn btn-ghost" @onclick="ExitMaintenanceAsync" disabled="@_busy">Завершить обслуживание</button>
-            }
-            else
-            {
-                <button class="btn btn-danger" @onclick="() => _confirmMaint = true" disabled="@_busy">Начать обслуживание</button>
-            }
-            @if (_node.LifecycleState != NodeLifecycleState.Deleted)
-            {
-                <button class="btn btn-danger" @onclick="PrepareDeleteAsync" disabled="@_busy">Удалить сервер</button>
-            }
-        </div>
-        <div class="panel">
-            <h3>Лимит сеансов и локация</h3>
-            <div class="form-grid">
-                <label>Лимит одновременных сеансов
-                    <input type="number" min="0" @bind="_editCapacity" />
-                </label>
-                <label>Локация (идентификатор или код)
-                    <input @bind="_editLocation" />
-                </label>
-            </div>
-            <div class="actions" style="margin-top:.75rem">
-                <button class="btn" @onclick="SaveCapacityAsync" disabled="@_busy">Сохранить лимит</button>
-                <button class="btn btn-ghost" @onclick="ChangeLocationAsync" disabled="@_busy">Изменить локацию</button>
-            </div>
-            @if (!string.IsNullOrEmpty(_error))
-            {
-                <div class="alert alert-error" style="margin-top:.75rem">@_error</div>
-            }
-        </div>
-    </AuthorizeView>
-
-    <div class="panel" id="node-endpoints">
-        <h3>Идентификация и адреса подключения</h3>
-        <p class="mono muted">Открытый ключ идентификации: @Convert.ToHexString(_node.PublicIdentity)</p>
-        <p class="muted">Протокол @_node.ProtocolVersion · Версия сервера @(_node.ServerVersion ?? "—") · SPKI @(_node.SpkiPin is null ? "—" : Convert.ToHexString(_node.SpkiPin))</p>
-        <div class="table-wrap" style="margin-top:.75rem">
-            <table class="data">
-                <thead><tr><th>Адрес</th><th>Порт</th><th>Семейство адресов</th><th>Приоритет</th><th>Включено</th></tr></thead>
-                <tbody>
-                @foreach (var ep in _endpoints)
-                {
-                    <tr>
-                        <td>@ep.Host</td>
-                        <td>@ep.Port</td>
-                        <td>@ep.AddressFamily</td>
-                        <td>@ep.Priority</td>
-                        <td>@(ep.Enabled ? "да" : "нет")</td>
-                    </tr>
-                }
-                </tbody>
-            </table>
-        </div>
+        <p class="muted">
+            TUN=@UiText.RuntimeFlag(RuntimeHealthPresentation.FromNullable(_health?.TunReady)) ·
+            TLS=@UiText.RuntimeFlag(RuntimeHealthPresentation.FromNullable(_health?.TlsOk)) ·
+            QUIC=@UiText.RuntimeFlag(RuntimeHealthPresentation.FromNullable(_health?.QuicOk)) ·
+            Bridge=@UiText.RuntimeFlag(RuntimeHealthPresentation.FromNullable(_health?.BridgeOk)) ·
+            Ticket keys=@UiText.RuntimeFlag(RuntimeHealthPresentation.FromNullable(_health?.TicketKeysLoaded)) ·
+            CP=@UiText.RuntimeFlag(RuntimeHealthPresentation.FromNullable(_health?.CpConnected))
+        </p>
+        <p class="muted">Remote management: @(_node.SupportsNodeCommands ? "поддерживается" : "не поддерживается этой версией node")</p>
     </div>
 
-    <div class="panel" id="node-management">
-        <h3>TLS и состояние среды</h3>
+    @* C. Certificate *@
+    <div class="panel" id="sec-c">
+        <h3>Сертификат TLS</h3>
         @{
             var certHealth = CertificateExpiry.Evaluate(_node.CertNotAfter, DateTime.UtcNow);
             var daysLeft = CertificateExpiry.DaysRemaining(_node.CertNotAfter, DateTime.UtcNow);
@@ -147,59 +119,124 @@ else
         {
             <div class="alert alert-error">Ошибка обновления сертификата: @_node.LastRenewalError</div>
         }
-        <p class="muted">TUN=@Flag(_health?.TunReady) · TLS=@Flag(_health?.TlsOk) · QUIC=@Flag(_health?.QuicOk) · Bridge=@Flag(_health?.BridgeOk) · Ticket keys=@Flag(_health?.TicketKeysLoaded) · CP=@Flag(_health?.CpConnected)</p>
-        <p class="muted">Remote management: @(_node.SupportsNodeCommands ? "поддерживается" : "не поддерживается этой версией node")</p>
-        @{
-            var installed = NodeVersionEvaluator.EffectiveInstalledVersion(_node.ReportedServerVersion, _node.ServerVersion);
-            var hasUpdateCap = NodeCommandCapabilities.Supports(_node, NodeCommandType.UpdateNodeLatest);
-        }
-        <div class="panel" style="margin-top:.75rem; box-shadow:none; border:0; padding:0">
-            <h3>Версия сервера</h3>
-            <p>Установлено: <strong>@(installed ?? "—")</strong></p>
-            <p class="muted">Последний отчёт: @(_node.VersionReportedAt?.ToString("dd.MM.yyyy HH:mm 'UTC'") ?? "—")</p>
-            <p class="muted">Актуальная: @(_latestVersion ?? "—") · GitHub: @(_latestTag ?? "—")</p>
-            <p>Статус: <strong>@NodeVersionEvaluator.DisplayRu(NodeVersionEvaluator.Evaluate(installed, _latestVersion, _minSupported))</strong></p>
-            <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
-                @if (hasUpdateCap && _node.SupportsNodeCommands)
-                {
-                    var st = NodeVersionEvaluator.Evaluate(installed, _latestVersion, _minSupported);
-                    @if (st is NodeVersionStatus.UpdateAvailable or NodeVersionStatus.Unsupported)
-                    {
-                        <button class="btn" disabled="@_busy" @onclick="PrepareUpdate">Обновить до @(_latestVersion ?? "latest")</button>
-                    }
-                    else if (st == NodeVersionStatus.Current)
-                    {
-                        <button class="btn" disabled="true">Актуальная версия</button>
-                    }
-                }
-                else if (_node.SupportsNodeCommands)
-                {
-                    <p class="muted">Удалённое обновление не поддерживается этой версией.</p>
-                }
-            </AuthorizeView>
-        </div>
         @if (_node.SupportsNodeCommands)
         {
             <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
                 <div class="actions" style="margin-top:.75rem">
                     <button class="btn" disabled="@(_busy || !NodeCommandCapabilities.Supports(_node, NodeCommandType.RenewCertificate))" @onclick="() => EnqueueAsync(NodeCommandType.RenewCertificate)">Обновить сертификат сейчас</button>
-                    <button class="btn btn-ghost" disabled="@(_busy || !NodeCommandCapabilities.Supports(_node, NodeCommandType.RestartNyxveilService))" @onclick="() => EnqueueAsync(NodeCommandType.RestartNyxveilService)">Перезапустить Nyxveil</button>
                 </div>
             </AuthorizeView>
-            <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
-                <div class="actions" style="margin-top:.5rem">
-                    <button class="btn btn-danger" disabled="@_busy" @onclick="PrepareReboot">Перезагрузить сервер</button>
-                </div>
-            </AuthorizeView>
-        }
-        @if (!string.IsNullOrEmpty(_cmdInfo))
-        {
-            <p class="muted" style="margin-top:.5rem">@_cmdInfo</p>
         }
     </div>
 
-    <div class="panel" id="node-history">
-        <h3>Последние команды</h3>
+    @* D. Version / update *@
+    <div class="panel" id="sec-d">
+        <h3>Версия сервера</h3>
+        @{
+            var installed = NodeVersionEvaluator.EffectiveInstalledVersion(_node.ReportedServerVersion, _node.ServerVersion);
+            var hasUpdateCap = NodeCommandCapabilities.Supports(_node, NodeCommandType.UpdateNodeLatest);
+        }
+        <p>Установлено: <strong>@(installed ?? "—")</strong></p>
+        <p class="muted">Последний отчёт: @(_node.VersionReportedAt?.ToString("dd.MM.yyyy HH:mm 'UTC'") ?? "—")</p>
+        <p class="muted">Актуальная: @(_latestVersion ?? "—") · GitHub: @(_latestTag ?? "—")</p>
+        <p>Статус: <strong>@NodeVersionEvaluator.DisplayRu(NodeVersionEvaluator.Evaluate(installed, _latestVersion, _minSupported))</strong></p>
+        <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
+            @if (hasUpdateCap && _node.SupportsNodeCommands)
+            {
+                var st = NodeVersionEvaluator.Evaluate(installed, _latestVersion, _minSupported);
+                @if (st is NodeVersionStatus.UpdateAvailable or NodeVersionStatus.Unsupported)
+                {
+                    <button class="btn" disabled="@_busy" @onclick="PrepareUpdateAsync">Обновить до @(_latestVersion ?? "latest")</button>
+                }
+                else if (st == NodeVersionStatus.Current)
+                {
+                    <button class="btn" disabled="true">Актуальная версия</button>
+                }
+            }
+            else if (_node.SupportsNodeCommands)
+            {
+                <p class="muted">Удалённое обновление не поддерживается этой версией.</p>
+            }
+        </AuthorizeView>
+        @if (_node.SupportsNodeCommands)
+        {
+            <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
+                <div class="actions" style="margin-top:.75rem">
+                    <button class="btn btn-ghost" disabled="@(_busy || !NodeCommandCapabilities.Supports(_node, NodeCommandType.RestartNyxveilService))" @onclick="() => EnqueueAsync(NodeCommandType.RestartNyxveilService)">Перезапустить Nyxveil</button>
+                </div>
+            </AuthorizeView>
+        }
+    </div>
+
+    @* E. Management / config *@
+    <div class="panel" id="sec-e">
+        <h3>Конфигурация и управление</h3>
+        @if (_cfg is not null)
+        {
+            <p class="muted">
+                Включён=@(_cfg.Enabled ? "да" : "нет") ·
+                Завершение сеансов=@(_cfg.Draining ? "да" : "нет") ·
+                Обслуживание=@(_cfg.MaintenanceMode ? "да" : "нет") ·
+                Тестовый=@(_node.TestOnly ? "да" : "нет") ·
+                Лимит=@_cfg.Capacity
+            </p>
+        }
+        <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
+            <div class="actions">
+                <button class="btn btn-ghost" @onclick="() => SetEnabledAsync(!(_cfg?.Enabled ?? true))" disabled="@_busy">@((_cfg?.Enabled ?? true) ? "Отключить" : "Включить")</button>
+                <button class="btn btn-ghost" @onclick="() => SetDrainingAsync(!(_cfg?.Draining ?? false))" disabled="@_busy">@((_cfg?.Draining ?? false) ? "Разрешить новые сеансы" : "Завершать текущие сеансы")</button>
+                <button class="btn btn-ghost" @onclick="() => SetTestOnlyAsync(!_node.TestOnly)" disabled="@_busy">@(_node.TestOnly ? "Снять тестовый режим" : "Включить тестовый режим")</button>
+                @if (_cfg?.MaintenanceMode == true)
+                {
+                    <button class="btn btn-ghost" @onclick="ExitMaintenanceAsync" disabled="@_busy">Завершить обслуживание</button>
+                }
+                else
+                {
+                    <button class="btn btn-danger" @onclick="() => _confirmMaint = true" disabled="@_busy">Начать обслуживание</button>
+                }
+            </div>
+            <div class="form-grid" style="margin-top:1rem">
+                <label>Лимит одновременных сеансов
+                    <input type="number" min="0" @bind="_editCapacity" />
+                </label>
+                <label>Локация (идентификатор или код)
+                    <input @bind="_editLocation" />
+                </label>
+            </div>
+            <div class="actions" style="margin-top:.75rem">
+                <button class="btn" @onclick="SaveCapacityAsync" disabled="@_busy">Сохранить лимит</button>
+                <button class="btn btn-ghost" @onclick="ChangeLocationAsync" disabled="@_busy">Изменить локацию</button>
+            </div>
+        </AuthorizeView>
+    </div>
+
+    @* F. Endpoints *@
+    <div class="panel" id="sec-f">
+        <h3>Идентификация и адреса подключения</h3>
+        <p class="mono muted">Открытый ключ идентификации: @Convert.ToHexString(_node.PublicIdentity)</p>
+        <p class="muted">Протокол @_node.ProtocolVersion · Версия сервера @(_node.ServerVersion ?? "—") · SPKI @(_node.SpkiPin is null ? "—" : Convert.ToHexString(_node.SpkiPin))</p>
+        <div class="table-wrap" style="margin-top:.75rem">
+            <table class="data">
+                <thead><tr><th>Адрес</th><th>Порт</th><th>Семейство адресов</th><th>Приоритет</th><th>Включено</th></tr></thead>
+                <tbody>
+                @foreach (var ep in _endpoints)
+                {
+                    <tr>
+                        <td>@ep.Host</td>
+                        <td>@ep.Port</td>
+                        <td>@ep.AddressFamily</td>
+                        <td>@ep.Priority</td>
+                        <td>@(ep.Enabled ? "да" : "нет")</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    @* G. History *@
+    <div class="panel" id="sec-g">
+        <h3>История операций</h3>
         <div class="table-wrap">
             <table class="data">
                 <thead>
@@ -217,10 +254,10 @@ else
                 {
                     <tr>
                         <td>@c.CreatedAt.ToString("dd.MM.yyyy HH:mm")</td>
-                        <td>@CommandLabel(c.Type)</td>
+                        <td>@UiText.CommandType(c.Type)</td>
                         <td>@c.CreatedBy</td>
                         <td><StatusBadge Status="@c.Status.ToString()" /> @c.ProgressPhase</td>
-                        <td class="muted">@c.PreviousVersion → @c.TargetVersion<br />@c.ResultCode<br />@(c.ResultMessage ?? c.ProgressMessage ?? "Ожидание выполнения")</td>
+                        <td class="muted">@c.PreviousVersion → @c.TargetVersion<br />@UiText.ResultCode(c.ResultCode)<br />@(c.ResultMessage ?? c.ProgressMessage ?? "Ожидание выполнения")</td>
                         <td>
                             <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
                                 @if (NodeCommandService.IsUnknownUpdateOutcomeEligible(c))
@@ -230,22 +267,17 @@ else
                             </AuthorizeView>
                         </td>
                     </tr>
+                    @if (c.Type == NodeCommandType.UpdateNodeLatest)
+                    {
+                        <tr>
+                            <td colspan="6"><UpdateTimeline Steps="@UpdateCommandTimeline.Build(c)" /></td>
+                        </tr>
+                    }
                 }
                 </tbody>
             </table>
         </div>
-    </div>
-
-    @if (_node.DeletedAt is not null)
-    {
-        <div class="panel">
-            <h3>Административное удаление</h3>
-            <p class="muted">@_node.DeletedAt?.ToString("dd.MM.yyyy HH:mm:ss 'UTC'") · @(_node.DeletedBy ?? "—") · @(_node.DeletionReason ?? "причина не указана")</p>
-        </div>
-    }
-
-    <div class="panel">
-        <h3>Последние метрики</h3>
+        <h3 style="margin-top:1.25rem">Последние метрики</h3>
         <div class="table-wrap">
             <table class="data">
                 <thead><tr><th>Время (UTC)</th><th>CPU</th><th>Память</th><th>Сеансы</th></tr></thead>
@@ -263,6 +295,26 @@ else
             </table>
         </div>
     </div>
+
+    @* H. Danger zone *@
+    <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove" Context="dangerAuth">
+        <div class="panel danger-zone" id="sec-h">
+            <h3>Опасная зона</h3>
+            <p class="muted">Удаление и перезагрузка требуют ввода подтверждения.</p>
+            <div class="actions">
+                @if (_node.LifecycleState != NodeLifecycleState.Deleted)
+                {
+                    <button class="btn btn-danger" @onclick="PrepareDeleteAsync" disabled="@_busy">Удалить сервер</button>
+                }
+                <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly" Context="rebootAuth">
+                    @if (_node.SupportsNodeCommands)
+                    {
+                        <button class="btn btn-danger" disabled="@_busy" @onclick="PrepareReboot">Перезагрузить сервер</button>
+                    }
+                </AuthorizeView>
+            </div>
+        </div>
+    </AuthorizeView>
 }
 
 <ConfirmDialog @bind-Visible="_confirmMaint"
@@ -276,17 +328,28 @@ else
                RequiredConfirmation="@DeleteConfirmation"
                ConfirmText="Удалить"
                OnConfirm="DeleteAsync" />
-<ConfirmDialog @bind-Visible="_confirmReboot"
-               Title="Перезагрузить сервер"
-               Message="@_rebootMessage"
-               RequiredConfirmation="@DeleteConfirmation"
-               ConfirmText="Перезагрузить"
-               OnConfirm="ConfirmRebootAsync" />
-<ConfirmDialog @bind-Visible="_confirmUpdate"
-               Title="Обновить сервер"
-               Message="@_updateMessage"
-               ConfirmText="Обновить"
-               OnConfirm="ConfirmUpdateAsync" />
+
+@if (_confirmReboot)
+{
+    <div class="modal-backdrop" @onclick="() => _confirmReboot = false">
+        <div class="modal" @onclick:stopPropagation="true">
+            <h3>Перезагрузить сервер</h3>
+            <p>@_rebootMessage</p>
+            <label>Введите имя сервера или <strong>REBOOT @DeleteConfirmation</strong>
+                <input @bind="_rebootTyped" autocomplete="off" />
+            </label>
+            <div class="actions">
+                <button type="button" class="btn btn-ghost" @onclick="() => _confirmReboot = false">Отмена</button>
+                <button type="button" class="btn btn-danger" disabled="@(!CanConfirmReboot)" @onclick="ConfirmRebootAsync">Перезагрузить</button>
+            </div>
+        </div>
+    </div>
+}
+
+<UpdatePreflightDialog @bind-Visible="_confirmUpdate"
+                       Result="_preflight"
+                       Busy="_busy"
+                       OnConfirm="ConfirmUpdateAsync" />
 
 @if (_reconcileVisible && _reconcilePreview is not null)
 {
@@ -338,15 +401,18 @@ else
     private List<NodeEndpoint> _endpoints = new();
     private List<NodeMetric> _metrics = new();
     private List<NodeCommand> _commands = new();
+    private bool _notFound;
     private bool _confirmMaint;
     private bool _confirmDelete;
     private bool _confirmReboot;
     private bool _confirmUpdate;
     private bool _reconcileVisible;
+    private bool _stepUpNeeded;
     private UnknownUpdateReconciliationPreview? _reconcilePreview;
+    private UpdatePreflightResult? _preflight;
     private string _reconcileReason = "";
     private string _rebootMessage = "";
-    private string _updateMessage = "";
+    private string _rebootTyped = "";
     private string? _latestVersion;
     private string? _latestTag;
     private string? _minSupported;
@@ -356,30 +422,74 @@ else
     private string _editLocation = "";
     private string? _error;
     private string? _cmdInfo;
+    private OperatorNodeMode _mode;
+    private string _freshnessLabel = "";
     private string DeleteConfirmation => string.IsNullOrWhiteSpace(_node?.DisplayName) ? NodeId : _node.DisplayName;
+    private string StepUpUrl =>
+        $"/account/mfa/step-up?returnUrl={Uri.EscapeDataString($"/admin/nodes/{NodeId}")}";
+    private bool CanConfirmReboot
+    {
+        get
+        {
+            var typed = _rebootTyped.Trim();
+            return string.Equals(typed, DeleteConfirmation, StringComparison.Ordinal)
+                   || string.Equals(typed, $"REBOOT {DeleteConfirmation}", StringComparison.Ordinal);
+        }
+    }
+
+    private bool EnsureStepUp()
+    {
+        if (!StepUpGuard.RequiresStepUp(HttpContextAccessor.HttpContext))
+        {
+            _stepUpNeeded = false;
+            return true;
+        }
+
+        _stepUpNeeded = true;
+        _error = "Требуется повторная проверка MFA (step-up).";
+        return false;
+    }
 
     protected override async Task OnParametersSetAsync() => await LoadAsync();
 
     private async Task LoadAsync()
     {
         _error = null;
+        _notFound = false;
         await BlazorWork.RunAsync(Scopes, async sp =>
         {
             var db = sp.GetRequiredService<ControlPlaneDbContext>();
-            _node = await db.Nodes.FirstOrDefaultAsync(n => n.NodeId == NodeId);
-            if (_node is null) return;
-            _cfg = await db.NodeConfigs.FirstOrDefaultAsync(c => c.NodeId == NodeId);
-            _health = await db.NodeHealth.FirstOrDefaultAsync(h => h.NodeId == NodeId);
-            _endpoints = await db.NodeEndpoints.Where(e => e.NodeId == NodeId).OrderBy(e => e.Priority).ToListAsync();
-            _metrics = await db.NodeMetrics.Where(m => m.NodeId == NodeId).OrderByDescending(m => m.Timestamp).Take(50).ToListAsync();
+            _node = await db.Nodes.AsNoTracking().FirstOrDefaultAsync(n => n.NodeId == NodeId);
+            if (_node is null || _node.LifecycleState == NodeLifecycleState.Deleted)
+            {
+                _node = null;
+                _notFound = true;
+                return;
+            }
+            _cfg = await db.NodeConfigs.AsNoTracking().FirstOrDefaultAsync(c => c.NodeId == NodeId);
+            _health = await db.NodeHealth.AsNoTracking().FirstOrDefaultAsync(h => h.NodeId == NodeId);
+            _endpoints = await db.NodeEndpoints.AsNoTracking().Where(e => e.NodeId == NodeId).OrderBy(e => e.Priority).ToListAsync();
+            _metrics = await db.NodeMetrics.AsNoTracking().Where(m => m.NodeId == NodeId).OrderByDescending(m => m.Timestamp).Take(50).ToListAsync();
             _commands = (await sp.GetRequiredService<INodeCommandService>().ListForNodeAsync(NodeId, 20)).ToList();
             _editCapacity = _cfg?.Capacity ?? _node.Capacity;
             _editLocation = _node.LocationId;
             var release = await sp.GetRequiredService<IServerReleaseService>().GetLatestAsync();
             _latestVersion = release.LatestVersion;
             _latestTag = release.ReleaseTag;
-            _minSupported = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<Nyxveil.ControlPlane.Application.Options.ServerReleasePolicyOptions>>()
+            _minSupported = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<ServerReleasePolicyOptions>>()
                 .Value.MinimumSupportedVersion;
+
+            var now = Clock.UtcNow;
+            var recentUpdate = _commands.FirstOrDefault(c =>
+                c.Type == NodeCommandType.UpdateNodeLatest
+                && c.Status == NodeCommandStatus.Succeeded
+                && string.Equals(c.ResultCode, "updated_healthy", StringComparison.OrdinalIgnoreCase)
+                && c.CompletedAt is not null
+                && c.CompletedAt > now.AddMinutes(-10));
+            _mode = RuntimeHealthPresentation.EvaluateMode(
+                _node, _health, _cfg, now, recentSuccessfulUpdate: recentUpdate is not null);
+            var seen = _node.LastSeenAt ?? _health?.UpdatedAt;
+            _freshnessLabel = NodeFreshness.LabelRu(NodeFreshness.Evaluate(seen, now), NodeFreshness.Age(seen, now));
         });
     }
 
@@ -411,6 +521,8 @@ else
             {
                 NodeCommandType.RenewCertificate => "Команда отправлена → ожидание node → обновление сертификата…",
                 NodeCommandType.RestartNyxveilService => "Перезапуск… ожидание сервера…",
+                NodeCommandType.UpdateNodeLatest => "Обновление поставлено в очередь.",
+                NodeCommandType.RebootHost => "Перезагрузка поставлена в очередь.",
                 _ => "Команда отправлена."
             };
             await LoadAsync();
@@ -432,25 +544,50 @@ else
             ? $" На сервере активно {_node.CurrentSessions} соединений. Они будут разорваны."
             : "";
         _rebootMessage =
-            $"Перезагрузить ОС сервера {_node.DisplayName} ({_node.NodeId})?{sessionsWarn} Введите «{DeleteConfirmation}» для подтверждения.";
+            $"Перезагрузить ОС сервера {_node.DisplayName} ({_node.NodeId})?{sessionsWarn}";
+        _rebootTyped = "";
         _confirmReboot = true;
     }
 
-    private void PrepareUpdate()
+    private async Task PrepareUpdateAsync()
     {
-        if (_node is null) return;
-        var installed = NodeVersionEvaluator.EffectiveInstalledVersion(_node.ReportedServerVersion, _node.ServerVersion) ?? "—";
-        var sessionsWarn = _node.CurrentSessions > 0
-            ? $" Активные VPN-соединения ({_node.CurrentSessions}) могут быть разорваны."
-            : "";
-        _updateMessage =
-            $"Node: {_node.DisplayName} · Location: {_node.LocationId} · {installed} → {_latestVersion}.{sessionsWarn} Во время обновления сервис будет перезапущен.";
-        _confirmUpdate = true;
+        _error = null;
+        _preflight = null;
+        try
+        {
+            await BlazorWork.RunAsync(Scopes, async sp =>
+            {
+                var preflight = sp.GetService<IUpdatePreflightService>();
+                if (preflight is null)
+                {
+                    _error = "Сервис preflight недоступен.";
+                    return;
+                }
+                _preflight = await preflight.EvaluateUpdateAsync(NodeId);
+            });
+            if (_preflight is not null)
+                _confirmUpdate = true;
+        }
+        catch (Exception ex)
+        {
+            _error = UiText.Error(ex.Message);
+        }
     }
 
-    private Task ConfirmRebootAsync() => EnqueueAsync(NodeCommandType.RebootHost);
+    private async Task ConfirmRebootAsync()
+    {
+        if (!CanConfirmReboot) return;
+        if (!EnsureStepUp()) return;
+        _confirmReboot = false;
+        await EnqueueAsync(NodeCommandType.RebootHost);
+    }
 
-    private Task ConfirmUpdateAsync() => EnqueueAsync(NodeCommandType.UpdateNodeLatest);
+    private Task ConfirmUpdateAsync()
+    {
+        if (!EnsureStepUp()) return Task.CompletedTask;
+        _confirmUpdate = false;
+        return EnqueueAsync(NodeCommandType.UpdateNodeLatest);
+    }
 
     private async Task PrepareReconcileAsync(Guid commandId)
     {
@@ -483,6 +620,7 @@ else
     {
         if (_busy || _reconcilePreview is null || string.IsNullOrWhiteSpace(_reconcileReason))
             return;
+        if (!EnsureStepUp()) return;
         _busy = true;
         _error = null;
         try
@@ -576,19 +714,9 @@ else
 
     private async Task DeleteAsync()
     {
+        if (!EnsureStepUp()) return;
         await RunNodeActionAsync((svc, actor) => svc.SoftDeleteAsync(NodeId, actor, "Deleted from admin panel"));
-        if (_node?.LifecycleState == NodeLifecycleState.Deleted)
+        if (_notFound || _node is null)
             Nav.NavigateTo("/admin/nodes");
     }
-
-    private static string Flag(bool? value) => value switch { true => "OK", false => "FAIL", _ => "—" };
-
-    private static string CommandLabel(NodeCommandType type) => type switch
-    {
-        NodeCommandType.RenewCertificate => "Обновление сертификата",
-        NodeCommandType.RestartNyxveilService => "Перезапуск Nyxveil",
-        NodeCommandType.RebootHost => "Перезагрузка ОС",
-        NodeCommandType.UpdateNodeLatest => "Обновление ПО",
-        _ => type.ToString()
-    };
 }

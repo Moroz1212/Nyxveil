@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Components.Server.Circuits;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -25,6 +26,7 @@ using Nyxveil.ControlPlane.Web.Health;
 using Nyxveil.ControlPlane.Web.Hosting;
 using Nyxveil.ControlPlane.Web.Hubs;
 using Nyxveil.ControlPlane.Web.Security;
+using Nyxveil.ControlPlane.Web.Services;
 using Nyxveil.ControlPlane.Worker.DependencyInjection;
 
 // CLI commands (before web host) — installer / ops use these.
@@ -91,6 +93,9 @@ builder.Services.AddAuthorization(options =>
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<AuthenticationStateProvider, IdentityRevalidatingAuthenticationStateProvider>();
 builder.Services.AddHttpContextAccessor();
+builder.Services.AddMemoryCache();
+builder.Services.AddScoped<IStepUpAuthenticationService, StepUpAuthenticationService>();
+builder.Services.AddHttpCriticalOperationAuthorizer();
 builder.Services.AddScoped<CircuitHandler, LoggingCircuitHandler>();
 
 builder.Services.AddRazorComponents()
@@ -106,6 +111,7 @@ if (builder.Environment.IsDevelopment())
 }
 
 builder.Services.AddSignalR();
+builder.Services.AddSingleton<IAdminRealtimeNotifier, AdminRealtimeNotifier>();
 
 var rateLimits = builder.Configuration.GetSection(RateLimitOptions.SectionName).Get<RateLimitOptions>()
                  ?? new RateLimitOptions();
@@ -157,6 +163,16 @@ builder.Services.AddHealthChecks()
 var app = builder.Build();
 
 await SeedRolesAsync(app.Services).ConfigureAwait(false);
+try
+{
+    using var scope = app.Services.CreateScope();
+    await scope.ServiceProvider.GetRequiredService<IControlPlaneSelfUpdateService>()
+        .ReconcileOnStartupAsync().ConfigureAwait(false);
+}
+catch (Exception ex)
+{
+    app.Logger.LogWarning(ex, "Control Plane self-update reconcile on startup failed");
+}
 
 if (app.Environment.IsDevelopment())
 {
@@ -205,6 +221,7 @@ if (!app.Environment.IsDevelopment())
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseMiddleware<MfaEnforcementMiddleware>();
 app.UseRateLimiter();
 app.UseAntiforgery();
 
@@ -261,6 +278,12 @@ PreferMinimalApiOverBlazor(
 
         var result = await signInManager.PasswordSignInAsync(user, password, isPersistent: true, lockoutOnFailure: true)
             .ConfigureAwait(false);
+
+        if (result.RequiresTwoFactor)
+        {
+            return Results.Redirect($"/account/login-2fa?returnUrl={Uri.EscapeDataString(returnUrl)}");
+        }
+
         if (!result.Succeeded)
         {
             return Results.Redirect($"/account/login?error=1&returnUrl={Uri.EscapeDataString(returnUrl)}");
@@ -275,12 +298,210 @@ PreferMinimalApiOverBlazor(
             IpAddress = http.Connection.RemoteIpAddress?.ToString()
         }).ConfigureAwait(false);
 
+        if (await userManager.IsInRoleAsync(user, AdminRole.SuperAdmin).ConfigureAwait(false)
+            && !await userManager.GetTwoFactorEnabledAsync(user).ConfigureAwait(false))
+        {
+            return Results.Redirect(
+                $"/account/mfa/setup?required=1&returnUrl={Uri.EscapeDataString(returnUrl)}");
+        }
+
         return Results.Redirect(returnUrl);
     }).DisableAntiforgery().RequireRateLimiting("api-sensitive"));
 
 PreferMinimalApiOverBlazor(
-    app.MapPost("/account/logout", async (SignInManager<ApplicationUser> signInManager) =>
+    app.MapPost("/account/login-2fa", async (
+        HttpContext http,
+        SignInManager<ApplicationUser> signInManager,
+        UserManager<ApplicationUser> userManager,
+        IAuditService audit) =>
     {
+        var form = await http.Request.ReadFormAsync().ConfigureAwait(false);
+        var returnUrl = form["returnUrl"].ToString();
+        if (string.IsNullOrWhiteSpace(returnUrl) || !returnUrl.StartsWith('/'))
+            returnUrl = "/";
+
+        var user = await signInManager.GetTwoFactorAuthenticationUserAsync().ConfigureAwait(false);
+        if (user is null)
+            return Results.Redirect("/account/login");
+
+        var code = form["code"].ToString().Replace(" ", string.Empty, StringComparison.Ordinal).Trim();
+        var recoveryCode = form["recoveryCode"].ToString().Replace(" ", string.Empty, StringComparison.Ordinal).Trim();
+
+        Microsoft.AspNetCore.Identity.SignInResult result;
+        if (!string.IsNullOrEmpty(recoveryCode))
+        {
+            result = await signInManager.TwoFactorRecoveryCodeSignInAsync(recoveryCode).ConfigureAwait(false);
+        }
+        else if (!string.IsNullOrEmpty(code))
+        {
+            result = await signInManager.TwoFactorAuthenticatorSignInAsync(code, isPersistent: true, rememberClient: false)
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            return Results.Redirect($"/account/login-2fa?error=1&returnUrl={Uri.EscapeDataString(returnUrl)}");
+        }
+
+        if (!result.Succeeded)
+        {
+            return Results.Redirect($"/account/login-2fa?error=1&returnUrl={Uri.EscapeDataString(returnUrl)}");
+        }
+
+        await audit.WriteAsync(new()
+        {
+            Actor = user.Email ?? user.UserName ?? user.Id,
+            Action = string.IsNullOrEmpty(recoveryCode) ? "admin.login.2fa" : "admin.login.recovery",
+            EntityType = "AdminUser",
+            EntityId = user.Id,
+            IpAddress = http.Connection.RemoteIpAddress?.ToString()
+        }).ConfigureAwait(false);
+
+        if (await userManager.IsInRoleAsync(user, AdminRole.SuperAdmin).ConfigureAwait(false)
+            && !await userManager.GetTwoFactorEnabledAsync(user).ConfigureAwait(false))
+        {
+            return Results.Redirect(
+                $"/account/mfa/setup?required=1&returnUrl={Uri.EscapeDataString(returnUrl)}");
+        }
+
+        return Results.Redirect(returnUrl);
+    }).DisableAntiforgery().RequireRateLimiting("api-sensitive"));
+
+PreferMinimalApiOverBlazor(
+    app.MapPost("/account/mfa/setup", async (
+        HttpContext http,
+        UserManager<ApplicationUser> userManager,
+        IMemoryCache cache,
+        IAuditService audit) =>
+    {
+        var form = await http.Request.ReadFormAsync().ConfigureAwait(false);
+        var returnUrl = form["returnUrl"].ToString();
+        if (string.IsNullOrWhiteSpace(returnUrl) || !returnUrl.StartsWith('/'))
+            returnUrl = "/";
+        var required = form["required"].ToString() == "1";
+        var code = form["code"].ToString().Replace(" ", string.Empty, StringComparison.Ordinal).Trim();
+
+        var user = await userManager.GetUserAsync(http.User).ConfigureAwait(false);
+        if (user is null)
+            return Results.Redirect("/account/login");
+
+        var setupErrorRedirect = required
+            ? $"/account/mfa/setup?required=1&error=1&returnUrl={Uri.EscapeDataString(returnUrl)}"
+            : $"/account/mfa/setup?error=1&returnUrl={Uri.EscapeDataString(returnUrl)}";
+
+        if (string.IsNullOrEmpty(code))
+            return Results.Redirect(setupErrorRedirect);
+
+        var isValid = await userManager.VerifyTwoFactorTokenAsync(
+            user,
+            userManager.Options.Tokens.AuthenticatorTokenProvider,
+            code).ConfigureAwait(false);
+        if (!isValid)
+            return Results.Redirect(setupErrorRedirect);
+
+        await userManager.SetTwoFactorEnabledAsync(user, true).ConfigureAwait(false);
+        var recovery = await userManager.GenerateNewTwoFactorRecoveryCodesAsync(user, 10).ConfigureAwait(false);
+        var codes = recovery?.ToArray() ?? Array.Empty<string>();
+        var token = Guid.NewGuid().ToString("N");
+        cache.Set($"mfa-recovery:{token}", codes, TimeSpan.FromMinutes(10));
+
+        await audit.WriteAsync(new()
+        {
+            Actor = user.Email ?? user.UserName ?? user.Id,
+            Action = "admin.mfa.enabled",
+            EntityType = "AdminUser",
+            EntityId = user.Id,
+            IpAddress = http.Connection.RemoteIpAddress?.ToString()
+        }).ConfigureAwait(false);
+
+        StepUpGuard.Grant(http);
+        return Results.Redirect(
+            $"/account/mfa/setup?showCodes={token}&returnUrl={Uri.EscapeDataString(returnUrl)}");
+    }).DisableAntiforgery().RequireAuthorization(AuthPolicies.AnyAdmin).RequireRateLimiting("api-sensitive"));
+
+PreferMinimalApiOverBlazor(
+    app.MapPost("/account/mfa/setup/regenerate", async (
+        HttpContext http,
+        UserManager<ApplicationUser> userManager) =>
+    {
+        var form = await http.Request.ReadFormAsync().ConfigureAwait(false);
+        var returnUrl = form["returnUrl"].ToString();
+        if (string.IsNullOrWhiteSpace(returnUrl) || !returnUrl.StartsWith('/'))
+            returnUrl = "/account/mfa/setup";
+        var required = form["required"].ToString() == "1";
+
+        var user = await userManager.GetUserAsync(http.User).ConfigureAwait(false);
+        if (user is null)
+            return Results.Redirect("/account/login");
+
+        // Only allow regenerating an unconfirmed secret (MFA not yet enabled).
+        if (await userManager.GetTwoFactorEnabledAsync(user).ConfigureAwait(false))
+            return Results.Redirect("/account/mfa");
+
+        await userManager.ResetAuthenticatorKeyAsync(user).ConfigureAwait(false);
+        var target = $"/account/mfa/setup?returnUrl={Uri.EscapeDataString(returnUrl)}";
+        if (required) target += "&required=1";
+        return Results.Redirect(target);
+    }).DisableAntiforgery().RequireAuthorization(AuthPolicies.AnyAdmin).RequireRateLimiting("api-sensitive"));
+
+PreferMinimalApiOverBlazor(
+    app.MapPost("/account/mfa/reset", async (
+        HttpContext http,
+        UserManager<ApplicationUser> userManager,
+        IAuditService audit) =>
+    {
+        var user = await userManager.GetUserAsync(http.User).ConfigureAwait(false);
+        if (user is null)
+            return Results.Redirect("/account/login");
+
+        if (!await userManager.IsInRoleAsync(user, AdminRole.SuperAdmin).ConfigureAwait(false))
+            return Results.Redirect("/account/access-denied");
+
+        if (await userManager.GetTwoFactorEnabledAsync(user).ConfigureAwait(false)
+            && StepUpGuard.RequiresStepUp(http))
+        {
+            return Results.Redirect(
+                "/account/mfa/step-up?returnUrl=" + Uri.EscapeDataString("/account/mfa"));
+        }
+
+        await userManager.SetTwoFactorEnabledAsync(user, false).ConfigureAwait(false);
+        await userManager.ResetAuthenticatorKeyAsync(user).ConfigureAwait(false);
+        StepUpGuard.Clear(http);
+
+        await audit.WriteAsync(new()
+        {
+            Actor = user.Email ?? user.UserName ?? user.Id,
+            Action = "admin.mfa.reset",
+            EntityType = "AdminUser",
+            EntityId = user.Id,
+            IpAddress = http.Connection.RemoteIpAddress?.ToString()
+        }).ConfigureAwait(false);
+
+        return Results.Redirect("/account/mfa/setup?required=1");
+    }).DisableAntiforgery().RequireAuthorization(AuthPolicies.SuperAdminOnly).RequireRateLimiting("api-sensitive"));
+
+PreferMinimalApiOverBlazor(
+    app.MapPost("/account/mfa/step-up", async (
+        HttpContext http,
+        IStepUpAuthenticationService stepUp) =>
+    {
+        var form = await http.Request.ReadFormAsync().ConfigureAwait(false);
+        var returnUrl = form["returnUrl"].ToString();
+        if (string.IsNullOrWhiteSpace(returnUrl) || !returnUrl.StartsWith('/'))
+            returnUrl = "/";
+        var code = form["code"].ToString();
+
+        if (!await stepUp.TryElevateWithAuthenticatorAsync(http, code).ConfigureAwait(false))
+        {
+            return Results.Redirect($"/account/mfa/step-up?error=1&returnUrl={Uri.EscapeDataString(returnUrl)}");
+        }
+
+        return Results.Redirect(returnUrl);
+    }).DisableAntiforgery().RequireAuthorization(AuthPolicies.SuperAdminOnly).RequireRateLimiting("api-sensitive"));
+
+PreferMinimalApiOverBlazor(
+    app.MapPost("/account/logout", async (HttpContext http, SignInManager<ApplicationUser> signInManager) =>
+    {
+        StepUpGuard.Clear(http);
         await signInManager.SignOutAsync().ConfigureAwait(false);
         return Results.Redirect("/account/login");
     }).DisableAntiforgery().RequireAuthorization());

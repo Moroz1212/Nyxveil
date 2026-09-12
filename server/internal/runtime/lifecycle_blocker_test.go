@@ -46,6 +46,16 @@ func (c *resultCapture) codes() []string {
 	return out
 }
 
+func (c *resultCapture) successes() []bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]bool, len(c.results))
+	for i, r := range c.results {
+		out[i] = r.Success
+	}
+	return out
+}
+
 func newLifecycleNode(t *testing.T) (*Node, *resultCapture) {
 	t.Helper()
 	dir := t.TempDir()

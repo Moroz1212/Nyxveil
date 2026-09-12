@@ -1,0 +1,41 @@
+@page "/account/login-2fa"
+@layout EmptyLayout
+@attribute [AllowAnonymous]
+
+<div class="auth-page">
+    <div class="auth-card">
+        <h1>Двухфакторная проверка</h1>
+        <p class="muted">Введите код из приложения-аутентификатора или код восстановления.</p>
+
+        @if (_error)
+        {
+            <div class="alert alert-error">Неверный код. Попробуйте снова.</div>
+        }
+
+        <form method="post" action="/account/login-2fa">
+            <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+            <label>Код аутентификатора
+                <input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" />
+            </label>
+            <label>Или код восстановления
+                <input name="recoveryCode" type="text" autocomplete="off" placeholder="xxxx-xxxx" />
+            </label>
+            <button class="btn" type="submit">Подтвердить</button>
+        </form>
+        <p class="muted"><a href="/account/login">Назад ко входу</a></p>
+    </div>
+</div>
+
+@code {
+    private bool _error;
+
+    [SupplyParameterFromQuery(Name = "returnUrl")] public string? ReturnUrl { get; set; } = "/";
+    [SupplyParameterFromQuery(Name = "error")] public string? Error { get; set; }
+
+    protected override void OnInitialized()
+    {
+        _error = Error == "1";
+        if (string.IsNullOrWhiteSpace(ReturnUrl) || !ReturnUrl.StartsWith('/'))
+            ReturnUrl = "/";
+    }
+}

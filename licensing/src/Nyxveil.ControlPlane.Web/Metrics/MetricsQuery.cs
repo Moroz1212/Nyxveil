@@ -10,6 +10,7 @@ public sealed record ServerMetricRow(string NodeId, string Name, string Location
     NodeRuntimeStatus Status, NodeMetric? Latest);
 public sealed record MetricPoint(DateTime Time, double? Cpu, double? Memory, double? Sessions,
     double? Rx, double? Tx, int Samples);
+public sealed record MetricEventMarker(DateTime At, string Label, string Color);
 public sealed class MetricBucket
 {
     public int Year { get; set; }
@@ -66,7 +67,10 @@ public static class MetricsQuery
         DateTime until, CancellationToken cancellationToken = default)
     {
         // Correlated TOP(1): quiet servers cannot disappear behind busy ones.
-        var rows = await db.Nodes.AsNoTracking().Select(n => new
+        // Deleted nodes stay in DB for audit but are excluded from operator metrics.
+        var rows = await db.Nodes.AsNoTracking()
+            .Where(n => n.LifecycleState != NodeLifecycleState.Deleted)
+            .Select(n => new
         {
             n.NodeId,
             n.DisplayName,

@@ -166,11 +166,19 @@ func (n *Node) executeUpdateNodeLatest(ctx context.Context, cmd *controlplane.No
 }
 
 func (n *Node) completePendingUpdate(ctx context.Context) {
-	m, ok := n.readUpdateMarker()
-	if !ok || strings.TrimSpace(m.CommandID) == "" {
-		return
-	}
+	// Consume already-queued journal results whose pending CP POST finished.
+	n.finalizeReportedUpdateTransactions()
 
+	m, ok := n.readUpdateMarker()
+	if ok && strings.TrimSpace(m.CommandID) != "" {
+		n.completePendingUpdateFromMarker(ctx, m)
+	}
+	// Recover terminal outcomes when the legacy parent deleted update-command.json
+	// but a correlated transaction journal still carries the CommandID.
+	n.recoverCorrelatedTerminalUpdates(ctx)
+}
+
+func (n *Node) completePendingUpdateFromMarker(ctx context.Context, m updateMarker) {
 	phase := normalizeUpdatePhase(m.Phase)
 	if m.ResultPending || phase == updatePhaseResultPending {
 		req := controlplane.NodeCommandResultRequest{
@@ -183,6 +191,7 @@ func (n *Node) completePendingUpdate(ctx context.Context) {
 			return
 		}
 		_ = n.clearUpdateMarker()
+		n.consumeUpdateTransactionsForCommand(m.CommandID)
 		return
 	}
 
@@ -236,23 +245,317 @@ func (n *Node) completePendingUpdate(ctx context.Context) {
 	}
 }
 
-// bridgeUpdatePhaseFromCtl maps nyxveilctl update-transaction phases onto the
-// runtime marker so there is one authoritative lifecycle for CP results.
-func (n *Node) bridgeUpdatePhaseFromCtl(m updateMarker) (updateMarker, bool) {
+// ctlTxnWire is the subset of nyxveilctl updateTransaction JSON needed for recovery.
+type ctlTxnWire struct {
+	CommandID        string    `json:"command_id"`
+	CommandStartedAt string    `json:"command_started_at"`
+	ResultQueuedAt   string    `json:"result_queued_at"`
+	ResultReportedAt string    `json:"result_reported_at"`
+	TerminalOutcome  string    `json:"terminal_outcome"`
+	FailureReason    string    `json:"failure_reason"`
+	ID               string    `json:"id"`
+	TargetVersion    string    `json:"target_version"`
+	PreviousVersion  string    `json:"previous_version"`
+	Phase            string    `json:"phase"`
+	CreatedAt        time.Time `json:"created_at"`
+	PreBaseline      struct {
+		NodeID string `json:"node_id"`
+	} `json:"pre_baseline"`
+}
+
+func (n *Node) updateTransactionDir() string {
 	stateDir := filepath.Dir(paths.CommandsState())
 	if n.opts.KeyPath != "" {
 		stateDir = filepath.Dir(n.opts.KeyPath)
 	}
-	txnDir := filepath.Join(stateDir, "update-transactions")
-	entries, err := os.ReadDir(txnDir)
-	if err != nil {
-		return m, false
+	return filepath.Join(stateDir, "update-transactions")
+}
+
+func (tx *ctlTxnWire) effectivePhase() string {
+	if tx.TerminalOutcome == updatePhaseRollbackFailed || tx.TerminalOutcome == updatePhaseRolledBackHealthy {
+		return tx.TerminalOutcome
 	}
-	var latestPhase string
-	var latestMod time.Time
-	var latestReason string
+	return normalizeUpdatePhase(tx.Phase)
+}
+
+func (tx *ctlTxnWire) isTerminal() bool {
+	switch tx.effectivePhase() {
+	case updatePhaseUpdatedHealthy, updatePhaseRolledBackHealthy, updatePhaseRollbackFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func (n *Node) listUpdateTransactions() []ctlTxnWire {
+	dir := n.updateTransactionDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	out := make([]ctlTxnWire, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var tx ctlTxnWire
+		if json.Unmarshal(raw, &tx) != nil {
+			continue
+		}
+		if strings.TrimSpace(tx.ID) == "" {
+			tx.ID = strings.TrimSuffix(e.Name(), ".json")
+		}
+		out = append(out, tx)
+	}
+	return out
+}
+
+func (n *Node) writeUpdateTransactionWire(tx ctlTxnWire) error {
+	if strings.TrimSpace(tx.ID) == "" {
+		return fmt.Errorf("transaction id required")
+	}
+	dir := n.updateTransactionDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, tx.ID+".json")
+	// Preserve unknown fields by merging onto the existing document when present.
+	var existing map[string]json.RawMessage
+	if raw, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(raw, &existing)
+	}
+	if existing == nil {
+		existing = map[string]json.RawMessage{}
+	}
+	patch, err := json.Marshal(tx)
+	if err != nil {
+		return err
+	}
+	var overlay map[string]json.RawMessage
+	if err := json.Unmarshal(patch, &overlay); err != nil {
+		return err
+	}
+	for k, v := range overlay {
+		existing[k] = v
+	}
+	out, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := filemeta.DurableWrite(path, out, 0o600); err != nil {
+		return err
+	}
+	uid, gid, _ := filemeta.LookupServiceIDs()
+	_ = filemeta.ApplyOwnerMode(dir, uid, gid, 0o700)
+	_ = filemeta.ApplyOwnerMode(path, uid, gid, 0o600)
+	return nil
+}
+
+func (n *Node) removeUpdateTransactionID(id string) {
+	if strings.TrimSpace(id) == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(n.updateTransactionDir(), id+".json"))
+}
+
+func (n *Node) consumeUpdateTransactionsForCommand(commandID string) {
+	commandID = strings.TrimSpace(commandID)
+	if commandID == "" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, tx := range n.listUpdateTransactions() {
+		if strings.TrimSpace(tx.CommandID) != commandID {
+			continue
+		}
+		tx.ResultReportedAt = now
+		if err := n.writeUpdateTransactionWire(tx); err != nil {
+			log.Printf("runtime: mark transaction reported %s: %v", tx.ID, err)
+			continue
+		}
+		n.removeUpdateTransactionID(tx.ID)
+	}
+}
+
+func (n *Node) finalizeReportedUpdateTransactions() {
+	n.ensureCommandStore()
+	pending := map[string]struct{}{}
+	for _, p := range n.commandStore.pendingResults() {
+		pending[strings.TrimSpace(p.CommandID)] = struct{}{}
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, tx := range n.listUpdateTransactions() {
+		cmd := strings.TrimSpace(tx.CommandID)
+		if cmd == "" {
+			continue
+		}
+		if strings.TrimSpace(tx.ResultReportedAt) != "" {
+			n.removeUpdateTransactionID(tx.ID)
+			continue
+		}
+		if strings.TrimSpace(tx.ResultQueuedAt) == "" {
+			continue
+		}
+		if _, stillPending := pending[cmd]; stillPending {
+			continue
+		}
+		// Pending result gone ⇒ CP accepted (or identical replay). Consume journal.
+		tx.ResultReportedAt = now
+		_ = n.writeUpdateTransactionWire(tx)
+		n.removeUpdateTransactionID(tx.ID)
+	}
+}
+
+// recoverCorrelatedTerminalUpdates reports terminal ctl outcomes when the marker
+// is gone but the transaction journal still carries an exact CommandID.
+func (n *Node) recoverCorrelatedTerminalUpdates(ctx context.Context) {
+	txs := n.listUpdateTransactions()
+	byCmd := map[string][]ctlTxnWire{}
+	for _, tx := range txs {
+		cmd := strings.TrimSpace(tx.CommandID)
+		if cmd == "" {
+			// Historical journals without correlation cannot safely identify a CP command.
+			continue
+		}
+		if strings.TrimSpace(tx.ResultReportedAt) != "" {
+			continue
+		}
+		if !tx.isTerminal() {
+			continue
+		}
+		byCmd[cmd] = append(byCmd[cmd], tx)
+	}
+	if len(byCmd) == 0 {
+		return
+	}
+
+	st := n.Status()
+	st.Healthy = st.ComputeHealthy()
+	cpOK := n.cpOK.Load()
+	got := strings.TrimPrefix(strings.TrimSpace(version.ServerVersion), "v")
+	nodeID := ""
+	if n.local != nil {
+		nodeID = strings.TrimSpace(n.local.NodeID)
+	}
+	if nodeID == "" && n.cp != nil {
+		nodeID = strings.TrimSpace(n.cp.NodeID)
+	}
+
+	for cmd, list := range byCmd {
+		if len(list) != 1 {
+			log.Printf("runtime: update recovery refuse ambiguous journals for command %s count=%d", cmd, len(list))
+			continue
+		}
+		tx := list[0]
+		if strings.TrimSpace(tx.ResultQueuedAt) != "" {
+			// Already durably queued; flushPendingCommandResults owns delivery.
+			continue
+		}
+		if txNode := strings.TrimSpace(tx.PreBaseline.NodeID); txNode != "" && nodeID != "" && txNode != nodeID {
+			log.Printf("runtime: update recovery refuse node mismatch command=%s journal=%s runtime=%s",
+				cmd, txNode, nodeID)
+			continue
+		}
+		phase := tx.effectivePhase()
+		target := strings.TrimPrefix(strings.TrimSpace(tx.TargetVersion), "v")
+		prev := strings.TrimPrefix(strings.TrimSpace(tx.PreviousVersion), "v")
+		var success bool
+		var code, message string
+		switch phase {
+		case updatePhaseUpdatedHealthy:
+			if got != target || !st.Healthy || !cpOK {
+				continue
+			}
+			success = true
+			code = "updated_healthy"
+			message = "Recovered committed update from correlated transaction; runtime healthy at " + version.ServerVersion
+		case updatePhaseRolledBackHealthy:
+			if got != prev || !st.Healthy || !cpOK {
+				continue
+			}
+			success = false
+			code = "rolled_back_healthy"
+			message = "Recovered healthy rollback from correlated transaction at " + version.ServerVersion
+			if tx.FailureReason != "" {
+				message += "; " + tx.FailureReason
+			}
+		case updatePhaseRollbackFailed:
+			success = false
+			code = "rollback_failed"
+			message = "Recovered rollback_failed from correlated transaction"
+			if tx.FailureReason != "" {
+				message += ": " + tx.FailureReason
+			}
+		default:
+			continue
+		}
+		n.finishUpdateFromCorrelatedTransaction(ctx, tx, success, code, message)
+	}
+}
+
+func (n *Node) finishUpdateFromCorrelatedTransaction(ctx context.Context, tx ctlTxnWire, success bool, code, message string) {
+	n.ensureCommandStore()
+	rec := pendingResultRecord{
+		CommandID:     strings.TrimSpace(tx.CommandID),
+		Success:       success,
+		ResultCode:    code,
+		ResultMessage: message,
+		BootID:        readBootID(),
+	}
+	if err := n.commandStore.addPendingResult(rec); err != nil {
+		log.Printf("runtime: CRITICAL correlated update pending write failed %s: %v", rec.CommandID, err)
+		return
+	}
+	tx.ResultQueuedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := n.writeUpdateTransactionWire(tx); err != nil {
+		log.Printf("runtime: CRITICAL correlated update queue mark failed %s: %v", tx.ID, err)
+		// Keep pending result; do not clear evidence.
+		return
+	}
+	err := n.cp.ReportCommandResult(ctx, rec.CommandID, controlplane.NodeCommandResultRequest{
+		Success:       rec.Success,
+		ResultCode:    rec.ResultCode,
+		ResultMessage: rec.ResultMessage,
+		BootID:        rec.BootID,
+	})
+	if err != nil {
+		log.Printf("runtime: correlated update result %s queued for retry: %v", rec.CommandID, err)
+		return
+	}
+	if remErr := n.commandStore.removePendingResult(rec.CommandID); remErr != nil {
+		log.Printf("runtime: pending result remove failed %s: %v", rec.CommandID, remErr)
+	}
+	tx.ResultReportedAt = time.Now().UTC().Format(time.RFC3339)
+	_ = n.writeUpdateTransactionWire(tx)
+	n.removeUpdateTransactionID(tx.ID)
+	// Marker may already be gone (legacy race); clear if it still points at this command.
+	if m, ok := n.readUpdateMarker(); ok && strings.TrimSpace(m.CommandID) == rec.CommandID {
+		_ = n.clearUpdateMarker()
+	}
+}
+
+// bridgeUpdatePhaseFromCtl maps nyxveilctl update-transaction phases onto the
+// runtime marker so there is one authoritative lifecycle for CP results.
+func (n *Node) bridgeUpdatePhaseFromCtl(m updateMarker) (updateMarker, bool) {
 	started, parseErr := time.Parse(time.RFC3339, m.StartedAt)
 	if parseErr != nil {
+		return m, false
+	}
+	cmdID := strings.TrimSpace(m.CommandID)
+	target := strings.TrimPrefix(strings.TrimSpace(m.TargetVersion), "v")
+
+	var exactPhase, latestPhase string
+	var exactReason, latestReason string
+	var latestMod time.Time
+	exactFound := false
+
+	dir := n.updateTransactionDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
 		return m, false
 	}
 	for _, e := range entries {
@@ -263,22 +566,25 @@ func (n *Node) bridgeUpdatePhaseFromCtl(m updateMarker) (updateMarker, bool) {
 		if err != nil {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(txnDir, e.Name()))
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			continue
 		}
-		var tx struct {
-			TerminalOutcome string    `json:"terminal_outcome"`
-			CreatedAt       time.Time `json:"created_at"`
-			FailureReason   string    `json:"failure_reason"`
-			Phase           string    `json:"phase"`
-			TargetVersion   string    `json:"target_version"`
-		}
+		var tx ctlTxnWire
 		if json.Unmarshal(raw, &tx) != nil {
 			continue
 		}
-		if tx.TerminalOutcome == updatePhaseRollbackFailed || tx.TerminalOutcome == updatePhaseRolledBackHealthy {
-			tx.Phase = tx.TerminalOutcome
+		phase := tx.effectivePhase()
+		txCmd := strings.TrimSpace(tx.CommandID)
+		if txCmd != "" && cmdID != "" {
+			if txCmd != cmdID {
+				continue
+			}
+			// Exact CommandID correlation wins over time/target heuristics.
+			exactPhase = phase
+			exactReason = tx.FailureReason
+			exactFound = true
+			continue
 		}
 		if !tx.CreatedAt.IsZero() && tx.CreatedAt.Before(started) {
 			continue
@@ -286,20 +592,25 @@ func (n *Node) bridgeUpdatePhaseFromCtl(m updateMarker) (updateMarker, bool) {
 		if info.ModTime().Before(started) {
 			continue
 		}
-		if strings.TrimPrefix(strings.TrimSpace(tx.TargetVersion), "v") !=
-			strings.TrimPrefix(strings.TrimSpace(m.TargetVersion), "v") {
+		if strings.TrimPrefix(strings.TrimSpace(tx.TargetVersion), "v") != target {
 			continue
 		}
 		if info.ModTime().After(latestMod) {
 			latestMod = info.ModTime()
-			latestPhase = tx.Phase
+			latestPhase = phase
 			latestReason = tx.FailureReason
 		}
 	}
-	if latestPhase == "" {
+	chosenPhase := latestPhase
+	chosenReason := latestReason
+	if exactFound {
+		chosenPhase = exactPhase
+		chosenReason = exactReason
+	}
+	if chosenPhase == "" {
 		return m, false
 	}
-	mapped := normalizeUpdatePhase(latestPhase)
+	mapped := normalizeUpdatePhase(chosenPhase)
 	if mapped == "" || mapped == normalizeUpdatePhase(m.Phase) {
 		return m, false
 	}
@@ -309,7 +620,7 @@ func (n *Node) bridgeUpdatePhaseFromCtl(m updateMarker) (updateMarker, bool) {
 		updatePhaseUpdatedHealthy, updatePhaseRollingBack,
 		updatePhaseRolledBackHealthy, updatePhaseRollbackFailed:
 		m.Phase = mapped
-		m.FailureReason = latestReason
+		m.FailureReason = chosenReason
 		m.LastUpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		return m, true
 	default:
@@ -328,7 +639,7 @@ func (n *Node) finishUpdateLocal(ctx context.Context, m updateMarker, success bo
 		log.Printf("runtime: update marker result write FAILED (not reporting): %v", err)
 		return
 	}
-	n.completePendingUpdate(ctx)
+	n.completePendingUpdateFromMarker(ctx, m)
 }
 
 func startUpdateUnit() error {

@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Nyxveil.ControlPlane.Updater</AssemblyName>
+    <RootNamespace>Nyxveil.ControlPlane.Updater</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Nyxveil.ControlPlane.Application\Nyxveil.ControlPlane.Application.csproj" />
+  </ItemGroup>
+</Project>

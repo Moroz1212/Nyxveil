@@ -106,8 +106,8 @@ Frozen Core provenance/gate:
 
 Snapshot release distinction:
 
-- source candidate: `1.1.13`
-- latest published GitHub Release observed: `server-v1.1.12`
+- source candidate: `1.1.14`
+- latest published GitHub Release observed: `server-v1.1.13`
 
 ### Control Plane / licensing — `licensing/`
 

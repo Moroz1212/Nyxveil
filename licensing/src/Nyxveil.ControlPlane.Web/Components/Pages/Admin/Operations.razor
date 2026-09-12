@@ -4,14 +4,23 @@
 @implements IAsyncDisposable
 @inject IServiceScopeFactory Scopes
 @inject AuthenticationStateProvider AuthState
+@inject IHttpContextAccessor HttpContextAccessor
+@inject NavigationManager Nav
 
 <PageTitle>Обновления и операции · Nyxveil</PageTitle>
 <div class="page-header">
     <div><div class="eyebrow">Инфраструктура</div><h1>Обновления и операции</h1>
-        <div class="sub">Принятие команды, ход и результат — в одном журнале. Время UTC.</div></div>
+        <div class="sub">Принятие команды, ход и результат — в одном журнале. Время UTC. Удалённые серверы скрыты.</div></div>
     <button class="btn btn-ghost" disabled="@_busy" @onclick="RefreshAsync">Обновить статус</button>
 </div>
 @if (_error is not null) { <div class="alert alert-error" role="alert">@_error</div> }
+@if (_stepUpNeeded)
+{
+    <div class="alert alert-warn" role="status">
+        Для reconciliation нужна повторная проверка MFA.
+        <a href="@StepUpUrl">Подтвердить код аутентификатора</a>
+    </div>
+}
 @if (_info is not null) { <div class="alert" role="status">@_info</div> }
 <div class="operations-intro">
     <section class="panel">
@@ -32,33 +41,66 @@
     </section>
 </div>
 <div class="toolbar">
-    <label>Поиск<input @bind="_query" @bind:event="oninput" placeholder="Сервер, версия или результат" /></label>
-    <label>Показать<select @bind="_filter"><option value="all">Все операции</option><option value="active">В процессе</option><option value="failed">Ошибки и откаты</option></select></label>
-    <span class="muted">Последние 100 операций · обновление каждые 10 секунд</span>
+    <label>Поиск<input @bind="_query" @bind:event="oninput" placeholder="CommandId, CorrelationId, сервер…" /></label>
+    <label>Статус
+        <select @bind="_statusFilter">
+            <option value="">Все</option>
+            @foreach (var s in Enum.GetNames<NodeCommandStatus>()) { <option value="@s">@UiText.Status(s)</option> }
+        </select>
+    </label>
+    <label>Тип
+        <select @bind="_typeFilter">
+            <option value="">Все</option>
+            @foreach (var t in Enum.GetValues<NodeCommandType>()) { <option value="@t">@UiText.CommandType(t)</option> }
+        </select>
+    </label>
+    <label>Быстрый фильтр
+        <select @bind="_quick">
+            <option value="all">Все</option>
+            <option value="active">Active</option>
+            <option value="failed">Failed</option>
+            <option value="unknown">Unknown</option>
+            <option value="successful">Successful</option>
+            <option value="update">Update</option>
+        </select>
+    </label>
+    <label>Узел<input @bind="_nodeFilter" @bind:event="oninput" placeholder="NodeId" /></label>
+    <label>Локация<input @bind="_locationFilter" @bind:event="oninput" placeholder="LocationId" /></label>
+    <span class="muted">Страница @_page · по @_pageSize · всего @_total</span>
 </div>
-<div class="table-wrap"><table class="data">
-    <thead><tr><th>Время UTC / сервер</th><th>Операция / версии</th><th>Состояние</th><th>Результат</th><th></th></tr></thead>
-    <tbody>
-    @foreach (var command in VisibleCommands)
-    {
-        <tr>
-            <td>@command.CreatedAt.ToString("dd.MM.yyyy HH:mm:ss")<br /><a href="@($"/admin/nodes/{Uri.EscapeDataString(command.NodeId)}")">@command.NodeId</a></td>
-            <td>@Label(command.Type)<div class="muted">@command.PreviousVersion → @command.TargetVersion</div></td>
-            <td><StatusBadge Status="@command.Status.ToString()" /><div class="muted">@command.ProgressPhase</div></td>
-            <td><strong>@command.ResultCode</strong><div class="muted">@(command.ResultMessage ?? command.ProgressMessage ?? "Ожидание Node")</div></td>
-            <td>
-                <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
-                    @if (NodeCommandService.IsUnknownUpdateOutcomeEligible(command))
-                    {
-                        <button class="btn btn-ghost" disabled="@_busy" @onclick="() => PrepareReconcileAsync(command)">Разрешить неопределённый результат</button>
-                    }
-                </AuthorizeView>
-            </td>
-        </tr>
-    }
-    </tbody>
-</table></div>
-@if (!_busy && !VisibleCommands.Any()) { <p class="muted">Операций по выбранному фильтру нет.</p> }
+
+@foreach (var row in _rows)
+{
+    var command = row.Command;
+    <details class="panel command-card">
+        <summary>
+            <span>@command.CreatedAt.ToString("dd.MM.yyyy HH:mm:ss")</span>
+            <a href="@($"/admin/nodes/{Uri.EscapeDataString(command.NodeId)}")">@(row.DisplayName)</a>
+            <span class="muted">@row.LocationId</span>
+            <span>@UiText.CommandType(command.Type)</span>
+            <StatusBadge Status="@command.Status.ToString()" />
+            <span class="muted">@UiText.ResultCode(command.ResultCode)</span>
+        </summary>
+        <p class="mono muted">CommandId @command.Id.ToString("N") · Correlation @command.CorrelationId.ToString("N")</p>
+        <p class="muted">@command.PreviousVersion → @command.TargetVersion · phase @command.ProgressPhase</p>
+        <p class="muted">@(command.ResultMessage ?? command.ProgressMessage ?? "Ожидание Node")</p>
+        @if (command.Type == NodeCommandType.UpdateNodeLatest)
+        {
+            <UpdateTimeline Steps="@UpdateCommandTimeline.Build(command)" />
+        }
+        <AuthorizeView Policy="@AuthPolicies.SuperAdminOnly">
+            @if (NodeCommandService.IsUnknownUpdateOutcomeEligible(command))
+            {
+                <button class="btn btn-ghost" disabled="@_busy" @onclick="() => PrepareReconcileAsync(command)">Разрешить неопределённый результат</button>
+            }
+        </AuthorizeView>
+    </details>
+}
+@if (!_busy && _rows.Count == 0) { <p class="muted">Операций по выбранному фильтру нет.</p> }
+<div class="pagination">
+    <button class="btn btn-ghost" disabled="@(_page <= 1 || _busy)" @onclick="() => ChangePageAsync(-1)">Назад</button>
+    <button class="btn btn-ghost" disabled="@(_page * _pageSize >= _total || _busy)" @onclick="() => ChangePageAsync(1)">Вперёд</button>
+</div>
 
 @if (_reconcileVisible && _reconcilePreview is not null)
 {
@@ -102,20 +144,42 @@
 }
 
 @code {
+    private sealed record CommandRow(NodeCommand Command, string DisplayName, string LocationId);
+
+    private static readonly HashSet<string> UnknownCodes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "expired_outcome_unknown", "outcome_unknown", "rollback_failed"
+    };
+
     private readonly CancellationTokenSource _stop = new();
     private Task? _poll;
-    private List<NodeCommand> _commands = new();
+    private List<CommandRow> _rows = new();
     private ServerReleaseInfo? _release;
-    private string _query = "", _filter = "all";
+    private string _query = "", _quick = "all", _statusFilter = "", _typeFilter = "", _nodeFilter = "", _locationFilter = "";
+    private int _page = 1, _pageSize = 50, _total;
     private string? _error;
     private string? _info;
     private bool _busy;
     private bool _reconcileVisible;
+    private bool _stepUpNeeded;
     private UnknownUpdateReconciliationPreview? _reconcilePreview;
     private string _reconcileReason = "";
-    private IEnumerable<NodeCommand> VisibleCommands => _commands.Where(c =>
-        (_filter == "all" || (_filter == "active" ? c.CompletedAt is null : c.Status is NodeCommandStatus.Failed or NodeCommandStatus.Expired))
-        && $"{c.NodeId} {c.TargetVersion} {c.ResultCode} {c.ResultMessage}".Contains(_query, StringComparison.OrdinalIgnoreCase));
+    private string StepUpUrl =>
+        $"/account/mfa/step-up?returnUrl={Uri.EscapeDataString("/admin/operations")}";
+
+    private bool EnsureStepUp()
+    {
+        if (!StepUpGuard.RequiresStepUp(HttpContextAccessor.HttpContext))
+        {
+            _stepUpNeeded = false;
+            return true;
+        }
+
+        _stepUpNeeded = true;
+        _error = "Требуется повторная проверка MFA (step-up).";
+        return false;
+    }
+
     protected override async Task OnInitializedAsync() => await RefreshAsync();
     protected override Task OnAfterRenderAsync(bool firstRender)
     {
@@ -124,12 +188,19 @@
     }
     private async Task PollAsync()
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
         try { while (await timer.WaitForNextTickAsync(_stop.Token)) await InvokeAsync(async () => { await RefreshAsync(); StateHasChanged(); }); }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
     }
     private Task RefreshAsync() => LoadAsync(false);
     private Task RefreshReleaseAsync() => LoadAsync(true);
+
+    private async Task ChangePageAsync(int delta)
+    {
+        _page = Math.Max(1, _page + delta);
+        await LoadAsync(false);
+    }
+
     private async Task LoadAsync(bool refreshRelease)
     {
         if (_busy) return;
@@ -138,7 +209,63 @@
         {
             await BlazorWork.RunAsync(Scopes, async sp =>
             {
-                _commands = (await sp.GetRequiredService<INodeCommandService>().ListRecentAsync(100, _stop.Token)).ToList();
+                var db = sp.GetRequiredService<ControlPlaneDbContext>();
+                var q = from c in db.NodeCommands.AsNoTracking()
+                        join n in db.Nodes.AsNoTracking() on c.NodeId equals n.NodeId
+                        where n.LifecycleState != NodeLifecycleState.Deleted
+                        select new { Command = c, n.DisplayName, n.LocationId };
+
+                if (!string.IsNullOrWhiteSpace(_statusFilter) && Enum.TryParse<NodeCommandStatus>(_statusFilter, out var st))
+                    q = q.Where(x => x.Command.Status == st);
+                if (!string.IsNullOrWhiteSpace(_typeFilter) && Enum.TryParse<NodeCommandType>(_typeFilter, out var tp))
+                    q = q.Where(x => x.Command.Type == tp);
+                if (!string.IsNullOrWhiteSpace(_nodeFilter))
+                {
+                    var nf = _nodeFilter.Trim();
+                    q = q.Where(x => x.Command.NodeId.Contains(nf));
+                }
+                if (!string.IsNullOrWhiteSpace(_locationFilter))
+                {
+                    var lf = _locationFilter.Trim();
+                    q = q.Where(x => x.LocationId.Contains(lf));
+                }
+                q = _quick switch
+                {
+                    "active" => q.Where(x => x.Command.CompletedAt == null),
+                    "failed" => q.Where(x => x.Command.Status == NodeCommandStatus.Failed || x.Command.Status == NodeCommandStatus.Expired),
+                    "unknown" => q.Where(x => x.Command.ResultCode != null && UnknownCodes.Contains(x.Command.ResultCode)),
+                    "successful" => q.Where(x => x.Command.Status == NodeCommandStatus.Succeeded),
+                    "update" => q.Where(x => x.Command.Type == NodeCommandType.UpdateNodeLatest),
+                    _ => q
+                };
+                if (!string.IsNullOrWhiteSpace(_query))
+                {
+                    var f = _query.Trim();
+                    if (Guid.TryParse(f, out var gid) || Guid.TryParseExact(f, "N", out gid))
+                    {
+                        q = q.Where(x => x.Command.Id == gid || x.Command.CorrelationId == gid);
+                    }
+                    else
+                    {
+                        q = q.Where(x =>
+                            x.Command.NodeId.Contains(f) ||
+                            (x.Command.ResultCode != null && x.Command.ResultCode.Contains(f)) ||
+                            (x.Command.TargetVersion != null && x.Command.TargetVersion.Contains(f)) ||
+                            x.DisplayName.Contains(f));
+                    }
+                }
+
+                _total = await q.CountAsync(_stop.Token);
+                var skip = (_page - 1) * _pageSize;
+                if (skip >= _total && _page > 1)
+                {
+                    _page = 1;
+                    skip = 0;
+                }
+                var page = await q.OrderByDescending(x => x.Command.CreatedAt)
+                    .Skip(skip).Take(_pageSize).ToListAsync(_stop.Token);
+                _rows = page.Select(x => new CommandRow(x.Command, string.IsNullOrWhiteSpace(x.DisplayName) ? x.Command.NodeId : x.DisplayName, x.LocationId)).ToList();
+
                 var releases = sp.GetRequiredService<IServerReleaseService>();
                 _release = refreshRelease ? await releases.RefreshAsync(_stop.Token) : await releases.GetLatestAsync(_stop.Token);
             });
@@ -181,6 +308,7 @@
     {
         if (_busy || _reconcilePreview is null || string.IsNullOrWhiteSpace(_reconcileReason))
             return;
+        if (!EnsureStepUp()) return;
         _busy = true;
         _error = null;
         try
@@ -219,11 +347,6 @@
         }
     }
 
-    private static string Label(NodeCommandType type) => type switch
-    {
-        NodeCommandType.UpdateNodeLatest => "Обновление ПО", NodeCommandType.RenewCertificate => "Обновление сертификата",
-        NodeCommandType.RestartNyxveilService => "Перезапуск службы", NodeCommandType.RebootHost => "Перезагрузка ОС", _ => type.ToString()
-    };
     public async ValueTask DisposeAsync()
     {
         _stop.Cancel();

@@ -1,0 +1,12 @@
+﻿{
+    "product":  "Nyxveil.ControlPlane",
+    "version":  "1.3.5",
+    "tag":  "control-plane-v1.3.5",
+    "schema":  5,
+    "package":  "Nyxveil-ControlPlane-v1.3.5-release.zip",
+    "updater_version":  "1.3.5",
+    "minimum_supported_version":  "1.3.5",
+    "note":  "Authoritative package digest is the .sha256 sidecar published with the release.",
+    "package_sha256":  "24C1BB42EB69599B9D8B8B807C27334A99AF6CB5C860578B83718E7988F64F9A"
+}
+

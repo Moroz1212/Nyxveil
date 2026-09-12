@@ -3,6 +3,7 @@
 @rendermode InteractiveServer
 @inject IServiceScopeFactory Scopes
 @inject AuthenticationStateProvider AuthState
+@inject IHttpContextAccessor HttpContextAccessor
 @using Nyxveil.ControlPlane.Application.Abstractions
 @using Nyxveil.ControlPlane.Domain.Enums
 @using Nyxveil.ControlPlane.Application.Common
@@ -18,6 +19,14 @@
         <button class="btn btn-ghost" @onclick="RefreshAsync" disabled="@_busy">Обновить</button>
     </div>
 </div>
+
+@if (_stepUpNeeded)
+{
+    <div class="alert alert-warn">
+        Для перезагрузки нужна повторная проверка MFA.
+        <a href="@StepUpUrl">Повысить привилегии</a>
+    </div>
+}
 
 @if (!string.IsNullOrEmpty(_error))
 {
@@ -139,9 +148,26 @@ else
     private string? _error;
     private string? _info;
     private bool _confirmReboot;
+    private bool _stepUpNeeded;
     private string _rebootNodeId = "";
     private string _rebootMessage = "";
     private string _rebootConfirmText = "REBOOT";
+
+    private string StepUpUrl =>
+        $"/account/mfa/step-up?returnUrl={Uri.EscapeDataString("/admin/infrastructure")}";
+
+    private bool EnsureStepUp()
+    {
+        if (!StepUpGuard.RequiresStepUp(HttpContextAccessor.HttpContext))
+        {
+            _stepUpNeeded = false;
+            return true;
+        }
+
+        _stepUpNeeded = true;
+        _error = "Требуется повторная проверка MFA (step-up).";
+        return false;
+    }
 
     protected override async Task OnInitializedAsync() => await RefreshAsync();
 
@@ -223,6 +249,8 @@ else
 
     private async Task ConfirmRebootAsync()
     {
+        if (!EnsureStepUp()) return;
+        _confirmReboot = false;
         await EnqueueAsync(_rebootNodeId, NodeCommandType.RebootHost);
     }
 
