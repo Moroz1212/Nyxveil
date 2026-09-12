@@ -907,3 +907,55 @@ Commit + tag `control-plane-v1.3.5`, publish GitHub Release with validated ZIP, 
 - DEPLOY: not executed on this host
 - Browser E2E: BLOCKED / NOT RUN
 
+
+---
+
+## 2026-09-12 — Control Plane 1.3.6 + Server 1.1.15 (encoding + RenewCertificate)
+
+### Goal
+
+Fix production mojibake in Dashboard Attention and make RenewCertificate return useful safe diagnostics / succeed after upgrade ownership issues.
+
+### Baseline
+
+- Initial HEAD: `65c93eff56e98bfbac3aaf293794a24f743e5d21` (origin/main)
+- Branch: `control-plane-1.3.6`
+- Preserved dirty: `licensing/tests/CoreInterop/verify-signed/go.mod`
+
+### Encoding root cause
+
+Host ANSI CP1251 + UTF-8-without-BOM C# sources → Roslyn could bake CP1251-mojibake into Release `Infrastructure.dll` Attention literals. 1.3.5 ZIP sources were correct UTF-8 while publish DLL contained mojibake.
+
+### Certificate root cause
+
+Server `safeRenewalError` generic fallback; explicit renew path did not log underlying ACME error; ACME state dir ownership not enforced (legacy root-owned `/var/lib/nyxveil/acme`).
+
+### Fixes
+
+- CP: `Directory.Build.props` CodePage 65001; `AttentionCopy` Unicode escapes; AttentionCommandPolicy hides `rolled_back_healthy` / plain `expired`
+- Server 1.1.15: `classifyRenewalFailure`, logging, `EnforceRuntimeACME`, 8m renew timeout
+
+### Version metadata
+
+- Control Plane `1.3.5` → `1.3.6`
+- Server `1.1.14` → `1.1.15` (1.1.14 tag untouched)
+- Schema `5` unchanged; Frozen Core unchanged
+
+### Tests actually run
+
+- CP Unit **466 PASS**; Integration **130 PASS**
+- Server `go test` runtime/filemeta/releasecontract PASS
+- `assert-frozen-core.sh` OK
+- CP package SHA256 `37228DB06A571989C4D98F06B6D783E82EA569071C5B111B67B7E50B9DF5AD69`
+
+### Tests not run
+
+- LIVE UI encoding
+- LIVE RenewCertificate
+- Full Server CI on GitHub (pending push)
+- Headed browser E2E
+
+### Unresolved
+
+- PRODUCTION READY blocked on LIVE verification
+

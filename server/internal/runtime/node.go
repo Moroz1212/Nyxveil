@@ -30,6 +30,7 @@ import (
 	"github.com/nyxveil/server/internal/controlplane"
 	"github.com/nyxveil/server/internal/controlsock"
 	"github.com/nyxveil/server/internal/datapath"
+	"github.com/nyxveil/server/internal/filemeta"
 	"github.com/nyxveil/server/internal/health"
 	"github.com/nyxveil/server/internal/identity"
 	"github.com/nyxveil/server/internal/listeners"
@@ -1303,6 +1304,13 @@ func (n *Node) issueACMEWithOptions(ctx context.Context, cfg localconfig.File, f
 		n.recordRenewalResult(err)
 	}()
 
+	// Ensure ACME state dir/account key are writable by the service user before
+	// opening an ACME order (fixes root-owned legacy layouts after upgrades).
+	stateRoot := filepath.Dir(keyFile)
+	if enforceErr := filemeta.EnforceRuntimeTLS(stateRoot); enforceErr != nil {
+		log.Printf("runtime: ACME/TLS ownership enforce: %v", enforceErr)
+	}
+
 	stageCert, stageKey := configure.StagingTLSPaths(filepath.Dir(keyFile))
 	configure.CleanStaging(stageCert, stageKey)
 	defer configure.CleanStaging(stageCert, stageKey)
@@ -1651,26 +1659,86 @@ func (n *Node) setNextPlannedRenewal(t time.Time) {
 }
 
 func safeRenewalError(err error) string {
+	_, msg := classifyRenewalFailure(err)
+	return msg
+}
+
+// classifyRenewalFailure maps ACME/TLS errors to a stable ResultCode and a
+// safe operator-facing message (no secrets / PEM / tokens).
+func classifyRenewalFailure(err error) (code, message string) {
 	if err == nil {
-		return ""
+		return "renewed", ""
 	}
 	msg := strings.ToLower(err.Error())
+	safeDetail := sanitizeRenewalDetail(err.Error())
 	switch {
 	case errors.Is(err, context.Canceled):
-		return "ACME renewal canceled"
+		return "renew_failed", "ACME renewal canceled"
 	case errors.Is(err, context.DeadlineExceeded):
-		return "ACME renewal timed out"
+		return "renew_failed", "ACME renewal timed out"
+	case strings.Contains(msg, "permission") || strings.Contains(msg, "read-only") ||
+		strings.Contains(msg, "access is denied") || strings.Contains(msg, "operation not permitted"):
+		return "renew_permission_denied", joinRenewDetail("ACME renewal failed: TLS/ACME state permissions", safeDetail)
 	case strings.Contains(msg, "dns"):
-		return "ACME renewal failed DNS validation"
-	case strings.Contains(msg, "listen") || strings.Contains(msg, "port 80"):
-		return "ACME renewal failed HTTP-01 listener setup"
-	case strings.Contains(msg, "authorization") || strings.Contains(msg, "challenge"):
-		return "ACME renewal failed domain authorization"
-	case strings.Contains(msg, "certificate") || strings.Contains(msg, "x509"):
-		return "ACME renewal returned an invalid certificate"
+		return "renew_failed", joinRenewDetail("ACME renewal failed DNS validation", safeDetail)
+	case strings.Contains(msg, "listen") || strings.Contains(msg, "port 80") || strings.Contains(msg, "address already in use"):
+		return "renew_acme_challenge_failed", joinRenewDetail("ACME renewal failed HTTP-01 listener setup", safeDetail)
+	case strings.Contains(msg, "authorization") || strings.Contains(msg, "challenge") || strings.Contains(msg, "http-01"):
+		return "renew_acme_challenge_failed", joinRenewDetail("ACME renewal failed domain authorization", safeDetail)
+	case strings.Contains(msg, "rate") && strings.Contains(msg, "limit"):
+		return "renew_failed", joinRenewDetail("ACME renewal failed: CA rate limit", safeDetail)
+	case strings.Contains(msg, "reload") || strings.Contains(msg, "quic reload") || strings.Contains(msg, "tls reload"):
+		return "renew_reload_failed", joinRenewDetail("Certificate renewed but service reload failed", safeDetail)
+	case strings.Contains(msg, "validate") || strings.Contains(msg, "hostname") ||
+		(strings.Contains(msg, "certificate") && strings.Contains(msg, "invalid")):
+		return "renew_validation_failed", joinRenewDetail("ACME renewal returned an invalid certificate", safeDetail)
+	case strings.Contains(msg, "spki") || strings.Contains(msg, "catalog") || strings.Contains(msg, "advertise"):
+		return "renew_failed", joinRenewDetail("ACME renewal failed: Control Plane SPKI catalog update", safeDetail)
+	case strings.Contains(msg, "register") || strings.Contains(msg, "account"):
+		return "renew_certbot_failed", joinRenewDetail("ACME renewal failed: ACME account", safeDetail)
+	case strings.Contains(msg, "finalize") || strings.Contains(msg, "order"):
+		return "renew_certbot_failed", joinRenewDetail("ACME renewal failed: ACME order/finalize", safeDetail)
+	case strings.Contains(msg, "x509") || strings.Contains(msg, "certificate"):
+		return "renew_validation_failed", joinRenewDetail("ACME renewal returned an invalid certificate", safeDetail)
 	default:
-		return "ACME renewal failed; details are available in local logs"
+		if safeDetail != "" {
+			return "renew_failed", "ACME renewal failed: " + safeDetail
+		}
+		return "renew_failed", "ACME renewal failed; details are available in local logs"
 	}
+}
+
+func joinRenewDetail(prefix, detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return prefix
+	}
+	out := prefix + ": " + detail
+	if len(out) > 480 {
+		return out[:480]
+	}
+	return out
+}
+
+func sanitizeRenewalDetail(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	lower := strings.ToLower(s)
+	// Strip secret-bearing payloads.
+	for _, marker := range []string{"-----begin", "private key", "api_key", "authorization:", "cookie:", "password"} {
+		if i := strings.Index(lower, marker); i >= 0 {
+			s = strings.TrimSpace(s[:i])
+			lower = strings.ToLower(s)
+		}
+	}
+	// Collapse whitespace.
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > 240 {
+		s = s[:240]
+	}
+	return s
 }
 
 func generateSelfSigned(certFile, keyFile, serverName string) error {

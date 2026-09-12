@@ -98,7 +98,7 @@ public static class UiText
     public static string CommandType(NodeCommandType type) => type switch
     {
         NodeCommandType.UpdateNodeLatest => "Обновление",
-        NodeCommandType.RenewCertificate => "Обновление сертификата",
+        NodeCommandType.RenewCertificate => AttentionCopy.RenewCertificate,
         NodeCommandType.RestartNyxveilService => "Перезапуск службы",
         NodeCommandType.RebootHost => "Перезагрузка ОС",
         _ => type.ToString()
@@ -121,6 +121,14 @@ public static class UiText
         "failed_unhealthy_drained" => "Ошибка после drain",
         "health_failed" => "Проверка здоровья не пройдена",
         "version_not_confirmed" => "Версия не подтверждена",
+        "renew_failed" => "Обновление сертификата не выполнено",
+        "renew_acme_challenge_failed" => "ACME challenge не пройден",
+        "renew_permission_denied" => "Нет доступа к ACME/TLS state",
+        "renew_reload_failed" => "Сертификат получен, reload не удался",
+        "renew_validation_failed" => "Новый сертификат не прошёл проверку",
+        "renew_certbot_failed" => "Ошибка ACME-клиента",
+        "no_acme" => "ACME не настроен на сервере",
+        "rate_limited" => "Слишком частый renew",
         _ => code
     };
 
