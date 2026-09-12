@@ -1,10 +1,10 @@
-# Control Plane release gate (1.3.9)
+﻿# Control Plane release gate (1.3.10)
 
-Release artifact: `Nyxveil-ControlPlane-v1.3.9-release.zip`
+Release artifact: `Nyxveil-ControlPlane-v1.3.10-release.zip`
 
 ## Required pins
 
-- Control Plane `VERSION` = **1.3.9**
+- Control Plane `VERSION` = **1.3.10**
 - Schema version = **5** (unchanged from 1.3.4)
 - Companion Server release: **server-v1.1.17** (command-progress reporting; 1.1.14/1.1.15/1.1.16 immutable)
 
@@ -28,12 +28,12 @@ cd licensing
 - `database\migrations\005_certificate_operation_states.sql`
 - `database\migrations\validate_schema_v5.sql`
 - `docs\RELEASE-1.3.8.md`
-- `docs\RELEASE-1.3.9.md`
+- `docs\RELEASE-1.3.10.md`
 - `release-manifest.json`
 
 ## Schema
 
-Schema remains at 5. No new migration for 1.3.9. Self-update durable state lives under
+Schema remains at 5. No new migration for 1.3.10. Self-update durable state lives under
 `%ProgramData%\Nyxveil\ControlPlane\self-update\`. Fleet is a query projection over existing inventory.
 
 Older release notes remain under `docs/RELEASE-1.*.md` for history only.

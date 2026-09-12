@@ -51,7 +51,7 @@ func TestCompletePendingUpdateReportsProgressOnPhaseChange(t *testing.T) {
 	marker := updateMarker{
 		CommandID:       "command-1",
 		PreviousVersion: "1.1.16",
-		TargetVersion:   "1.1.17",
+		TargetVersion:   "1.1.18",
 		Phase:           updatePhaseDownloading,
 		StartedAt:       started.Format(time.RFC3339),
 	}

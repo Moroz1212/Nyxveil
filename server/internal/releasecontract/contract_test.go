@@ -94,8 +94,8 @@ func TestInstallerAssetNamesMatchGitHubWorkflow(t *testing.T) {
 func TestProductVersionConsistency(t *testing.T) {
 	root := repoRoot(t)
 	want := strings.TrimSpace(strings.ReplaceAll(readFile(t, filepath.Join(root, "VERSION")), "\r", ""))
-	if want != "1.1.17" {
-		t.Fatalf("VERSION=%q want 1.1.17", want)
+	if want != "1.1.18" {
+		t.Fatalf("VERSION=%q want 1.1.18", want)
 	}
 	if version.ServerVersion != want || version.CLIVersion != want {
 		t.Fatalf("version.go Server=%q CLI=%q want %q", version.ServerVersion, version.CLIVersion, want)

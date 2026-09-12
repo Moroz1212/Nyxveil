@@ -12,8 +12,12 @@ Set-StrictMode -Version Latest
 
 $componentKeys = @(
     'cp_button_update',
+    'cp_artifact_purity',
+    'cp_no_overlay',
     'windows_scm',
     'node_button_update',
+    'server_artifact_purity',
+    'server_no_local_candidate',
     'durable_restart',
     'acme_pebble',
     'cert_button',

@@ -1,8 +1,8 @@
-# Nyxveil Control Plane
+﻿# Nyxveil Control Plane
 
 Central **Licensing / Control Plane** for Nyxveil VPN (Windows, .NET 10, SQL Server, Blazor admin, HTTPS API).
 
-- **Version:** see [`VERSION`](VERSION) (`1.3.9`)
+- **Version:** see [`VERSION`](VERSION) (`1.3.10`)
 - **Protocol:** NVP/1 (frozen Core contracts)
 
 ## Requirements
@@ -52,7 +52,7 @@ sqlcmd -S localhost -E -d NyxveilControlPlane -i .\database\seed_dev.sql
 2. Set `ConnectionStrings:ControlPlane` (or DPAPI `sql-password.dpapi` overlay in Production)
 3. Set `Security:LicenseKekHex` to **64 hex characters** (32 bytes), or Production DPAPI `license-kek.dpapi`
 4. Set `Signing:KeyProtectionPath`
-5. Set `Hosting` (`BindAddress`, `Port` default suggestion **8443**, `PublicHostname`, `PublicBaseUrl`) — Program.cs Listen is SoT (no `Kestrel:Endpoints` required)
+5. Set `Hosting` (`BindAddress`, `Port` default suggestion **8443**, `PublicHostname`, `PublicBaseUrl`) вЂ” Program.cs Listen is SoT (no `Kestrel:Endpoints` required)
 6. Configure `Certificate` as **Store + Thumbprint** for production runtime (installer imports PFX/SelfSigned then writes Store mode)
 
 Web project settings live under `src/Nyxveil.ControlPlane.Web/appsettings*.json`.
@@ -70,7 +70,7 @@ dotnet run
 
 ## First admin
 
-**Production (preferred):** installer / CLI — service identity `NT SERVICE\NyxveilControlPlane`
+**Production (preferred):** installer / CLI вЂ” service identity `NT SERVICE\NyxveilControlPlane`
 
 ```powershell
 .\Nyxveil.ControlPlane.Web.exe admin create --username admin@example.com
@@ -140,7 +140,7 @@ Details: [docs/CLIENT-API.md](docs/CLIENT-API.md), [docs/NODE-API.md](docs/NODE-
 - [DEPLOYMENT-WINDOWS.md](docs/DEPLOYMENT-WINDOWS.md)
 - [LIVE-DEPLOYMENT-TEST.md](docs/LIVE-DEPLOYMENT-TEST.md)
 - [BACKUP-RESTORE.md](docs/BACKUP-RESTORE.md)
-- [RELEASE-1.3.9.md](docs/RELEASE-1.3.9.md)
+- [RELEASE-1.3.10.md](docs/RELEASE-1.3.10.md)
 - [PAYMENT-INTEGRATION-FUTURE.md](docs/PAYMENT-INTEGRATION-FUTURE.md)
 
 ## Build

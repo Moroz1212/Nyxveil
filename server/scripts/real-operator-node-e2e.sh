@@ -18,8 +18,9 @@ LAB_CP_SCRIPT="${SCRIPT_DIR}/lab-control-plane-start.sh"
 BROWSER_MJS="${REPO_ROOT}/licensing/scripts/real-node-button-browser.mjs"
 
 FROM_VERSION="${NYXVEIL_FROM_SERVER_VERSION:-1.1.15}"
-TARGET_VERSION="${NYXVEIL_TARGET_SERVER_VERSION:-1.1.17}"
-CANDIDATE_VERSION="${NYXVEIL_CANDIDATE_SERVER_VERSION:-1.1.18}"
+TARGET_VERSION="${NYXVEIL_TARGET_SERVER_VERSION:-1.1.18}"
+# Artifact-pure mode: ACME/cert/TLS/QUIC run on the published TARGET binary (no local rebuild).
+CANDIDATE_VERSION=""
 GITHUB_REPO="${NYXVEIL_GITHUB_REPO:-Moroz1212/Nyxveil}"
 EVIDENCE_DIR=""
 WORK_DIR=""
@@ -562,16 +563,18 @@ for i in $(seq 1 60); do
 done
 
 # --- 12) legacy ACME fixture BEFORE update (while still on FROM) ----------------
-log "creating legacy ACME fixture root:root 0700 on /var/lib/nyxveil/acme"
+# Only directory ownership/mode — do NOT plant a fake account key (would require
+# manual cleanup before real ACME and is not a production managed state).
+log "creating legacy ACME fixture root:root 0700 on /var/lib/nyxveil/acme (directory only)"
 mkdir -p /var/lib/nyxveil/acme
+# Ensure no leftover test keys from prior runs on disposable hosts.
+rm -f /var/lib/nyxveil/acme/acme-account.key
 chown root:root /var/lib/nyxveil/acme
 chmod 0700 /var/lib/nyxveil/acme
-# Drop a sentinel so migration ownership change is observable if a later gate checks it.
-if [[ ! -f /var/lib/nyxveil/acme/acme-account.key ]]; then
-  umask 077
-  printf 'legacy-fixture\n' >/var/lib/nyxveil/acme/acme-account.key
-  chown root:root /var/lib/nyxveil/acme/acme-account.key
-  chmod 0600 /var/lib/nyxveil/acme/acme-account.key
+ACME_OWNER_LEGACY="$(stat -c '%U:%G %a' /var/lib/nyxveil/acme 2>/dev/null || echo unknown)"
+log "legacy ACME ownership before update: ${ACME_OWNER_LEGACY}"
+if ! echo "${ACME_OWNER_LEGACY}" | grep -Eq '^root:root 0?700$'; then
+  die "legacy ACME fixture ownership unexpected: ${ACME_OWNER_LEGACY}"
 fi
 
 # --- 8) record old PID ---------------------------------------------------------
@@ -780,7 +783,43 @@ install_candidate_binaries() {
 
 if [[ "${DURABLE_RESTART_RESULT}" == "PASS" ]] && { [[ "${ENABLE_PEBBLE}" == "1" ]] || [[ -n "${PEBBLE_DIR_URL}" ]]; }; then
   ACME_PHASE_RAN=1
-  log "starting ACME/cert/TLS/QUIC/rollback phase (candidate ${CANDIDATE_VERSION})"
+  log "starting ACME/cert/TLS/QUIC/rollback phase on published ${TARGET_VERSION} (no local candidate)"
+
+  # Artifact purity: running binary must still be the published TARGET release.
+  TARGET_ASSET_DIR="${WORK_DIR}/server-v${TARGET_VERSION}"
+  if [[ ! -f "${TARGET_ASSET_DIR}/SHA256SUMS" ]]; then
+    mkdir -p "${TARGET_ASSET_DIR}"
+    log "downloading published server-v${TARGET_VERSION} for purity hash check"
+    "${GH[@]}" release download "server-v${TARGET_VERSION}" -R "${GITHUB_REPO}" -D "${TARGET_ASSET_DIR}" --clobber
+  fi
+  EXPECTED_SERVER_HASH="$(awk '/nyxveil-server-linux-amd64$/ {print tolower($1); exit}' "${TARGET_ASSET_DIR}/SHA256SUMS" 2>/dev/null || true)"
+  [[ -n "${EXPECTED_SERVER_HASH}" ]] || {
+    fail_acme_gate acme_pebble "target_sha256sums_missing_server"
+    exit 1
+  }
+  LIVE_SERVER_HASH="$(sha256sum /usr/local/sbin/nyxveil-server | awk '{print tolower($1)}')"
+  if [[ "${LIVE_SERVER_HASH}" != "${EXPECTED_SERVER_HASH}" ]]; then
+    fail_acme_gate acme_pebble "server_artifact_purity_mismatch" \
+      live_sha="${LIVE_SERVER_HASH}" expected_sha="${EXPECTED_SERVER_HASH}"
+    fail_acme_gate cert_button "server_artifact_purity_mismatch"
+    fail_acme_gate tls_served "server_artifact_purity_mismatch"
+    fail_acme_gate quic_handshake "server_artifact_purity_mismatch"
+    fail_acme_gate rollback_recovery "server_artifact_purity_mismatch"
+    write_json "${EVIDENCE_DIR}/server_artifact_purity-evidence.json" \
+      gate=server_artifact_purity result=FAIL \
+      live_sha="${LIVE_SERVER_HASH}" expected_sha="${EXPECTED_SERVER_HASH}" \
+      finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    exit 1
+  fi
+  write_json "${EVIDENCE_DIR}/server_artifact_purity-evidence.json" \
+    gate=server_artifact_purity result=PASS \
+    target_version="${TARGET_VERSION}" live_sha="${LIVE_SERVER_HASH}" \
+    finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  write_json "${EVIDENCE_DIR}/server_no_local_candidate-evidence.json" \
+    gate=server_no_local_candidate result=PASS \
+    note="ACME phase uses published ${TARGET_VERSION} binary only" \
+    finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  log "server artifact purity PASS sha=${LIVE_SERVER_HASH}"
 
   # Ensure Pebble is reachable. Process-based lab (PEBBLE_PID) needs no docker recreate.
   if [[ -n "${PEBBLE_DIR_URL}" ]] && curl -skf "${PEBBLE_DIR_URL}" >/dev/null 2>&1; then
@@ -810,51 +849,18 @@ if [[ "${DURABLE_RESTART_RESULT}" == "PASS" ]] && { [[ "${ENABLE_PEBBLE}" == "1"
     fi
   fi
 
-  # --- build candidate --------------------------------------------------------
-  CAND_DIR="${WORK_DIR}/candidate-${CANDIDATE_VERSION}"
-  mkdir -p "${CAND_DIR}"
-  log "building candidate ${CANDIDATE_VERSION} (linux/amd64) from server/"
-  if ! (
-    cd "${REPO_ROOT}/server"
-    GOOS=linux GOARCH=amd64 go build -o "${CAND_DIR}/nyxveil-server" ./cmd/nyxveil-server
-    GOOS=linux GOARCH=amd64 go build -o "${CAND_DIR}/nyxveilctl" ./cmd/nyxveilctl
-  ); then
-    fail_acme_gate acme_pebble "candidate_build_failed"
-    fail_acme_gate cert_button "candidate_build_failed"
-    fail_acme_gate tls_served "candidate_build_failed"
-    fail_acme_gate quic_handshake "candidate_build_failed"
-    fail_acme_gate rollback_recovery "candidate_build_failed"
-    exit 1
-  fi
-  [[ -x "${CAND_DIR}/nyxveil-server" && -x "${CAND_DIR}/nyxveilctl" ]] || {
-    fail_acme_gate acme_pebble "candidate_binaries_missing"
-    fail_acme_gate cert_button "candidate_binaries_missing"
-    fail_acme_gate tls_served "candidate_binaries_missing"
-    fail_acme_gate quic_handshake "candidate_binaries_missing"
-    fail_acme_gate rollback_recovery "candidate_binaries_missing"
-    exit 1
-  }
-
   ACME_OWNER_BEFORE="$(acme_dir_ownership_summary)"
-  log "ACME dir ownership before candidate start: ${ACME_OWNER_BEFORE}"
-  # 1.1.17 update should already have migrated legacy root:root → nyxveil:nyxveil 0700.
+  log "ACME dir ownership after ${TARGET_VERSION} update (before Pebble config): ${ACME_OWNER_BEFORE}"
+  # Published TARGET update must have migrated legacy root:root → nyxveil:nyxveil 0700.
   if ! echo "${ACME_OWNER_BEFORE}" | grep -Eq '^nyxveil:nyxveil 0?700$'; then
-    fail_acme_gate acme_pebble "acme_ownership_unexpected_before_candidate" \
-      ownership_before="${ACME_OWNER_BEFORE}" \
+    fail_acme_gate acme_pebble "acme_ownership_unexpected_after_update" \
+      ownership_before="${ACME_OWNER_LEGACY:-unknown}" ownership_after="${ACME_OWNER_BEFORE}" \
       pebble_directory="${PEBBLE_DIR_URL}"
     fail_acme_gate cert_button "acme_ownership_unexpected"
     fail_acme_gate tls_served "acme_ownership_unexpected"
     fail_acme_gate quic_handshake "acme_ownership_unexpected"
     fail_acme_gate rollback_recovery "acme_ownership_unexpected"
     exit 1
-  fi
-  # Legacy fixture wrote a non-PEM sentinel into acme-account.key for ownership
-  # observation. Remove it so candidate ACME can create a real account key.
-  if [[ -f /var/lib/nyxveil/acme/acme-account.key ]]; then
-    if ! grep -q 'BEGIN .*PRIVATE KEY' /var/lib/nyxveil/acme/acme-account.key 2>/dev/null; then
-      log "removing non-PEM legacy ACME account-key sentinel before candidate ACME"
-      rm -f /var/lib/nyxveil/acme/acme-account.key
-    fi
   fi
 
   # /etc/hosts for HTTP-01 name (Pebble --network host uses host resolver)
@@ -863,9 +869,15 @@ if [[ "${DURABLE_RESTART_RESULT}" == "PASS" ]] && { [[ "${ENABLE_PEBBLE}" == "1"
     log "added /etc/hosts entry for ${ACME_DOMAIN}"
   fi
 
+  # Lab config only — do not replace product binaries.
   systemctl stop nyxveil-server
-  install_candidate_binaries "${CAND_DIR}/nyxveil-server" "${CAND_DIR}/nyxveilctl"
   patch_server_json_acme "${PEBBLE_DIR_URL}"
+  # Persist lab ACME directory TLS opt-in via systemd drop-in (config, not binary).
+  mkdir -p /etc/systemd/system/nyxveil-server.service.d
+  cat >/etc/systemd/system/nyxveil-server.service.d/acme-lab.conf <<EOF
+[Service]
+Environment=NYXVEIL_ACME_INSECURE_DIRECTORY_TLS=1
+EOF
   systemctl daemon-reload
   systemctl start nyxveil-server
 
@@ -876,18 +888,26 @@ if [[ "${DURABLE_RESTART_RESULT}" == "PASS" ]] && { [[ "${ENABLE_PEBBLE}" == "1"
     fi
     if [[ "${i}" -eq 90 ]]; then
       journalctl -u nyxveil-server -n 40 --no-pager >&2 || true
-      fail_acme_gate acme_pebble "candidate_service_not_active"
-      fail_acme_gate cert_button "candidate_service_not_active"
-      fail_acme_gate tls_served "candidate_service_not_active"
-      fail_acme_gate quic_handshake "candidate_service_not_active"
-      fail_acme_gate rollback_recovery "candidate_service_not_active"
+      fail_acme_gate acme_pebble "service_not_active_after_acme_config"
+      fail_acme_gate cert_button "service_not_active_after_acme_config"
+      fail_acme_gate tls_served "service_not_active_after_acme_config"
+      fail_acme_gate quic_handshake "service_not_active_after_acme_config"
+      fail_acme_gate rollback_recovery "service_not_active_after_acme_config"
       exit 1
     fi
     sleep 2
   done
 
-  # Allow ACME issuance on first start (self-signed → Pebble leaf)
-  log "waiting for candidate ACME issuance / healthy listeners"
+  # Re-assert binary unchanged after config restart.
+  LIVE_SERVER_HASH2="$(sha256sum /usr/local/sbin/nyxveil-server | awk '{print tolower($1)}')"
+  [[ "${LIVE_SERVER_HASH2}" == "${EXPECTED_SERVER_HASH}" ]] || {
+    fail_acme_gate acme_pebble "binary_changed_after_acme_config" \
+      live_sha="${LIVE_SERVER_HASH2}" expected_sha="${EXPECTED_SERVER_HASH}"
+    exit 1
+  }
+
+  # Allow ACME issuance on start (self-signed → Pebble leaf)
+  log "waiting for published ${TARGET_VERSION} ACME issuance / healthy listeners"
   ACME_TLS_OK=false
   ACME_QUIC_OK=false
   for i in $(seq 1 60); do
@@ -911,7 +931,7 @@ if [[ "${DURABLE_RESTART_RESULT}" == "PASS" ]] && { [[ "${ENABLE_PEBBLE}" == "1"
   if [[ "${ACME_TLS_OK}" != "true" || "${ACME_QUIC_OK}" != "true" ]]; then
     journalctl -u nyxveil-server -n 80 --no-pager >&2 || true
     tail -n 80 "${WORK_DIR}/pebble.log" >&2 || true
-    fail_acme_gate acme_pebble "candidate_acme_listeners_not_healthy" \
+    fail_acme_gate acme_pebble "acme_listeners_not_healthy" \
       tls_ok="${ACME_TLS_OK}" quic_ok="${ACME_QUIC_OK}" \
       pebble_directory="${PEBBLE_DIR_URL}"
     fail_acme_gate cert_button "skipped_acme_failed"
@@ -922,9 +942,9 @@ if [[ "${DURABLE_RESTART_RESULT}" == "PASS" ]] && { [[ "${ENABLE_PEBBLE}" == "1"
   fi
 
   ACME_OWNER_AFTER="$(acme_dir_ownership_summary)"
-  log "ACME dir ownership after candidate start: ${ACME_OWNER_AFTER}"
+  log "ACME dir ownership after Pebble start: ${ACME_OWNER_AFTER}"
   if ! echo "${ACME_OWNER_AFTER}" | grep -Eq '^nyxveil:nyxveil 0?700$'; then
-    fail_acme_gate acme_pebble "acme_ownership_unexpected_after_candidate" \
+    fail_acme_gate acme_pebble "acme_ownership_unexpected_after_pebble" \
       ownership_before="${ACME_OWNER_BEFORE}" ownership_after="${ACME_OWNER_AFTER}" \
       pebble_directory="${PEBBLE_DIR_URL}"
     fail_acme_gate cert_button "acme_ownership_unexpected"
@@ -953,11 +973,13 @@ if [[ "${DURABLE_RESTART_RESULT}" == "PASS" ]] && { [[ "${ENABLE_PEBBLE}" == "1"
     gate=acme_pebble result=PASS \
     pebble_directory="${PEBBLE_DIR_URL}" \
     acme_domain="${ACME_DOMAIN}" \
+    ownership_legacy="${ACME_OWNER_LEGACY:-unknown}" \
     ownership_before="${ACME_OWNER_BEFORE}" \
     ownership_after="${ACME_OWNER_AFTER}" \
-    candidate_version="${CANDIDATE_VERSION}" \
+    target_version="${TARGET_VERSION}" \
+    server_sha256="${LIVE_SERVER_HASH}" \
     finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  log "acme_pebble PASS"
+  log "acme_pebble PASS on published ${TARGET_VERSION}"
 
   # --- Playwright cert renew --------------------------------------------------
   CERT_BASELINE_ID="$(latest_renew_command_id)"

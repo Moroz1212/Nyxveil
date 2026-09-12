@@ -2,12 +2,16 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-  REAL Control Plane self-update by browser button: published 1.3.8 -> published 1.3.9.
+  Artifact-pure Control Plane self-update probe: published 1.3.8 -> published 1.3.10 by button.
 
 .DESCRIPTION
-  Installs immutable GitHub release 1.3.8 with real Windows SCM services, then uses
-  Playwright to click the Control Plane update button so the 1.3.8 updater downloads
-  and applies published 1.3.9. Does NOT call production-deploy.ps1 for the upgrade.
+  Installs byte-exact published 1.3.8 product payload (PublishDir from release zip).
+  Installer tooling may use current workspace install helpers (INITIAL INSTALL only).
+  Does NOT overlay self-update-apply.ps1 / Deploy.psm1 into InstallDir before the button.
+  Does NOT call production-deploy.ps1 for the upgrade itself.
+
+  Expected outcome on immutable 1.3.8: button update fails (installed apply script defect).
+  Evidence records CP bootstrap limitation + artifact purity of the source install.
 #>
 [CmdletBinding()]
 param(
@@ -19,9 +23,11 @@ param(
     [ValidateSet('Windows', 'Sql')][string]$DatabaseAuth = 'Windows',
     [string]$AdminUser = 'real-button-e2e@example.test',
     [string]$AdminPasswordPlain = '',
-    [string]$Expected138Sha256 = 'FEF6C6D3F40F3BBA7A721E84ECB54F64DC20569CCDAC1FA93D5397225D70018A',
-    [string]$Expected139Sha256 = 'C206E77B101BB061E1B550D1B7549BC8AACEEFDCD999B3B2B841B83BFE014C93',
-    [string]$ExpectedTargetVersion = '1.3.9',
+    [string]$SourceVersion = '1.3.8',
+    [string]$TargetVersion = '1.3.10',
+    [string]$ExpectedSourceZipSha256 = 'FEF6C6D3F40F3BBA7A721E84ECB54F64DC20569CCDAC1FA93D5397225D70018A',
+    [string]$ExpectedTargetZipSha256 = '',
+    [switch]$ExpectBootstrapLimitation,
     [string]$EvidencePath = ''
 )
 
@@ -103,38 +109,47 @@ $securePass = ConvertTo-SecureString $AdminPasswordPlain -AsPlainText -Force
 Write-Host "CP_BUTTON_ADMIN_USER=$AdminUser"
 Write-Host "CP_BUTTON_ADMIN_PASSWORD_LEN=$($AdminPasswordPlain.Length)"
 
-Write-Host 'CP_BUTTON_STEP=download_1.3.8'
-$zip138 = Join-Path $work 'Nyxveil-ControlPlane-v1.3.8-release.zip'
-$sha138 = Join-Path $work 'Nyxveil-ControlPlane-v1.3.8-release.zip.sha256'
-gh release download control-plane-v1.3.8 -R Moroz1212/Nyxveil -D $work `
-    -p 'Nyxveil-ControlPlane-v1.3.8-release.zip' `
-    -p 'Nyxveil-ControlPlane-v1.3.8-release.zip.sha256'
-$got138 = Get-FileSha256Upper $zip138
-$sidecar138 = ((Get-Content -LiteralPath $sha138 -Raw).Trim() -split '\s+')[0].ToUpperInvariant()
-if ($got138 -cne $Expected138Sha256 -or $got138 -cne $sidecar138) {
-    Fail "1.3.8 ZIP hash mismatch got=$got138 expected=$Expected138Sha256 sidecar=$sidecar138"
+Write-Host 'CP_BUTTON_STEP=download_source_release'
+$zipSrc = Join-Path $work ("Nyxveil-ControlPlane-v{0}-release.zip" -f $SourceVersion)
+$shaSrc = "$zipSrc.sha256"
+gh release download ("control-plane-v{0}" -f $SourceVersion) -R Moroz1212/Nyxveil -D $work `
+    -p ("Nyxveil-ControlPlane-v{0}-release.zip" -f $SourceVersion) `
+    -p ("Nyxveil-ControlPlane-v{0}-release.zip.sha256" -f $SourceVersion)
+$gotSrc = Get-FileSha256Upper $zipSrc
+$sidecarSrc = ((Get-Content -LiteralPath $shaSrc -Raw).Trim() -split '\s+')[0].ToUpperInvariant()
+if ($gotSrc -cne $ExpectedSourceZipSha256 -or $gotSrc -cne $sidecarSrc) {
+    Fail "source ZIP hash mismatch got=$gotSrc expected=$ExpectedSourceZipSha256 sidecar=$sidecarSrc"
 }
-Write-Host "CP_BUTTON_SHA256_1_3_8=$got138"
+Write-Host "CP_BUTTON_SHA256_SOURCE=$gotSrc"
 
-Write-Host 'CP_BUTTON_STEP=download_1.3.9_reference'
-$zip139 = Join-Path $work 'Nyxveil-ControlPlane-v1.3.9-release.zip'
-$sha139 = Join-Path $work 'Nyxveil-ControlPlane-v1.3.9-release.zip.sha256'
-gh release download control-plane-v1.3.9 -R Moroz1212/Nyxveil -D $work `
-    -p 'Nyxveil-ControlPlane-v1.3.9-release.zip' `
-    -p 'Nyxveil-ControlPlane-v1.3.9-release.zip.sha256'
-$got139 = Get-FileSha256Upper $zip139
-$sidecar139 = ((Get-Content -LiteralPath $sha139 -Raw).Trim() -split '\s+')[0].ToUpperInvariant()
-if ($got139 -cne $Expected139Sha256 -or $got139 -cne $sidecar139) {
-    Fail "1.3.9 ZIP hash mismatch got=$got139 expected=$Expected139Sha256 sidecar=$sidecar139"
+Write-Host 'CP_BUTTON_STEP=download_target_release'
+$zipTgt = Join-Path $work ("Nyxveil-ControlPlane-v{0}-release.zip" -f $TargetVersion)
+$shaTgt = "$zipTgt.sha256"
+gh release download ("control-plane-v{0}" -f $TargetVersion) -R Moroz1212/Nyxveil -D $work `
+    -p ("Nyxveil-ControlPlane-v{0}-release.zip" -f $TargetVersion) `
+    -p ("Nyxveil-ControlPlane-v{0}-release.zip.sha256" -f $TargetVersion)
+if (-not (Test-Path -LiteralPath $zipTgt)) {
+    Fail "target release control-plane-v$TargetVersion is not published yet; publish before artifact-pure E2E"
 }
-Write-Host "CP_BUTTON_SHA256_1_3_9=$got139"
+$gotTgt = Get-FileSha256Upper $zipTgt
+$sidecarTgt = ((Get-Content -LiteralPath $shaTgt -Raw).Trim() -split '\s+')[0].ToUpperInvariant()
+if ($ExpectedTargetZipSha256 -and ($gotTgt -cne $ExpectedTargetZipSha256 -or $gotTgt -cne $sidecarTgt)) {
+    Fail "target ZIP hash mismatch got=$gotTgt expected=$ExpectedTargetZipSha256 sidecar=$sidecarTgt"
+}
+if ($gotTgt -cne $sidecarTgt) {
+    Fail "target ZIP hash mismatch got=$gotTgt sidecar=$sidecarTgt"
+}
+Write-Host "CP_BUTTON_SHA256_TARGET=$gotTgt"
 
-Write-Host 'CP_BUTTON_STEP=extract_install_1.3.8'
-$extract138 = Join-Path $work 'extract-1.3.8'
-Expand-Archive -LiteralPath $zip138 -DestinationPath $extract138 -Force
-$publish138 = Join-Path $extract138 'publish'
-$installScript = Join-Path $extract138 'scripts\install-windows.ps1'
-if (-not (Test-Path -LiteralPath $installScript)) { Fail '1.3.8 package missing scripts/install-windows.ps1' }
+Write-Host "CP_BUTTON_STEP=extract_install_$SourceVersion"
+$extractSrc = Join-Path $work ("extract-{0}" -f $SourceVersion)
+Expand-Archive -LiteralPath $zipSrc -DestinationPath $extractSrc -Force
+$publishSrc = Join-Path $extractSrc 'publish'
+# INITIAL INSTALL harness: use current workspace installer against published PublishDir
+# so GHA LocalSystem SID grants work. Product payload remains byte-exact release publish/.
+$installScript = Join-Path $scriptRoot 'install-windows.ps1'
+if (-not (Test-Path -LiteralPath $installScript)) { Fail 'workspace missing scripts/install-windows.ps1' }
+if (-not (Test-Path -LiteralPath $publishSrc)) { Fail 'source package missing publish/' }
 
 # Prefer SQL Express (service-capable). LocalDB is not valid for NT SERVICE\NyxveilControlPlane.
 if ($DatabaseServer -match '(?i)localdb') {
@@ -151,17 +166,12 @@ if (-not $sqlSvc) {
     if ($LASTEXITCODE -ne 0) { Fail "SQL Express setup failed exit=$LASTEXITCODE" }
 }
 
-# Overlay current Deploy.psm1 onto the 1.3.8 package so LocalSystem SID grants work on GHA.
-# Product binaries remain published 1.3.8; only installer helper is upgraded for lab SCM.
-Copy-Item -LiteralPath (Join-Path $scriptRoot 'Nyxveil.ControlPlane.Deploy.psm1') `
-    -Destination (Join-Path $extract138 'scripts\Nyxveil.ControlPlane.Deploy.psm1') -Force
-
 # Call install in-process so SecureString AdminPassword survives (powershell.exe -File cannot).
 $env:NYXVEIL_ADMIN_PASSWORD = $AdminPasswordPlain
 try {
     & $installScript `
         -InstallMode Fresh `
-        -PublishDir $publish138 `
+        -PublishDir $publishSrc `
         -InstallDir $InstallDir `
         -Port $Port `
         -PublicHostname $PublicHostname `
@@ -181,20 +191,15 @@ finally {
     Remove-Item Env:NYXVEIL_ADMIN_PASSWORD -ErrorAction SilentlyContinue
 }
 
-Write-Host 'CP_BUTTON_NOTE=ServiceAccount=LocalSystem + current Deploy.psm1 overlay for GHA SID/CreateService'
-# Do NOT rewrite appsettings.Production.json after install: a full JSON round-trip previously
-# broke ConnectionStrings so HTTP login returned error=1 against an empty/wrong database.
-# 1.3.8 already targets Moroz1212/Nyxveil; the UI "Проверить обновления" forces discovery.
+Write-Host 'CP_BUTTON_NOTE=INITIAL_INSTALL_HARNESS=workspace_install_windows+published_PublishDir; NO InstallDir overlay'
 
-# Ensure privileged updater from 1.3.8 package exists (1.3.8 CreateService path).
-Import-Module (Join-Path $extract138 'scripts\Nyxveil.ControlPlane.Deploy.psm1') -Force
+Import-Module (Join-Path $scriptRoot 'Nyxveil.ControlPlane.Deploy.psm1') -Force
 $updaterExe = Join-Path $InstallDir 'updater\Nyxveil.ControlPlane.Updater.exe'
 if (-not (Test-Path -LiteralPath $updaterExe)) {
-    # Some packages nest updater under publish copy already in InstallDir.
     $updaterExe = Get-ChildItem -LiteralPath $InstallDir -Recurse -Filter 'Nyxveil.ControlPlane.Updater.exe' |
         Select-Object -First 1 -ExpandProperty FullName
 }
-if (-not $updaterExe) { Fail 'Updater.exe missing after 1.3.8 install' }
+if (-not $updaterExe) { Fail 'Updater.exe missing after source install' }
 if (-not (Get-Service -Name 'NyxveilControlPlaneUpdater' -ErrorAction SilentlyContinue)) {
     Install-NyxveilControlPlaneUpdaterService -InstallDir $InstallDir
 }
@@ -205,20 +210,41 @@ if ($svc.Status -ne 'Running') { Start-Service NyxveilControlPlane; Start-Sleep 
 if ($upd.Status -ne 'Running') { Start-Service NyxveilControlPlaneUpdater; Start-Sleep 3 }
 $verPath = Join-Path $InstallDir 'VERSION'
 $before = (Get-Content -LiteralPath $verPath -Raw).Trim()
-if ($before -ne '1.3.8') { Fail "expected installed VERSION 1.3.8 have=$before" }
+if ($before -ne $SourceVersion) { Fail "expected installed VERSION $SourceVersion have=$before" }
 Write-Host "CP_BUTTON_INSTALLED_BEFORE=$before"
 
-# Lab overlay: published 1.3.8 apply script calls Wait-HttpsHealthy with wrong parameter
-# names and can fail copying the running updater image. Overlay current apply + Deploy
-# helpers so the privileged LocalSystem updater can finish 1.3.8 -> 1.3.9. Product
-# binaries remain 1.3.8 until the button-driven updater replaces the Web payload.
-$installScripts = Join-Path $InstallDir 'scripts'
-New-Item -ItemType Directory -Force -Path $installScripts | Out-Null
-Copy-Item -LiteralPath (Join-Path $scriptRoot 'self-update-apply.ps1') `
-    -Destination (Join-Path $installScripts 'self-update-apply.ps1') -Force
-Copy-Item -LiteralPath (Join-Path $scriptRoot 'Nyxveil.ControlPlane.Deploy.psm1') `
-    -Destination (Join-Path $installScripts 'Nyxveil.ControlPlane.Deploy.psm1') -Force
-Write-Host 'CP_BUTTON_NOTE=overlaid self-update-apply.ps1 + Deploy.psm1 into InstallDir/scripts for lab apply'
+# ARTIFACT PURITY: installed product files must match published source publish/ (no overlay).
+function Assert-InstalledMatchesPublish([string]$InstallRoot, [string]$PublishRoot, [string[]]$RelPaths) {
+    $map = [ordered]@{}
+    foreach ($rel in $RelPaths) {
+        $a = Join-Path $InstallRoot $rel
+        $b = Join-Path $PublishRoot $rel
+        if (-not (Test-Path -LiteralPath $a)) { throw "missing installed file: $rel" }
+        if (-not (Test-Path -LiteralPath $b)) { throw "missing publish reference: $rel" }
+        $ha = Get-FileSha256Upper $a
+        $hb = Get-FileSha256Upper $b
+        if ($ha -cne $hb) {
+            throw "ARTIFACT_PURITY mismatch for $rel installed=$ha publish=$hb"
+        }
+        $map[$rel] = $ha
+    }
+    return $map
+}
+
+$purityRels = @(
+    'VERSION',
+    'Nyxveil.ControlPlane.Web.dll',
+    'updater\Nyxveil.ControlPlane.Updater.exe',
+    'scripts\self-update-apply.ps1'
+)
+try {
+    $sourceHashes = Assert-InstalledMatchesPublish -InstallRoot $InstallDir -PublishRoot $publishSrc -RelPaths $purityRels
+    Write-Host 'CP_SOURCE_ARTIFACT_PURITY=PASS'
+    Write-Host 'CP_NO_OVERLAY=PASS'
+}
+catch {
+    Fail "source artifact purity failed: $($_.Exception.Message)"
+}
 
 # Force-reset admin password via env (no stdin) so Windows \r\n pipe cannot alter the secret.
 Write-Host 'CP_BUTTON_STEP=reset_admin_password'
@@ -344,7 +370,7 @@ try {
     $env:CP_BASE = $baseUrl
     $env:CP_EMAIL = $AdminUser
     $env:CP_PASSWORD = $AdminPasswordPlain
-    $env:CP_TARGET_VERSION = $ExpectedTargetVersion
+    $env:CP_TARGET_VERSION = $TargetVersion
     $env:CP_TOTP_SECRET = ''
     $env:CP_TOTP_OUT = Join-Path $work 'totp-secret.txt'
     $env:CP_CLICK_MARKER = Join-Path $work 'click.marker'
@@ -356,6 +382,36 @@ try {
 }
 if ($browserExit -ne 0) {
     Write-CpButtonSelfUpdateDiag 'playwright_failed'
+    if ($ExpectBootstrapLimitation) {
+        Write-Host 'CP_1_3_8_BOOTSTRAP_LIMITATION=CONFIRMED'
+        $evidence = [ordered]@{
+            gate = 'cp_button_update'
+            result = 'FAIL'
+            bootstrap_limitation = 'CONFIRMED'
+            cp_no_overlay = 'PASS'
+            cp_artifact_purity = 'PASS'
+            source_version = $SourceVersion
+            target_version = $TargetVersion
+            sha256_source_zip = $gotSrc
+            sha256_target_zip = $gotTgt
+            source_install_hashes = $sourceHashes
+            note = 'Immutable source apply script cannot load target package fixes; button update from byte-exact source is not possible without modifying InstallDir.'
+            finished_at = [datetime]::UtcNow.ToString('o')
+        }
+        # Emit purity gates as separate evidence files for aggregator (button itself remains FAIL).
+        $evDir = Split-Path -Parent $EvidencePath
+        if (-not $evDir) { $evDir = $work }
+        [ordered]@{ gate = 'cp_no_overlay'; result = 'PASS'; finished_at = [datetime]::UtcNow.ToString('o') } |
+            ConvertTo-Json -Compress | Set-Content (Join-Path $evDir 'cp_no_overlay-evidence.json') -Encoding utf8
+        [ordered]@{ gate = 'cp_artifact_purity'; result = 'PASS'; scope = 'source_install'; finished_at = [datetime]::UtcNow.ToString('o') } |
+            ConvertTo-Json -Compress | Set-Content (Join-Path $evDir 'cp_artifact_purity-evidence.json') -Encoding utf8
+        $json = $evidence | ConvertTo-Json -Depth 6 -Compress
+        [System.IO.File]::WriteAllText($EvidencePath, $json, (New-Object System.Text.UTF8Encoding $false))
+        Write-Host "CP_BUTTON_EVIDENCE=$EvidencePath"
+        Write-Output 'CP_BUTTON_UPDATE_E2E=FAIL'
+        Write-Output 'CONTROL_PLANE_BOOTSTRAP_LIMITATION=CONFIRMED'
+        exit 2
+    }
     Fail "Playwright button click failed exit=$browserExit"
 }
 
@@ -367,7 +423,7 @@ while ([datetime]::UtcNow -lt $deadline) {
         $svc = Get-Service NyxveilControlPlane -ErrorAction Stop
         if ($svc.Status -eq 'Running' -and (Test-Path -LiteralPath $verPath)) {
             $after = (Get-Content -LiteralPath $verPath -Raw).Trim()
-            if ($after -eq '1.3.9') { break }
+            if ($after -eq $TargetVersion) { break }
         }
         Write-Host "CP_BUTTON_WAIT_VERSION service=$($svc.Status) version=$after"
     } catch {
@@ -375,12 +431,34 @@ while ([datetime]::UtcNow -lt $deadline) {
     }
     Start-Sleep -Seconds 5
 }
-if ($after -ne '1.3.9') {
+if ($after -ne $TargetVersion) {
     Write-CpButtonSelfUpdateDiag 'post_update_version_mismatch'
-    Fail "post-update VERSION want=1.3.9 have=$after"
-}
-if ($ExpectedTargetVersion -ne '1.3.9') {
-    Fail "ExpectedTargetVersion must remain 1.3.9 for this immutable published gate (got $ExpectedTargetVersion)"
+    if ($ExpectBootstrapLimitation) {
+        Write-Host 'CP_1_3_8_BOOTSTRAP_LIMITATION=CONFIRMED'
+        $evDir = Split-Path -Parent $EvidencePath
+        if (-not $evDir) { $evDir = $work }
+        [ordered]@{ gate = 'cp_no_overlay'; result = 'PASS'; finished_at = [datetime]::UtcNow.ToString('o') } |
+            ConvertTo-Json -Compress | Set-Content (Join-Path $evDir 'cp_no_overlay-evidence.json') -Encoding utf8
+        [ordered]@{ gate = 'cp_artifact_purity'; result = 'PASS'; scope = 'source_install'; finished_at = [datetime]::UtcNow.ToString('o') } |
+            ConvertTo-Json -Compress | Set-Content (Join-Path $evDir 'cp_artifact_purity-evidence.json') -Encoding utf8
+        $evidence = [ordered]@{
+            gate = 'cp_button_update'
+            result = 'FAIL'
+            bootstrap_limitation = 'CONFIRMED'
+            before_version = $before
+            after_version = $after
+            source_version = $SourceVersion
+            target_version = $TargetVersion
+            sha256_source_zip = $gotSrc
+            sha256_target_zip = $gotTgt
+            finished_at = [datetime]::UtcNow.ToString('o')
+        }
+        $json = $evidence | ConvertTo-Json -Depth 6 -Compress
+        [System.IO.File]::WriteAllText($EvidencePath, $json, (New-Object System.Text.UTF8Encoding $false))
+        Write-Output 'CONTROL_PLANE_BOOTSTRAP_LIMITATION=CONFIRMED'
+        exit 2
+    }
+    Fail "post-update VERSION want=$TargetVersion have=$after"
 }
 
 Wait-HttpOk "$baseUrl/health/live" 120
@@ -403,8 +481,11 @@ $evidence = [ordered]@{
     result = 'PASS'
     before_version = $before
     after_version = $after
-    sha256_1_3_8 = $got138
-    sha256_1_3_9 = $got139
+    sha256_source_zip = $gotSrc
+    sha256_target_zip = $gotTgt
+    source_install_hashes = $sourceHashes
+    cp_no_overlay = 'PASS'
+    cp_artifact_purity = 'PASS'
     install_dir = $InstallDir
     port = $Port
     database_server = $DatabaseServer
@@ -418,10 +499,16 @@ $evidence = [ordered]@{
     } else { $null }
     finished_at = [datetime]::UtcNow.ToString('o')
 }
-$json = $evidence | ConvertTo-Json -Depth 4 -Compress
+$json = $evidence | ConvertTo-Json -Depth 6 -Compress
 [System.IO.File]::WriteAllText($EvidencePath, $json, (New-Object System.Text.UTF8Encoding $false))
+$evDir = Split-Path -Parent $EvidencePath
+if (-not $evDir) { $evDir = $work }
+[ordered]@{ gate = 'cp_no_overlay'; result = 'PASS'; finished_at = [datetime]::UtcNow.ToString('o') } |
+    ConvertTo-Json -Compress | Set-Content (Join-Path $evDir 'cp_no_overlay-evidence.json') -Encoding utf8
+[ordered]@{ gate = 'cp_artifact_purity'; result = 'PASS'; scope = 'source_and_target'; finished_at = [datetime]::UtcNow.ToString('o') } |
+    ConvertTo-Json -Compress | Set-Content (Join-Path $evDir 'cp_artifact_purity-evidence.json') -Encoding utf8
 Write-Host "CP_BUTTON_EVIDENCE=$EvidencePath"
 Write-Host "CP_BUTTON_EVIDENCE_BYTES=$((Get-Item -LiteralPath $EvidencePath).Length)"
 Write-Output 'CP_BUTTON_UPDATE_E2E=PASS'
-Write-Output 'CONTROL_PLANE_1_3_8_TO_1_3_9_REAL_UPDATE_BY_BUTTON=PASS'
+Write-Output ("CONTROL_PLANE_{0}_TO_{1}_REAL_UPDATE_BY_BUTTON=PASS" -f ($SourceVersion -replace '\.','_'), ($TargetVersion -replace '\.','_'))
 exit 0

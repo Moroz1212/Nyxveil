@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using Xunit;
 
 namespace Nyxveil.ControlPlane.UnitTests;
@@ -75,7 +75,7 @@ public sealed class MigrationDeployHardeningTests
         var broken = File.ReadAllText(Path.Combine(
             LicensingRoot, "database", "migrations", "fixtures", "002_broken_lifecycle_same_batch.sql"));
         Assert.Contains("ALTER TABLE dbo.Nodes ADD LifecycleState", broken, StringComparison.Ordinal);
-        // Static reference in same script/batch — the live Msg 207 pattern.
+        // Static reference in same script/batch вЂ” the live Msg 207 pattern.
         Assert.Matches(new Regex(
             @"ADD\s+CONSTRAINT\s+CK_Nodes_LifecycleState_Broken\s+CHECK\s*\(\s*LifecycleState",
             RegexOptions.IgnoreCase | RegexOptions.Singleline), broken);
@@ -92,7 +92,7 @@ public sealed class MigrationDeployHardeningTests
         Assert.Contains("EXEC(N'ALTER TABLE dbo.Nodes WITH CHECK ADD CONSTRAINT CK_Nodes_LifecycleState", sql, StringComparison.Ordinal);
         Assert.Contains("EXEC(N'CREATE INDEX IX_Nodes_LifecycleState ON dbo.Nodes([LifecycleState])", sql, StringComparison.Ordinal);
 
-        // Must NOT have a static CHECK (LifecycleState ...) outside EXEC — Msg 207 class.
+        // Must NOT have a static CHECK (LifecycleState ...) outside EXEC вЂ” Msg 207 class.
         var withoutExecBodies = Regex.Replace(sql, @"EXEC\s*\(\s*N'[\s\S]*?'\s*\)", "EXEC_PLACEHOLDER", RegexOptions.IgnoreCase);
         Assert.DoesNotMatch(new Regex(
             @"ADD\s+CONSTRAINT\s+CK_Nodes_LifecycleState\s+CHECK\s*\(\s*\[?LifecycleState\]?",
@@ -134,7 +134,7 @@ public sealed class MigrationDeployHardeningTests
     public void TestProductionDeployRequiresMigrationRehearsalBeforeStop()
     {
         var deploy = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-deploy.ps1"));
-        Assert.Contains("1.3.9", deploy, StringComparison.Ordinal);
+        Assert.Contains("1.3.10", deploy, StringComparison.Ordinal);
         Assert.Contains("migration_rehearsal", deploy, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("publish_payload_sha256", deploy, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("rollback_complete", deploy, StringComparison.OrdinalIgnoreCase);

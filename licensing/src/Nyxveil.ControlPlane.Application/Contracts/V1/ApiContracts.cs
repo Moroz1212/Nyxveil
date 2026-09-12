@@ -1,4 +1,4 @@
-using System.Text.Json.Serialization;
+﻿using System.Text.Json.Serialization;
 using Nyxveil.ControlPlane.Application.Serialization;
 
 namespace Nyxveil.ControlPlane.Application.Contracts.V1;
@@ -245,7 +245,7 @@ public sealed class RevocationListResponse
 public sealed class VersionResponse
 {
     [JsonPropertyName("control_plane_version")]
-    public string ControlPlaneVersion { get; set; } = "1.3.9";
+    public string ControlPlaneVersion { get; set; } = "1.3.10";
 
     [JsonPropertyName("min_protocol_version")]
     public ushort MinProtocolVersion { get; set; } = 1;
