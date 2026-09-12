@@ -2321,6 +2321,12 @@ function Ensure-NyxveilServiceSid {
         }
     }
 
+    if ($ServiceAccount -match '^(?i)LocalSystem$' -or
+        $ServiceAccount -match '^(?i)NT AUTHORITY\\SYSTEM$') {
+        Write-Host "Service SID resolved: $ServiceAccount -> S-1-5-18"
+        return 'S-1-5-18'
+    }
+
     try {
         $nt = New-Object System.Security.Principal.NTAccount($ServiceAccount)
         $sid = $nt.Translate([System.Security.Principal.SecurityIdentifier])

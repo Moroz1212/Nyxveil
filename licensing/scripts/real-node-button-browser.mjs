@@ -3,13 +3,14 @@
  * real-node-button-browser.mjs
  *
  * Playwright helper: login to lab Control Plane, complete MFA enrollment/login,
- * step-up, open node details, click data-testid=node-update, confirm preflight
- * ("Запустить обновление").
+ * step-up, open node details, then either:
+ *   CP_ACTION=update (default): click data-testid=node-update + confirm preflight
+ *   CP_ACTION=cert-renew: click data-testid=node-certificate-renew
  *
  * Required env:
  *   CP_BASE, CP_EMAIL, CP_PASSWORD, CP_NODE_ID
  * Optional:
- *   CP_TOTP_SECRET, CP_TOTP_OUT, CP_CLICK_MARKER, CP_TARGET_VERSION
+ *   CP_TOTP_SECRET, CP_TOTP_OUT, CP_CLICK_MARKER, CP_TARGET_VERSION, CP_ACTION
  */
 import { chromium } from 'playwright';
 import fs from 'fs';
@@ -68,22 +69,8 @@ async function fillTotpIfPresent(page, secret) {
   return true;
 }
 
-(async () => {
-  const base = process.env.CP_BASE;
-  const email = process.env.CP_EMAIL;
-  const password = process.env.CP_PASSWORD;
-  const nodeId = process.env.CP_NODE_ID;
-  let totpSecret = process.env.CP_TOTP_SECRET || '';
-  const targetVersion = process.env.CP_TARGET_VERSION || '';
-  if (!base || !email || !password || !nodeId) {
-    throw new Error('CP_BASE, CP_EMAIL, CP_PASSWORD, CP_NODE_ID are required');
-  }
-
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ ignoreHTTPSErrors: true });
-  const page = await context.newPage();
-  page.setDefaultTimeout(180000);
-
+async function loginAndOpenNode(page, base, email, password, nodeId, totpSecretRef) {
+  let totpSecret = totpSecretRef.value;
   await page.goto(base + '/account/login');
   await page.fill('input[name=email]', email);
   await page.fill('input[name=password]', password);
@@ -123,8 +110,12 @@ async function fillTotpIfPresent(page, secret) {
     base + '/account/mfa/step-up?returnUrl=' + encodeURIComponent(nodeUrl)
   );
   await fillTotpIfPresent(page, totpSecret);
-
   await page.goto(base + nodeUrl);
+  totpSecretRef.value = totpSecret;
+  return nodeUrl;
+}
+
+async function runUpdateAction(page, base, nodeUrl, totpSecret, targetVersion, nodeId) {
   const updateBtn = page.getByTestId('node-update');
   await updateBtn.waitFor({ state: 'visible', timeout: 120000 });
   await expectEnabled(updateBtn, 'node-update');
@@ -163,11 +154,11 @@ async function fillTotpIfPresent(page, secret) {
   if (process.env.CP_CLICK_MARKER) {
     fs.writeFileSync(
       process.env.CP_CLICK_MARKER,
-      'clicked=' + new Date().toISOString() + '\nnode_id=' + nodeId + '\n'
+      'clicked=' + new Date().toISOString() + '\nnode_id=' + nodeId + '\naction=update\n'
     );
   }
 
-  // Soft wait: command row / queue message may appear; durable wait is owned by bash.
+  // Soft wait: command row / toast message may appear; durable wait is owned by bash.
   for (let i = 0; i < 30; i++) {
     try {
       await page.goto(base + nodeUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
@@ -183,8 +174,96 @@ async function fillTotpIfPresent(page, secret) {
     await page.waitForTimeout(3000);
   }
 
-  await browser.close();
   console.log('NODE_BUTTON_BROWSER_CLICK=PASS');
+}
+
+async function runCertRenewAction(page, base, nodeUrl, nodeId) {
+  const renewBtn = page.getByTestId('node-certificate-renew');
+  await renewBtn.waitFor({ state: 'visible', timeout: 120000 });
+  await expectEnabled(renewBtn, 'node-certificate-renew');
+  await page.waitForTimeout(1000);
+  await renewBtn.click();
+
+  if (process.env.CP_CLICK_MARKER) {
+    fs.writeFileSync(
+      process.env.CP_CLICK_MARKER,
+      'clicked=' + new Date().toISOString() + '\nnode_id=' + nodeId + '\naction=cert-renew\n'
+    );
+  }
+
+  // Soft wait for enqueue acknowledgement; terminal command wait is owned by bash.
+  let sawAck = false;
+  let uiStuckRenewing = false;
+  for (let i = 0; i < 40; i++) {
+    try {
+      await page.goto(base + nodeUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      const text = (await page.textContent('body')) || '';
+      if (
+        text.includes('Команда отправлена') ||
+        text.includes('обновление сертификата') ||
+        /RenewCertificate|сертификат/i.test(text)
+      ) {
+        sawAck = true;
+      }
+      const btn = page.getByTestId('node-certificate-renew');
+      if ((await btn.count()) && (await btn.isEnabled())) {
+        // Button re-enabled means UI is not stuck in busy/Renewing.
+        uiStuckRenewing = false;
+        if (sawAck && i >= 2) break;
+      } else if (sawAck) {
+        uiStuckRenewing = true;
+      }
+    } catch (_) {}
+    await page.waitForTimeout(2000);
+  }
+
+  if (process.env.CP_UI_STATE_OUT) {
+    fs.writeFileSync(
+      process.env.CP_UI_STATE_OUT,
+      JSON.stringify(
+        {
+          saw_ack: sawAck,
+          ui_stuck_renewing: uiStuckRenewing,
+          finished_at: new Date().toISOString(),
+        },
+        null,
+        2
+      ) + '\n'
+    );
+  }
+
+  console.log('NODE_CERT_BUTTON_BROWSER_CLICK=PASS');
+}
+
+(async () => {
+  const base = process.env.CP_BASE;
+  const email = process.env.CP_EMAIL;
+  const password = process.env.CP_PASSWORD;
+  const nodeId = process.env.CP_NODE_ID;
+  const action = (process.env.CP_ACTION || 'update').toLowerCase();
+  const totpSecretRef = { value: process.env.CP_TOTP_SECRET || '' };
+  const targetVersion = process.env.CP_TARGET_VERSION || '';
+  if (!base || !email || !password || !nodeId) {
+    throw new Error('CP_BASE, CP_EMAIL, CP_PASSWORD, CP_NODE_ID are required');
+  }
+  if (action !== 'update' && action !== 'cert-renew') {
+    throw new Error('CP_ACTION must be update or cert-renew');
+  }
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  const page = await context.newPage();
+  page.setDefaultTimeout(180000);
+
+  const nodeUrl = await loginAndOpenNode(page, base, email, password, nodeId, totpSecretRef);
+
+  if (action === 'cert-renew') {
+    await runCertRenewAction(page, base, nodeUrl, nodeId);
+  } else {
+    await runUpdateAction(page, base, nodeUrl, totpSecretRef.value, targetVersion, nodeId);
+  }
+
+  await browser.close();
 })().catch((err) => {
   console.error(err);
   process.exit(1);

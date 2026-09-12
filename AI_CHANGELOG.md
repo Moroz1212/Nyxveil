@@ -1378,3 +1378,45 @@ Actual: `f41b50268e01e283bf896970433fd569f6fdd7d1`
 ### Preserved dirty
 `licensing/tests/CoreInterop/verify-signed/go.mod`
 
+---
+
+## 2026-09-12 — Node E2E ACME/cert/TLS/QUIC/rollback phase (1.1.18 candidate)
+
+### Goal / baseline
+
+- Baseline HEAD: `b737a4b8b5e0a97ad6f50fd7adcd4fc119a098d7`
+- After published 1.1.15→1.1.17 button+durable PASS, when Pebble is enabled,
+  install a locally built 1.1.18 candidate and exercise ACME/cert/TLS/QUIC/rollback
+  evidence gates without emitting `FULL_OPERATOR_E2E=PASS`
+
+### Files changed
+
+- `server/scripts/real-operator-node-e2e.sh` — post-durable candidate swap,
+  Pebble `--network host`, server.json `acme_*` patch, Playwright cert renew,
+  openssl TLS leaf proof, QUIC probe, dead-directory rollback preservation;
+  candidate build failure writes honest FAIL evidence
+- `licensing/scripts/real-node-button-browser.mjs` — `CP_ACTION=cert-renew`
+  clicks `data-testid=node-certificate-renew`
+- `server/scripts/quic-handshake-probe/main.go` — lab QUIC/h3 dial with
+  InsecureSkipVerify for Pebble-issued leaves
+- `AI_STATE.md` — handoff snapshot
+
+### Behavior notes
+
+- Never emits `FULL_OPERATOR_E2E=PASS`
+- Removes non-PEM legacy `acme-account.key` sentinel after ownership check so
+  real ACME can register
+- Restarts once after startup ACME to clear in-memory RenewCertificate 1h rate limit
+- Frozen Core / third_party/nvp untouched; version metadata not bumped
+
+### Tests run
+
+- PASS: `bash -n` on `real-operator-node-e2e.sh` (LF-normalized)
+- PASS: `go build ./scripts/quic-handshake-probe` (local Windows Go)
+- Not run: live Ubuntu disposable host / GitHub Actions `ubuntu-node-operator-e2e`
+
+### Suggested next action
+
+Re-run `.github/workflows/production-release-e2e.yml` (or disposable Ubuntu host)
+with `NYXVEIL_ENABLE_PEBBLE=1` and inspect node-operator evidence JSONs.
+
