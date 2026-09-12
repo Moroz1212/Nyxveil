@@ -239,127 +239,8 @@ $baseUrl = "https://127.0.0.1:$Port"
 Wait-HttpOk "$baseUrl/health/live" 180
 
 Write-Host 'CP_BUTTON_STEP=browser_click_update'
-$clickJs = Join-Path $work 'click-update.cjs'
-$clickBody = @'
-const { chromium } = require('playwright');
-const fs = require('fs');
-const crypto = require('crypto');
-
-function totp(secretB32) {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-  let bits = '';
-  const cleaned = String(secretB32).replace(/[\s=]+/g, '').toUpperCase();
-  for (const c of cleaned) {
-    const val = alphabet.indexOf(c);
-    if (val < 0) continue;
-    bits += val.toString(2).padStart(5, '0');
-  }
-  const bytes = [];
-  for (let i = 0; i + 8 <= bits.length; i += 8) bytes.push(parseInt(bits.slice(i, i + 8), 2));
-  const key = Buffer.from(bytes);
-  const counter = Buffer.alloc(8);
-  counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 1000 / 30)));
-  const hmac = crypto.createHmac('sha1', key).update(counter).digest();
-  const offset = hmac[hmac.length - 1] & 0xf;
-  const code = ((hmac[offset] & 0x7f) << 24) | (hmac[offset + 1] << 16) | (hmac[offset + 2] << 8) | hmac[offset + 3];
-  return String(code % 1000000).padStart(6, '0');
-}
-
-function extractSecret(pageText, otpUri) {
-  if (otpUri) {
-    const m = /[?&]secret=([A-Z2-7]+)/i.exec(otpUri);
-    if (m) return m[1].toUpperCase();
-  }
-  const m2 = /([A-Z2-7]{16,})/.exec(pageText.replace(/\s+/g, ''));
-  return m2 ? m2[1].toUpperCase() : '';
-}
-
-(async () => {
-  const base = process.env.CP_BASE;
-  const email = process.env.CP_EMAIL;
-  const password = process.env.CP_PASSWORD;
-  let totpSecret = process.env.CP_TOTP_SECRET || '';
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ ignoreHTTPSErrors: true });
-  const page = await context.newPage();
-  page.setDefaultTimeout(180000);
-
-  await page.goto(base + '/account/login');
-  await page.fill('input[name=email]', email);
-  await page.fill('input[name=password]', password);
-  await page.getByRole('button', { name: 'Войти' }).click();
-
-  // Mandatory MFA enrollment for SuperAdmin.
-  if (page.url().includes('/account/mfa/setup') || await page.getByRole('heading', { name: 'Настройка MFA' }).count()) {
-    await page.locator('details summary').first().click({ timeout: 30000 }).catch(() => {});
-    const keyInput = page.locator('input.mono[readonly]').first();
-    await keyInput.waitFor({ state: 'visible', timeout: 60000 });
-    const shared = await keyInput.inputValue();
-    const uri = await page.locator('textarea.mono').inputValue().catch(() => '');
-    totpSecret = extractSecret(shared + ' ' + uri, uri) || shared.replace(/\s+/g, '').toUpperCase();
-    if (!totpSecret) throw new Error('could not extract MFA shared key');
-    fs.writeFileSync(process.env.CP_TOTP_OUT || 'totp.txt', totpSecret);
-    await page.fill('input[name=code]', totp(totpSecret));
-    await page.getByRole('button', { name: 'Включить MFA' }).click();
-    // recovery codes page
-    const cont = page.getByRole('link', { name: 'Продолжить' });
-    await cont.waitFor({ state: 'visible', timeout: 60000 });
-    await cont.click();
-  }
-
-  // Login 2FA if redirected
-  if (await page.locator('input[name=code]').count()) {
-    if (!totpSecret) throw new Error('TOTP required');
-    await page.fill('input[name=code]', totp(totpSecret));
-    await page.getByRole('button', { name: /Подтвердить|Войти/ }).click();
-  }
-
-  await page.waitForURL(u => !String(u).includes('/account/login') && !String(u).includes('/account/mfa/setup'), { timeout: 120000 });
-
-  // Step-up for update
-  await page.goto(base + '/account/mfa/step-up?returnUrl=' + encodeURIComponent('/admin/control-plane'));
-  if (await page.locator('input[name=code]').count()) {
-    await page.fill('input[name=code]', totp(totpSecret));
-    await page.getByRole('button', { name: 'Подтвердить' }).click();
-  }
-
-  await page.goto(base + '/admin/control-plane');
-  await page.getByRole('button', { name: 'Проверить обновления' }).click();
-  await page.waitForTimeout(5000);
-  const updateBtn = page.getByTestId('control-plane-update');
-  await updateBtn.waitFor({ state: 'visible' });
-  await expectEnabled(updateBtn);
-  await updateBtn.click();
-  const confirm = page.getByRole('button', { name: 'Подтвердить обновление' });
-  await confirm.waitFor({ state: 'visible', timeout: 90000 });
-  await confirm.click();
-  fs.writeFileSync(process.env.CP_CLICK_MARKER, 'clicked=' + new Date().toISOString());
-
-  let ok = false;
-  for (let i = 0; i < 120; i++) {
-    try {
-      await page.goto(base + '/admin/control-plane', { waitUntil: 'domcontentloaded', timeout: 20000 });
-      const body = await page.textContent('body');
-      if (body && /Installed:[\s\S]*1\.3\.9/.test(body)) { ok = true; break; }
-      if (body && body.includes('1.3.9')) { ok = true; break; }
-    } catch (_) {}
-    await page.waitForTimeout(5000);
-  }
-  await browser.close();
-  if (!ok) throw new Error('browser did not observe VERSION 1.3.9 after button update');
-  console.log('CP_BUTTON_BROWSER_OBSERVED_1_3_9=PASS');
-})().catch(err => { console.error(err); process.exit(1); });
-
-async function expectEnabled(locator) {
-  for (let i = 0; i < 60; i++) {
-    if (await locator.isEnabled()) return;
-    await new Promise(r => setTimeout(r, 2000));
-  }
-  throw new Error('update button stayed disabled (1.3.9 not discovered?)');
-}
-'@
-$utf8NoBom = New-Object System.Text.UTF8Encoding $false
-[System.IO.File]::WriteAllText($clickJs, $clickBody, $utf8NoBom)
+$clickJs = Join-Path $scriptRoot 'real-cp-button-browser.cjs'
+if (-not (Test-Path -LiteralPath $clickJs)) { Fail "missing $clickJs" }
 
 Push-Location $work
 try {
@@ -369,6 +250,7 @@ try {
     $env:CP_BASE = $baseUrl
     $env:CP_EMAIL = $AdminUser
     $env:CP_PASSWORD = $AdminPasswordPlain
+    $env:CP_TARGET_VERSION = $ExpectedTargetVersion
     $env:CP_TOTP_SECRET = ''
     $env:CP_TOTP_OUT = Join-Path $work 'totp-secret.txt'
     $env:CP_CLICK_MARKER = Join-Path $work 'click.marker'
