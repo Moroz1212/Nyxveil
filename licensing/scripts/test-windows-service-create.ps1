@@ -62,7 +62,9 @@ static class P {
 & $csc /nologo /out:$exePath $cs | Out-Null
 if (-not (Test-Path -LiteralPath $exePath)) { Fail 'failed to compile test host exe' }
 
-# --- Prove LIVE 1.3.7 sc.exe quoting defect (diagnostic only; must not be used for create) ---
+# --- Prove LIVE 1.3.7 sc.exe quoting defect under Windows PowerShell 5.1 ---
+# GitHub Actions defaults to pwsh 7, which escapes native args differently. LIVE used
+# Windows PowerShell 5.1 (production-deploy.ps1). Always spawn powershell.exe for this probe.
 $trampCs = Join-Path $work 'DumpCmd.cs'
 $trampExe = Join-Path $work 'DumpCmd.exe'
 @'
@@ -78,11 +80,31 @@ class Dump {
 }
 '@ | Set-Content -LiteralPath $trampCs -Encoding ASCII
 & $csc /nologo /out:$trampExe $trampCs | Out-Null
-$legacyBinPath = "`"$exePath`" --service"
-$legacyCmd = & $trampExe create $serviceName binPath= $legacyBinPath DisplayName= $displayName start= auto obj= LocalSystem
-Write-Host "LEGACY_PS51_SC_CMDLINE=$legacyCmd"
-if ($legacyCmd -notmatch 'binPath= ""') {
-    Fail 'Expected PowerShell 5.1 legacy sc.exe cmdline to contain malformed binPath= ""... pattern'
+
+$ps51 = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+if (-not (Test-Path -LiteralPath $ps51)) { Fail 'Windows PowerShell 5.1 powershell.exe not found' }
+$legacyProbe = Join-Path $work 'legacy-sc-probe.ps1'
+@'
+param(
+  [Parameter(Mandatory = $true)][string]$ExePath,
+  [Parameter(Mandatory = $true)][string]$TrampExe,
+  [Parameter(Mandatory = $true)][string]$ServiceName,
+  [Parameter(Mandatory = $true)][string]$DisplayName
+)
+$ErrorActionPreference = 'Stop'
+# Exact LIVE 1.3.7 shape: embedded quotes around a spaced path, then --service.
+$legacyBinPath = "`"$ExePath`" --service"
+$legacyCmd = & $TrampExe create $ServiceName binPath= $legacyBinPath DisplayName= $DisplayName start= auto obj= LocalSystem
+Write-Output $legacyCmd
+'@ | Set-Content -LiteralPath $legacyProbe -Encoding ASCII
+
+$legacyCmd = & $ps51 -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $legacyProbe `
+    -ExePath $exePath -TrampExe $trampExe -ServiceName $serviceName -DisplayName $displayName
+if (-not $legacyCmd) { Fail 'Windows PowerShell 5.1 legacy sc.exe cmdline probe returned empty output' }
+$legacyLine = if ($legacyCmd -is [array]) { ($legacyCmd | Select-Object -Last 1) } else { [string]$legacyCmd }
+Write-Host "LEGACY_PS51_SC_CMDLINE=$legacyLine"
+if ($legacyLine -notmatch 'binPath= ""') {
+    Fail "Expected PowerShell 5.1 legacy sc.exe cmdline to contain malformed binPath= `"`"... pattern; got: $legacyLine"
 }
 Write-Host 'LEGACY_SC_QUOTING_DEFECT=CONFIRMED'
 

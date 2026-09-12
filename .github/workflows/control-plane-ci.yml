@@ -53,7 +53,9 @@ jobs:
         run: dotnet test tests/Nyxveil.ControlPlane.IntegrationTests/Nyxveil.ControlPlane.IntegrationTests.csproj -c Release --no-build --logger "trx;LogFileName=control-plane-integration.trx"
 
       - name: Windows service CreateService integration
-        shell: pwsh
+        # Use Windows PowerShell 5.1 to match LIVE production-deploy host semantics.
+        # The test also re-probes the sc.exe 1639 quoting defect via powershell.exe explicitly.
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           .\scripts\test-windows-service-create.ps1
