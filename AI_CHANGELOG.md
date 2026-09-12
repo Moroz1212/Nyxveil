@@ -1420,3 +1420,50 @@ Actual: `f41b50268e01e283bf896970433fd569f6fdd7d1`
 Re-run `.github/workflows/production-release-e2e.yml` (or disposable Ubuntu host)
 with `NYXVEIL_ENABLE_PEBBLE=1` and inspect node-operator evidence JSONs.
 
+---
+
+## 2026-09-12 — Real operator E2E gates PASS (production-release-e2e)
+
+### Goal
+
+Close the rejected false-PASS gap: only real button/systemd/Pebble/TLS/QUIC
+evidence may set `FULL_OPERATOR_E2E` / `AUTOMATED_PRODUCTION_GATES`.
+
+### Baseline / final HEAD
+
+- Branch: `real-operator-e2e-gates`
+- Final HEAD: `8a240a96b1606b958bd4ef4321221b829f78948d` (+ compact evidence fix pending)
+- Workflow run: `34705774241` (success)
+- Published artifacts tested (immutable): CP 1.3.8→1.3.9, server 1.1.15→1.1.17
+- No retag of `control-plane-v1.3.9` / `server-v1.1.17`
+
+### Behavior / harness changes (summary)
+
+- Contract scripts renamed semantically (`CONTRACT_*`, never FULL_OPERATOR)
+- Aggregator + assert fail-closed (`licensing/scripts/aggregate-production-gates.ps1`)
+- Windows CP button E2E: install published 1.3.8, Playwright update button → 1.3.9
+- Lab overlay: fixed `self-update-apply.ps1` (Wait-HttpsHealthy args + skip locked updater)
+- Ubuntu node E2E: systemd PID1, published 1.1.15→1.1.17 button, durable restart,
+  legacy ACME ownership migration check, then candidate 1.1.18 Pebble/cert/TLS/QUIC/rollback
+
+### Tests actually run
+
+- PASS: GitHub Actions `production-release-e2e` run `34705774241`
+  - `windows-cp-button-e2e` PASS
+  - `windows-scm` PASS
+  - `ubuntu-node-operator-e2e` PASS
+  - `aggregate` → `FULL_OPERATOR_E2E=PASS` + `AUTOMATED_PRODUCTION_GATES=PASS`
+- PASS: `server/scripts/assert-frozen-core.sh` locally at handoff
+- Preserved dirty: `licensing/tests/CoreInterop/verify-signed/go.mod`
+
+### Compatibility
+
+- Frozen Core hash unchanged
+- Old release tags/assets unchanged
+- New product releases not published in this step (recommend CP 1.3.10 apply fix + server 1.1.18 ACME as follow-up)
+
+### Suggested next action
+
+User LIVE acceptance (three clicks). Optionally package CP 1.3.10 / server 1.1.18
+so production no longer needs lab overlays / candidate binaries for ACME directory.
+

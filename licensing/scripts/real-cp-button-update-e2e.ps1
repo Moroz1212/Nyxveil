@@ -413,11 +413,15 @@ $evidence = [ordered]@{
     browser_reconnect = 'PASS'
     service_restart = 'PASS'
     terminal_reconciliation = 'PASS'
-    clicked_at = if (Test-Path $env:CP_CLICK_MARKER) { Get-Content $env:CP_CLICK_MARKER -Raw } else { $null }
+    clicked_at = if ($env:CP_CLICK_MARKER -and (Test-Path -LiteralPath $env:CP_CLICK_MARKER)) {
+        ((Get-Content -LiteralPath $env:CP_CLICK_MARKER -TotalCount 2) -join ' ').Trim()
+    } else { $null }
     finished_at = [datetime]::UtcNow.ToString('o')
 }
-$evidence | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $EvidencePath -Encoding UTF8
+$json = $evidence | ConvertTo-Json -Depth 4 -Compress
+[System.IO.File]::WriteAllText($EvidencePath, $json, (New-Object System.Text.UTF8Encoding $false))
 Write-Host "CP_BUTTON_EVIDENCE=$EvidencePath"
+Write-Host "CP_BUTTON_EVIDENCE_BYTES=$((Get-Item -LiteralPath $EvidencePath).Length)"
 Write-Output 'CP_BUTTON_UPDATE_E2E=PASS'
 Write-Output 'CONTROL_PLANE_1_3_8_TO_1_3_9_REAL_UPDATE_BY_BUTTON=PASS'
 exit 0
