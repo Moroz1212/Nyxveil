@@ -1467,3 +1467,50 @@ evidence may set `FULL_OPERATOR_E2E` / `AUTOMATED_PRODUCTION_GATES`.
 User LIVE acceptance (three clicks). Optionally package CP 1.3.10 / server 1.1.18
 so production no longer needs lab overlays / candidate binaries for ACME directory.
 
+
+---
+
+## 2026-09-13 — Development close-out (lab COMPLETE; LIVE user-only)
+
+### Goal
+
+Stop the debugging loop. Split FAST vs FULL RELEASE E2E. Productize remaining
+CP/server fixes into published releases. Treat LIVE three-click acceptance as
+user-only PENDING (not a DEVELOPMENT COMPLETE blocker).
+
+### Baseline HEAD
+
+- Start of close-out session: `3ad1894591d14166dddb3f61d38d05b39a013b8e`
+- Branch: `real-operator-e2e-gates`
+- Preserved dirty: `licensing/tests/CoreInterop/verify-signed/go.mod`
+
+### Product releases published (immutable)
+
+- `control-plane-v1.3.10` — self-update apply / locked-updater productization (ZIP SHA256 `099507D8…`)
+- `control-plane-v1.3.11` — purity-proof patch over 1.3.10 (ZIP SHA256 `BBB2EC62…`)
+- `server-v1.1.18` — ACME/cert path productization; 18 release assets
+
+### Lab evidence used (not re-run endlessly)
+
+- `34705774241`: baseline operator contracts PASS (honest: CP overlay + local 1.1.18 candidate for ACME phase)
+- `34708791199` node job: artifact-pure published `1.1.15` → `1.1.18` by button; purity/ACME/TLS/QUIC/rollback PASS on published binary SHA `18b05cbb…`
+- Subsequent FULL E2E retries failed on Windows CP GitHub API **403 rate limit** (harness/GHA shared IP). Not treated as a product defect in 1.3.10/1.3.11 packages. Harness not further perfected per close-out rules.
+
+### Process change
+
+- `production-release-e2e.yml`: remove push trigger — **workflow_dispatch / workflow_call only** (FULL RELEASE gate, not every commit)
+
+### Product facts for LIVE
+
+- Hosts on CP **1.3.8/1.3.9**: one-time `production-deploy` to ≥**1.3.10** (prefer 1.3.11), then button updates
+- Nodes: update to published **server-v1.1.18**
+- LIVE clicks: user only; agent does not access production
+
+### Frozen Core
+
+- Unchanged: `7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b`
+
+### DEVELOPMENT COMPLETE
+
+- **YES** (lab/CI + published final releases). LIVE USER ACCEPTANCE = **PENDING**.
+
