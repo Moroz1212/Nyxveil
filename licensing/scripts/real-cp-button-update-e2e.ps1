@@ -138,7 +138,7 @@ try {
         -TrustSqlServerCertificate `
         -AdminUser $AdminUser `
         -AdminPassword $securePass `
-        -ServiceAccount LocalSystem `
+        -ServiceAccount 'NT AUTHORITY\SYSTEM' `
         -NonInteractive `
         -SkipFirewall
     if ($LASTEXITCODE -ne 0) { Fail "install-windows.ps1 failed exit=$LASTEXITCODE" }
@@ -147,7 +147,7 @@ finally {
     Remove-Item Env:NYXVEIL_ADMIN_PASSWORD -ErrorAction SilentlyContinue
 }
 
-Write-Host 'CP_BUTTON_NOTE=ServiceAccount=LocalSystem for disposable GHA SCM (real CreateService/StartService; updater remains LocalSystem)'
+Write-Host 'CP_BUTTON_NOTE=ServiceAccount=NT AUTHORITY\SYSTEM for disposable GHA SCM (real CreateService; updater LocalSystem)'
 
 # Accelerate GitHub discovery cache for the button gate (1.3.8 already defaults to Moroz1212/Nyxveil).
 $appsettings = Join-Path $InstallDir 'appsettings.Production.json'
