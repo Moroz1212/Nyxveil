@@ -409,6 +409,15 @@ func (u *Updater) Apply(m *Manifest, health HealthCheck) error {
 func (u *Updater) enforceOwnership(stateDir string) error {
 	fn := u.EnforceOwnership
 	if fn == nil {
+		// Default migrate only when the state root already exists. Unit tests often
+		// leave StateDir unset (paths.StateDir = /var/lib/nyxveil) without that tree;
+		// production update always sets EnforceOwnership=MigrateACMEState explicitly.
+		if _, err := os.Stat(stateDir); err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
 		fn = filemeta.MigrateACMEState
 	}
 	return fn(stateDir)
