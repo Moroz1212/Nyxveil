@@ -96,8 +96,8 @@ if (Get-Service -Name 'NyxveilControlPlane' -ErrorAction SilentlyContinue) {
     Fail 'NyxveilControlPlane already exists; require a disposable clean host.'
 }
 if ([string]::IsNullOrWhiteSpace($AdminPasswordPlain)) {
-    # Avoid shell/history metacharacters (! etc.) in the lab password.
-    $AdminPasswordPlain = 'NyxveilLabE2E9ChangeMe'
+    # Must satisfy Identity password options (len>=12, upper/lower/digit/non-alphanumeric).
+    $AdminPasswordPlain = 'NyxveilLabE2E9!Change'
 }
 $securePass = ConvertTo-SecureString $AdminPasswordPlain -AsPlainText -Force
 Write-Host "CP_BUTTON_ADMIN_USER=$AdminUser"
@@ -253,32 +253,22 @@ $headers = & curl.exe -sk -o $loginProbe -D - -X POST "$baseUrl/account/login" `
     --data-binary "@$formFile" 2>&1 | Out-String
 Write-Host "CP_BUTTON_LOGIN_PROBE_HEADERS<<EOF`n$headers`nEOF"
 if ($headers -match '(?im)^Location:\s*.*error=1') {
-    # Fallback: HttpClient-style form post (avoids curl/ps quoting entirely).
     try {
-        Add-Type -AssemblyName System.Net.Http
-        $handler = [System.Net.Http.HttpClientHandler]::new()
-        $handler.AllowAutoRedirect = $false
-        $handler.ServerCertificateCustomValidationCallback = { $true }
-        $client = [System.Net.Http.HttpClient]::new($handler)
-        $content = [System.Net.Http.FormUrlEncodedContent]::new(@(
-            [System.Collections.Generic.KeyValuePair[string,string]]::new('email', $AdminUser),
-            [System.Collections.Generic.KeyValuePair[string,string]]::new('password', $AdminPasswordPlain),
-            [System.Collections.Generic.KeyValuePair[string,string]]::new('returnUrl', '/')
-        ))
-        $resp = $client.PostAsync("$baseUrl/account/login", $content).GetAwaiter().GetResult()
-        $loc = $resp.Headers.Location
-        Write-Host "CP_BUTTON_LOGIN_HTTPCLIENT_STATUS=$([int]$resp.StatusCode) Location=$loc"
-        if ($loc -and "$loc" -match 'error=1') {
-            Fail "HTTP login probe returned error=1 after password reset (curl+HttpClient). headers=$headers"
+        $failedRows = & sqlcmd -S $DatabaseServer -E -d $Database -h -1 -W -Q `
+            "SET NOCOUNT ON; SELECT Email, AccessFailedCount, LockoutEnabled, CONVERT(varchar(33), LockoutEnd, 126), TwoFactorEnabled FROM AspNetUsers;" 2>&1 |
+            Out-String
+        Write-Host "CP_BUTTON_SQL_AFTER_LOGIN<<EOF`n$failedRows`nEOF"
+    } catch { }
+    $logDir = Join-Path $env:ProgramData 'Nyxveil\ControlPlane\logs'
+    if (Test-Path -LiteralPath $logDir) {
+        Get-ChildItem -LiteralPath $logDir -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | ForEach-Object {
+            Write-Host "CP_BUTTON_LOG_FILE=$($_.FullName)"
+            Get-Content -LiteralPath $_.FullName -Tail 40 | ForEach-Object { Write-Host "CP_BUTTON_LOG=$_" }
         }
-        if (-not $resp.StatusCode.ToString().StartsWith('3')) {
-            Fail "HTTP login HttpClient expected redirect, got $([int]$resp.StatusCode)"
-        }
-    } catch {
-        Fail "HTTP login probe returned error=1 (credentials rejected). headers=$headers; httpclient=$($_.Exception.Message)"
     }
+    Fail "HTTP login probe returned error=1 (credentials rejected). formBytes=$([System.IO.File]::ReadAllBytes($formFile).Length) headers=$headers"
 }
-elseif ($headers -notmatch '(?im)^HTTP/\S+\s+302') {
+if ($headers -notmatch '(?im)^HTTP/\S+\s+302') {
     Fail "HTTP login probe expected 302 redirect. headers=$headers"
 }
 Write-Host 'CP_BUTTON_LOGIN_HTTP=PASS'
