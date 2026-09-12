@@ -1234,3 +1234,15 @@ ClaimNext drain-wait returned null without refreshing ExpiresAt past DeliveryTtl
 - Server controlplane/runtime/filemeta/nyxveilctl PASS
 - Windows SCM / FULL_OPERATOR release-mode: deferred to CI / elevated lab
 
+
+---
+
+## 2026-09-12 — Releases: control-plane-v1.3.9 + server-v1.1.17
+
+- Product/main SHA: 3f3e750d9eeab575e5edaaa40c7e54cffa51b1a4
+- CP CI 34690952992 PASS (480/130/Browser/SCM/FULL_OPERATOR lab)
+- Server CI 34690953034 PASS; Server Release 34691224528 PASS
+- CP ZIP SHA256 C206E77B101BB061E1B550D1B7549BC8AACEEFDCD999B3B2B841B83BFE014C93 download-back matched
+- Releases: control-plane-v1.3.9, server-v1.1.17
+- LIVE three clicks PENDING; Frozen Core unchanged; dirty go.mod preserved
+

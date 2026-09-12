@@ -1,32 +1,30 @@
 # AI_STATE.md — Nyxveil current project state
 
-> Updated 2026-09-12 — production hardening **CP 1.3.9** + **Server 1.1.17** in progress on branch `production-hardening-1.3.9-1.1.17`.  
+> Updated 2026-09-12 after releases **control-plane-v1.3.9** and **server-v1.1.17**.  
 > Schema **5**. Frozen Core unchanged.  
+> LIVE three operator clicks: **PENDING**.  
 > Preserved dirty: `licensing/tests/CoreInterop/verify-signed/go.mod`.
 
-## Repository
+## Releases
 
-| Fact | Value |
-|---|---|
-| Initial HEAD | `773f91275472cfe17d8cd64714f84ad853065e1b` |
-| Branch | `production-hardening-1.3.9-1.1.17` |
-| Production CP base | **1.3.8** (LIVE 1.3.6→1.3.8 confirmed by user) |
-| Target CP | **1.3.9** |
-| Target Server | **1.1.17** (cumulative from 1.1.15/1.1.16) |
+| Component | Version | Tag | Product SHA |
+|---|---|---|---|
+| Control Plane | 1.3.9 | `control-plane-v1.3.9` | `3f3e750d9eeab575e5edaaa40c7e54cffa51b1a4` |
+| Server | 1.1.17 | `server-v1.1.17` | `3f3e750d9eeab575e5edaaa40c7e54cffa51b1a4` |
 
-## Root causes (this hardening)
+- CP CI: https://github.com/Moroz1212/Nyxveil/actions/runs/34690952992 (480 unit / 130 integration / Browser E2E / SCM / FULL_OPERATOR lab PASS)
+- Server CI: https://github.com/Moroz1212/Nyxveil/actions/runs/34690953034 + Server Release `34691224528`
+- CP ZIP SHA256: `C206E77B101BB061E1B550D1B7549BC8AACEEFDCD999B3B2B841B83BFE014C93` (download-back matched)
+- CP release: https://github.com/Moroz1212/Nyxveil/releases/tag/control-plane-v1.3.9
+- Server release: https://github.com/Moroz1212/Nyxveil/releases/tag/server-v1.1.17
 
-1. **TTL / lease:** Update drain wait left command `Pending` under `DeliveryTtl` (15m). LIVE expired at ~15.5m with `expired` / `command TTL exceeded` while drain/update was in flight. Fix: execution deadline + progress lease refresh on ClaimNext drain-wait and `/progress`.
-2. **Late terminal result:** `CompleteAsync` only reconciled `expired_outcome_unknown` / `outcome_unknown`. Generic `expired` rejected late `updated_healthy`. Fix: broaden resolvable codes + late_result note.
-3. **Server progress:** Node now reports phase progress to refresh CP lease across restart/update.
+## LIVE operator acceptance (user only)
 
-## Automated status (session)
+1. Control Plane button: **1.3.8 → 1.3.9**
+2. Node update button: **1.1.15 or 1.1.16 → 1.1.17**
+3. Renew certificate button
 
-- CP Unit: **480 PASS** (includes NodeCommandLeaseTests)
-- Browser E2E: **1 PASS** (login+MFA+three operator buttons; cert enqueue proven)
-- Server packages controlplane/runtime/filemeta/nyxveilctl: **PASS** locally
-- FULL_OPERATOR release-mode (1.3.8→1.3.9 real SCM): requires elevated disposable Windows host
-- LIVE three production clicks: **PENDING**
+No PowerShell/SSH/chmod/sc manual repair.
 
 ## Frozen Core
 
