@@ -208,13 +208,12 @@ $before = (Get-Content -LiteralPath $verPath -Raw).Trim()
 if ($before -ne '1.3.8') { Fail "expected installed VERSION 1.3.8 have=$before" }
 Write-Host "CP_BUTTON_INSTALLED_BEFORE=$before"
 
-# Force-reset admin password via the same CLI/DB the installer used (guards stdin/hash drift).
+# Force-reset admin password via env (no stdin) so Windows \r\n pipe cannot alter the secret.
 Write-Host 'CP_BUTTON_STEP=reset_admin_password'
 $env:NYXVEIL_ADMIN_PASSWORD = $AdminPasswordPlain
 try {
     $reset = Invoke-NyxveilWebCli -InstallDir $InstallDir `
-        -Arguments @('admin', 'reset-password', '--username', $AdminUser) `
-        -StdinSecure $securePass
+        -Arguments @('admin', 'reset-password', '--username', $AdminUser)
     Write-Host "CP_BUTTON_RESET_EXIT=$($reset.ExitCode)"
     if ($reset.StdOut) { Write-Host $reset.StdOut }
     if ($reset.StdErr) { Write-Host $reset.StdErr }
