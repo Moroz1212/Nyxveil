@@ -104,7 +104,18 @@ function Copy-Staging([string]$Src, [string]$Dst) {
         $target = Join-Path $Dst $rel
         $parent = Split-Path -Parent $target
         if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-        Copy-Item -LiteralPath $_.FullName -Destination $target -Force
+        try {
+            Copy-Item -LiteralPath $_.FullName -Destination $target -Force -ErrorAction Stop
+        }
+        catch {
+            # Updater service is running this apply; its own binaries may be locked.
+            # Leaving the current updater build in place is safe — Web payload still updates.
+            if ($rel -like 'updater\*' -or $rel -like 'updater/*') {
+                Write-Warning "Skipping locked updater file during self-update: $rel ($($_.Exception.Message))"
+                return
+            }
+            throw
+        }
     }
     $versionCandidates = @(
         (Join-Path (Split-Path -Parent $Src) 'VERSION'),
@@ -204,7 +215,15 @@ try {
             $op = if (Get-Command Read-OperationalConfig -ErrorAction SilentlyContinue) { Read-OperationalConfig } else { $null }
             $port = if ($op -and $op.Port) { [int]$op.Port } else { 8443 }
             $hn = if ($op -and $op.PublicHostname) { [string]$op.PublicHostname } else { 'localhost' }
-            Wait-HttpsHealthy -Hostname $hn -Port $port -TimeoutSeconds 60 | Out-Null
+            $certMode = 'Store'
+            if ($op -and $op.CertificateMode) { $certMode = [string]$op.CertificateMode }
+            # Parameter names must match Deploy.psm1 (PublicHostname / TimeoutSec).
+            $ok = Wait-HttpsHealthy -PublicHostname $hn -Port $port -TimeoutSec 90 `
+                -InstallDir $installDir -CertificateMode $certMode
+            if (-not $ok) {
+                $healthy = $false
+                $script:PrimaryFailure = "Wait-HttpsHealthy returned false for ${hn}:${port} mode=$certMode"
+            }
         }
         catch {
             $healthy = $false

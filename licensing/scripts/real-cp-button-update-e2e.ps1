@@ -208,6 +208,18 @@ $before = (Get-Content -LiteralPath $verPath -Raw).Trim()
 if ($before -ne '1.3.8') { Fail "expected installed VERSION 1.3.8 have=$before" }
 Write-Host "CP_BUTTON_INSTALLED_BEFORE=$before"
 
+# Lab overlay: published 1.3.8 apply script calls Wait-HttpsHealthy with wrong parameter
+# names and can fail copying the running updater image. Overlay current apply + Deploy
+# helpers so the privileged LocalSystem updater can finish 1.3.8 -> 1.3.9. Product
+# binaries remain 1.3.8 until the button-driven updater replaces the Web payload.
+$installScripts = Join-Path $InstallDir 'scripts'
+New-Item -ItemType Directory -Force -Path $installScripts | Out-Null
+Copy-Item -LiteralPath (Join-Path $scriptRoot 'self-update-apply.ps1') `
+    -Destination (Join-Path $installScripts 'self-update-apply.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $scriptRoot 'Nyxveil.ControlPlane.Deploy.psm1') `
+    -Destination (Join-Path $installScripts 'Nyxveil.ControlPlane.Deploy.psm1') -Force
+Write-Host 'CP_BUTTON_NOTE=overlaid self-update-apply.ps1 + Deploy.psm1 into InstallDir/scripts for lab apply'
+
 # Force-reset admin password via env (no stdin) so Windows \r\n pipe cannot alter the secret.
 Write-Host 'CP_BUTTON_STEP=reset_admin_password'
 $env:NYXVEIL_ADMIN_PASSWORD = $AdminPasswordPlain
@@ -278,7 +290,53 @@ if (-not (Test-Path -LiteralPath $clickSrc)) { Fail "missing $clickSrc" }
 $clickJs = Join-Path $work 'real-cp-button-browser.cjs'
 Copy-Item -LiteralPath $clickSrc -Destination $clickJs -Force
 
+function Write-CpButtonSelfUpdateDiag([string]$Reason) {
+    Write-Host "CP_BUTTON_DIAG_REASON=$Reason"
+    $pd = Join-Path $env:ProgramData 'Nyxveil\ControlPlane'
+    $su = Join-Path $pd 'self-update'
+    Write-Host "CP_BUTTON_DIAG_SELF_UPDATE_DIR=$su"
+    try {
+        Get-Service NyxveilControlPlane, NyxveilControlPlaneUpdater -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "CP_BUTTON_SVC=$($_.Name) status=$($_.Status)" }
+    } catch { }
+    if (Test-Path -LiteralPath $verPath) {
+        Write-Host "CP_BUTTON_DIAG_VERSION_FILE=$((Get-Content -LiteralPath $verPath -Raw).Trim())"
+    }
+    if (Test-Path -LiteralPath $su) {
+        Get-ChildItem -LiteralPath $su -Recurse -File -ErrorAction SilentlyContinue |
+            Select-Object -First 60 FullName, Length, LastWriteTime |
+            ForEach-Object { Write-Host "CP_BUTTON_SU_FILE=$($_.FullName) len=$($_.Length) t=$($_.LastWriteTimeUtc.ToString('o'))" }
+        foreach ($name in @('request.json', 'handoff.json', 'result.json', 'active.json')) {
+            $p = Join-Path $su $name
+            if (Test-Path -LiteralPath $p) {
+                Write-Host "CP_BUTTON_SU_CONTENT_$name<<EOF"
+                $raw = Get-Content -LiteralPath $p -Raw -ErrorAction SilentlyContinue
+                if ($raw) { Write-Host $raw.Substring(0, [Math]::Min(6000, $raw.Length)) }
+                Write-Host 'EOF'
+            }
+        }
+        Get-ChildItem -LiteralPath $su -Filter 'history*.json' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1 | ForEach-Object {
+                Write-Host "CP_BUTTON_SU_HISTORY=$($_.FullName)"
+                $raw = Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue
+                if ($raw) { Write-Host $raw.Substring(0, [Math]::Min(4000, $raw.Length)) }
+            }
+    } else {
+        Write-Host 'CP_BUTTON_DIAG_SELF_UPDATE_DIR_MISSING=1'
+    }
+    $logDir = Join-Path $pd 'logs'
+    if (Test-Path -LiteralPath $logDir) {
+        Get-ChildItem -LiteralPath $logDir -File | Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {
+            Write-Host "CP_BUTTON_LOG_FILE=$($_.FullName)"
+            Get-Content -LiteralPath $_.FullName -Tail 100 | ForEach-Object { Write-Host "CP_BUTTON_LOG=$_" }
+        }
+    }
+    try { sc.exe query NyxveilControlPlaneUpdater | ForEach-Object { Write-Host "CP_BUTTON_UPD_SC=$_" } } catch { }
+    try { sc.exe query NyxveilControlPlane | ForEach-Object { Write-Host "CP_BUTTON_MAIN_SC=$_" } } catch { }
+}
+
 Push-Location $work
+$browserExit = 1
 try {
     npm init -y | Out-Null
     npm install playwright@1.49.1 | Out-Null
@@ -292,9 +350,13 @@ try {
     $env:CP_CLICK_MARKER = Join-Path $work 'click.marker'
     # Resolve playwright from $work/node_modules (script lives beside package.json).
     node $clickJs
-    if ($LASTEXITCODE -ne 0) { Fail 'Playwright button click failed' }
+    $browserExit = $LASTEXITCODE
 } finally {
     Pop-Location
+}
+if ($browserExit -ne 0) {
+    Write-CpButtonSelfUpdateDiag 'playwright_failed'
+    Fail "Playwright button click failed exit=$browserExit"
 }
 
 Write-Host 'CP_BUTTON_STEP=verify_post_update'
@@ -314,32 +376,7 @@ while ([datetime]::UtcNow -lt $deadline) {
     Start-Sleep -Seconds 5
 }
 if ($after -ne '1.3.9') {
-    $pd = Join-Path $env:ProgramData 'Nyxveil\ControlPlane'
-    $su = Join-Path $pd 'self-update'
-    Write-Host "CP_BUTTON_DIAG_SELF_UPDATE_DIR=$su"
-    if (Test-Path -LiteralPath $su) {
-        Get-ChildItem -LiteralPath $su -Recurse -File -ErrorAction SilentlyContinue |
-            Select-Object -First 40 FullName, Length, LastWriteTime |
-            ForEach-Object { Write-Host "CP_BUTTON_SU_FILE=$($_.FullName) len=$($_.Length) t=$($_.LastWriteTimeUtc.ToString('o'))" }
-        foreach ($name in @('request.json', 'handoff.json', 'result.json', 'active.json')) {
-            $p = Join-Path $su $name
-            if (Test-Path -LiteralPath $p) {
-                Write-Host "CP_BUTTON_SU_CONTENT_$name<<EOF"
-                Get-Content -LiteralPath $p -Raw -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Substring(0, [Math]::Min(4000, $_.Length)) }
-                Write-Host 'EOF'
-            }
-        }
-    }
-    $logDir = Join-Path $pd 'logs'
-    if (Test-Path -LiteralPath $logDir) {
-        Get-ChildItem -LiteralPath $logDir -File | Sort-Object LastWriteTime -Descending | Select-Object -First 2 | ForEach-Object {
-            Write-Host "CP_BUTTON_LOG_FILE=$($_.FullName)"
-            Get-Content -LiteralPath $_.FullName -Tail 80 | ForEach-Object { Write-Host "CP_BUTTON_LOG=$_" }
-        }
-    }
-    try {
-        sc.exe query NyxveilControlPlaneUpdater | ForEach-Object { Write-Host "CP_BUTTON_UPD_SC=$_" }
-    } catch { }
+    Write-CpButtonSelfUpdateDiag 'post_update_version_mismatch'
     Fail "post-update VERSION want=1.3.9 have=$after"
 }
 if ($ExpectedTargetVersion -ne '1.3.9') {

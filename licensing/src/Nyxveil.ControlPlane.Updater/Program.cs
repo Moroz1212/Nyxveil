@@ -299,7 +299,19 @@ public static class Program
                 continue;
             var dest = Path.Combine(installDir, rel);
             Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-            File.Copy(file, dest, overwrite: true);
+            try
+            {
+                File.Copy(file, dest, overwrite: true);
+            }
+            catch (IOException) when (rel.StartsWith("updater" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                                      || rel.StartsWith("updater/", StringComparison.OrdinalIgnoreCase))
+            {
+                // Running updater cannot overwrite its own image; Web payload still updates.
+            }
+            catch (UnauthorizedAccessException) when (rel.StartsWith("updater" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                                                      || rel.StartsWith("updater/", StringComparison.OrdinalIgnoreCase))
+            {
+            }
         }
     }
 
