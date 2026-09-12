@@ -1,0 +1,11 @@
+{
+  "clicked_at": "",
+  "finished_at": "2026-09-12T12:40:42Z",
+  "from_version": "1.1.15",
+  "gate": "node_button_update",
+  "new_pid": "",
+  "node_id": "",
+  "old_pid": "",
+  "result": "FAIL",
+  "target_version": "1.1.17"
+}

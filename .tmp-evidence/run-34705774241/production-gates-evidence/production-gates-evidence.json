@@ -1,0 +1,14 @@
+{
+  "cp_button_update": "PASS",
+  "windows_scm": "PASS",
+  "node_button_update": "PASS",
+  "durable_restart": "PASS",
+  "acme_pebble": "PASS",
+  "cert_button": "PASS",
+  "tls_served": "PASS",
+  "quic_handshake": "PASS",
+  "rollback_recovery": "PASS",
+  "full_operator_e2e": "PASS",
+  "generated_at": "2026-09-12T16:43:19.9597103Z",
+  "source_file_count": 10
+}

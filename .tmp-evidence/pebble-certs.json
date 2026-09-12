@@ -1,0 +1,66 @@
+[
+  {
+    "name": "README.md",
+    "path": "test/certs/README.md",
+    "sha": "7cde76f5f7c1b4f4f423f4d7206c4f8e07f8deeb",
+    "size": 1063,
+    "url": "https://api.github.com/repos/letsencrypt/pebble/contents/test/certs/README.md?ref=v2.7.0",
+    "html_url": "https://github.com/letsencrypt/pebble/blob/v2.7.0/test/certs/README.md",
+    "git_url": "https://api.github.com/repos/letsencrypt/pebble/git/blobs/7cde76f5f7c1b4f4f423f4d7206c4f8e07f8deeb",
+    "download_url": "https://raw.githubusercontent.com/letsencrypt/pebble/v2.7.0/test/certs/README.md",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/letsencrypt/pebble/contents/test/certs/README.md?ref=v2.7.0",
+      "git": "https://api.github.com/repos/letsencrypt/pebble/git/blobs/7cde76f5f7c1b4f4f423f4d7206c4f8e07f8deeb",
+      "html": "https://github.com/letsencrypt/pebble/blob/v2.7.0/test/certs/README.md"
+    }
+  },
+  {
+    "name": "localhost",
+    "path": "test/certs/localhost",
+    "sha": "2eaa6950c841c93f2e31081935cbaa0c566ef4b3",
+    "size": 0,
+    "url": "https://api.github.com/repos/letsencrypt/pebble/contents/test/certs/localhost?ref=v2.7.0",
+    "html_url": "https://github.com/letsencrypt/pebble/tree/v2.7.0/test/certs/localhost",
+    "git_url": "https://api.github.com/repos/letsencrypt/pebble/git/trees/2eaa6950c841c93f2e31081935cbaa0c566ef4b3",
+    "download_url": null,
+    "type": "dir",
+    "_links": {
+      "self": "https://api.github.com/repos/letsencrypt/pebble/contents/test/certs/localhost?ref=v2.7.0",
+      "git": "https://api.github.com/repos/letsencrypt/pebble/git/trees/2eaa6950c841c93f2e31081935cbaa0c566ef4b3",
+      "html": "https://github.com/letsencrypt/pebble/tree/v2.7.0/test/certs/localhost"
+    }
+  },
+  {
+    "name": "pebble.minica.key.pem",
+    "path": "test/certs/pebble.minica.key.pem",
+    "sha": "6a7fcd9df579836c94cf013a3b0c68b7111921f1",
+    "size": 1679,
+    "url": "https://api.github.com/repos/letsencrypt/pebble/contents/test/certs/pebble.minica.key.pem?ref=v2.7.0",
+    "html_url": "https://github.com/letsencrypt/pebble/blob/v2.7.0/test/certs/pebble.minica.key.pem",
+    "git_url": "https://api.github.com/repos/letsencrypt/pebble/git/blobs/6a7fcd9df579836c94cf013a3b0c68b7111921f1",
+    "download_url": "https://raw.githubusercontent.com/letsencrypt/pebble/v2.7.0/test/certs/pebble.minica.key.pem",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/letsencrypt/pebble/contents/test/certs/pebble.minica.key.pem?ref=v2.7.0",
+      "git": "https://api.github.com/repos/letsencrypt/pebble/git/blobs/6a7fcd9df579836c94cf013a3b0c68b7111921f1",
+      "html": "https://github.com/letsencrypt/pebble/blob/v2.7.0/test/certs/pebble.minica.key.pem"
+    }
+  },
+  {
+    "name": "pebble.minica.pem",
+    "path": "test/certs/pebble.minica.pem",
+    "sha": "a69a4c41937f1b1bf21744e28e900266a15ddddf",
+    "size": 1115,
+    "url": "https://api.github.com/repos/letsencrypt/pebble/contents/test/certs/pebble.minica.pem?ref=v2.7.0",
+    "html_url": "https://github.com/letsencrypt/pebble/blob/v2.7.0/test/certs/pebble.minica.pem",
+    "git_url": "https://api.github.com/repos/letsencrypt/pebble/git/blobs/a69a4c41937f1b1bf21744e28e900266a15ddddf",
+    "download_url": "https://raw.githubusercontent.com/letsencrypt/pebble/v2.7.0/test/certs/pebble.minica.pem",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/letsencrypt/pebble/contents/test/certs/pebble.minica.pem?ref=v2.7.0",
+      "git": "https://api.github.com/repos/letsencrypt/pebble/git/blobs/a69a4c41937f1b1bf21744e28e900266a15ddddf",
+      "html": "https://github.com/letsencrypt/pebble/blob/v2.7.0/test/certs/pebble.minica.pem"
+    }
+  }
+]

@@ -1,0 +1,7 @@
+{
+  "finished_at": "2026-09-12T17:40:49Z",
+  "gate": "server_artifact_purity",
+  "live_sha": "18b05cbb9b0f2ffced73a78271bcd5ec5976e0c2877bca5f8f29c1a4cfa561a9",
+  "result": "PASS",
+  "target_version": "1.1.18"
+}

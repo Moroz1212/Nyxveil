@@ -1,0 +1,8 @@
+{
+  "finished_at": "2026-09-12T16:39:50Z",
+  "gate": "quic_handshake",
+  "leaf_sha256": "a28dfbe76beebba3dbe07025f7d49e7f0e53496c8337eefbacc34911f84bd48a",
+  "method": "quic_dial_h3",
+  "quic_port": "8443",
+  "result": "PASS"
+}

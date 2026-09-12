@@ -1,0 +1,7 @@
+{
+  "finished_at": "2026-09-12T12:54:27Z",
+  "gate": "acme_pebble",
+  "note": "Pebble container started but cert_button/tls_served/quic not exercised by this script",
+  "pebble_directory": "https://127.0.0.1:14000/dir",
+  "result": "NOT_EXECUTED"
+}

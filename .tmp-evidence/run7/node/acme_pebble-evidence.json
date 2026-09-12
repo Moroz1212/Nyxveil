@@ -1,0 +1,6 @@
+{
+  "finished_at": "2026-09-12T13:36:35Z",
+  "gate": "acme_pebble",
+  "reason": "restart_after_acme_failed",
+  "result": "FAIL"
+}

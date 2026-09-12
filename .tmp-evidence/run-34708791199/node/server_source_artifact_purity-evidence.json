@@ -1,0 +1,8 @@
+{
+  "ctl_sha": "8c05bd08972fdb28695d8b86e3f518ba45c929ba15c445d5a1b6e7d3eda09440",
+  "finished_at": "2026-09-12T17:40:01Z",
+  "from_version": "1.1.15",
+  "gate": "server_source_artifact_purity",
+  "result": "PASS",
+  "server_sha": "c0996d3408ba77ec46814de2858449c3a1b61a1c4398a9380b83fa4afd3b1d4b"
+}

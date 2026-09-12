@@ -1,0 +1,53 @@
+Nyxveil server server-v1.1.18
+
+Canonical release assets (exact names):
+  nyxveil-server-linux-{amd64,arm64}
+  nyxveilctl-linux-{amd64,arm64}
+  nyxveil-catalog-verify-linux-{amd64,arm64}
+  production-gate.sh
+  install.sh
+  nyxveil-update.service
+  50-nyxveil-management.rules
+  VERSION
+  THIRD_PARTY_CORE.md
+  release-manifest-linux-{amd64,arm64}.json
+  bootstrap-cli-update.sh
+  live-final-update.sh
+  SHA256SUMS
+
+Version-pinned clean install (preferred over floating main raw URL):
+  BASE=https://github.com/Moroz1212/Nyxveil/releases/download/server-v1.1.18
+  curl -fsSLO "$BASE/install.sh" "$BASE/SHA256SUMS" && \
+  tr -d '\r' < SHA256SUMS | grep -E ' [*]?install.sh$' | sha256sum -c - && \
+  chmod 0755 install.sh && sudo ./install.sh ...
+
+After update, production gate MUST exist at:
+  /usr/local/share/nyxveil/scripts/production-gate.sh
+
+Management prerequisites (required for Control Plane UpdateNodeLatest):
+  /etc/systemd/system/nyxveil-update.service
+  /etc/polkit-1/rules.d/50-nyxveil-management.rules
+
+Trust model:
+  Authenticity = GitHub repository / GitHub Release (HTTPS).
+  Integrity = SHA-256 in release manifests and SHA256SUMS.
+  No Ed25519 release signing keys.
+
+Live final / migrate (ONE node at a time per location):
+  BASE=https://github.com/Moroz1212/Nyxveil/releases/download/server-v1.1.18
+  cd "$(mktemp -d)" && curl -fsSLO "$BASE/SHA256SUMS" "$BASE/live-final-update.sh" && \
+  tr -d '\r' < SHA256SUMS | grep -E ' [*]?live-final-update.sh$' | sha256sum -c - && \
+  chmod 0755 live-final-update.sh && \
+  sudo ./live-final-update.sh --base-url "$BASE"
+
+Legacy nodes still on the old signed updater must use migrate-to-github-trust.sh
+(or live-final-update.sh) once, then subsequent updates use Control Plane again.
+
+live-final-update.sh is self-contained: private workdir, fetches VERSION +
+unsigned manifest + ctl + bootstrap, verifies SHA-256, upgrades ctl only,
+runs full update, then production-gate.
+
+Offline install (example amd64):
+  tar -xzf nyxveil-server-1.1.18-linux-amd64.tar.gz
+  sudo ./linux-amd64/installer/install.sh --binary-dir ./linux-amd64 --skip-download \
+    --control-plane https://example --location x --name y --public-host z --bootstrap-token "$TOKEN"

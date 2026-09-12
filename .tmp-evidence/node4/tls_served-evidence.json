@@ -1,0 +1,6 @@
+{
+  "finished_at": "2026-09-12T12:55:21Z",
+  "gate": "tls_served",
+  "note": "not run by real-operator-node-e2e.sh",
+  "result": "NOT_EXECUTED"
+}

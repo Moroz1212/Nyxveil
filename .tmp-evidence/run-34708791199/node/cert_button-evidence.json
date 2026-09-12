@@ -1,0 +1,8 @@
+{
+  "command_result_code": "renewed",
+  "command_status": "3",
+  "finished_at": "2026-09-12T17:41:08Z",
+  "gate": "cert_button",
+  "node_id": "nv-runnervmlun5p-84a73001",
+  "result": "PASS"
+}

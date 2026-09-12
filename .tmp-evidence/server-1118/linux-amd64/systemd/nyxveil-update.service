@@ -1,0 +1,11 @@
+[Unit]
+Description=Nyxveil signed update (oneshot)
+Documentation=https://github.com/Moroz1212/Nyxveil/tree/main/server/docs
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/nyxveilctl update
+Nice=5
+TimeoutStartSec=900

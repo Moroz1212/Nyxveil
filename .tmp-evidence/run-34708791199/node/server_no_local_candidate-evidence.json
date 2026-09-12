@@ -1,0 +1,6 @@
+{
+  "finished_at": "2026-09-12T17:40:49Z",
+  "gate": "server_no_local_candidate",
+  "note": "ACME phase uses published 1.1.18 binary only",
+  "result": "PASS"
+}

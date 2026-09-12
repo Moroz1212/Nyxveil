@@ -1,0 +1,72 @@
+{
+  "version": "1.1.18",
+  "arch": "linux/amd64",
+  "min_core": "1.0.0",
+  "min_protocol": 1,
+  "assets": [
+    {
+      "name": "nyxveil-server",
+      "sha256": "18b05cbb9b0f2ffced73a78271bcd5ec5976e0c2877bca5f8f29c1a4cfa561a9",
+      "url": "https://github.com/Moroz1212/Nyxveil/releases/download/server-v1.1.18/nyxveil-server-linux-amd64",
+      "destination": "/usr/local/sbin/nyxveil-server",
+      "mode": "0755",
+      "required": true
+    },
+    {
+      "name": "nyxveilctl",
+      "sha256": "5c69e3ad2acc1ebcc560c0fe7b2ff058c2ab81be4aaa7dc5da00c240fa259ef9",
+      "url": "https://github.com/Moroz1212/Nyxveil/releases/download/server-v1.1.18/nyxveilctl-linux-amd64",
+      "destination": "/usr/local/sbin/nyxveilctl",
+      "mode": "0755",
+      "required": true
+    },
+    {
+      "name": "nyxveil-catalog-verify",
+      "sha256": "8ee6caf396bd350c06a82daa92418fc01231074fc302bff0522abb602c1f243f",
+      "url": "https://github.com/Moroz1212/Nyxveil/releases/download/server-v1.1.18/nyxveil-catalog-verify-linux-amd64",
+      "destination": "/usr/local/sbin/nyxveil-catalog-verify",
+      "mode": "0755",
+      "required": true
+    },
+    {
+      "name": "production-gate",
+      "sha256": "74ae12758788dce9dcc228847cc91f4cfdb86c89098fcdc514c2edb39b011090",
+      "url": "https://github.com/Moroz1212/Nyxveil/releases/download/server-v1.1.18/production-gate.sh",
+      "destination": "/usr/local/share/nyxveil/scripts/production-gate.sh",
+      "mode": "0755",
+      "required": true
+    },
+    {
+      "name": "share-version",
+      "sha256": "32820b5fe235bf45d17986fb1b9b336365bef8b90c678f57d795b48082b2144e",
+      "url": "https://github.com/Moroz1212/Nyxveil/releases/download/server-v1.1.18/VERSION",
+      "destination": "/usr/local/share/nyxveil/VERSION",
+      "mode": "0644",
+      "required": true
+    },
+    {
+      "name": "share-third-party-core",
+      "sha256": "1e0566f02a29b7725c2e6b71ee5904c6597d6fffb17607267b0bbe363eda0f78",
+      "url": "https://github.com/Moroz1212/Nyxveil/releases/download/server-v1.1.18/THIRD_PARTY_CORE.md",
+      "destination": "/usr/local/share/nyxveil/THIRD_PARTY_CORE.md",
+      "mode": "0644",
+      "required": true
+    },
+    {
+      "name": "nyxveil-update-service",
+      "sha256": "bc24cbe767c89c23ea93d63b656b04f345bc994a690b0e58d541f4139ab6a887",
+      "url": "https://github.com/Moroz1212/Nyxveil/releases/download/server-v1.1.18/nyxveil-update.service",
+      "destination": "/etc/systemd/system/nyxveil-update.service",
+      "mode": "0644",
+      "required": true
+    },
+    {
+      "name": "nyxveil-management-polkit",
+      "sha256": "7a141b01d4dc7c1eb1afdabf842a5dbefec99738e320ba37b4bd58335f3805fd",
+      "url": "https://github.com/Moroz1212/Nyxveil/releases/download/server-v1.1.18/50-nyxveil-management.rules",
+      "destination": "/etc/polkit-1/rules.d/50-nyxveil-management.rules",
+      "mode": "0644",
+      "required": true
+    }
+  ]
+}

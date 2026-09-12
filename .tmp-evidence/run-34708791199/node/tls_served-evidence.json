@@ -1,0 +1,9 @@
+{
+  "acme_domain": "node-e2e.test",
+  "finished_at": "2026-09-12T17:41:08Z",
+  "gate": "tls_served",
+  "result": "PASS",
+  "san": "X509v3 Subject Alternative Name: critical     DNS:node-e2e.test",
+  "served_thumbprint": "96f622b31120f94b7667e3b33a1dcf80c5d680e3b51826dd2535b96bd7fa6c17",
+  "tls_port": "8443"
+}

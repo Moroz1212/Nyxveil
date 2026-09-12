@@ -1,0 +1,1855 @@
+#!/usr/bin/env bash
+# Nyxveil VPN node installer вЂ” Ubuntu 24.04 / systemd / nftables.
+# Self-contained: curl|bash works with ONLY this file (systemd units embedded).
+# Transactional: EXIT trap rolls back until COMMIT.
+#
+# Release verification (fail-closed when downloading):
+#   1. Download release-manifest-linux-${arch}.json from tag server-v${VERSION}
+#      (GitHub Release = authenticity)
+#   2. Parse unsigned manifest (version/arch/assets required)
+#   3. Download each asset URL; verify SHA-256; install
+#   Missing/invalid manifest or sha → die (no WARN skip).
+# Local --binary-dir / --skip-download skips remote verify.
+set -euo pipefail
+
+# Capture operator/test override BEFORE any defaulting.
+# Release-packaged install.sh sets DEFAULT_RELEASE_VERSION so server-vX.Y.Z/install.sh
+# installs that exact tag (not floating latest). Generic/main copy keeps it empty.
+DEFAULT_RELEASE_VERSION="1.1.18"
+
+NYXVEIL_VERSION_ENV_OVERRIDE=""
+if [[ "${NYXVEIL_VERSION+x}" == "x" ]]; then
+  NYXVEIL_VERSION_ENV_OVERRIDE="${NYXVEIL_VERSION}"
+fi
+NYXVEIL_VERSION=""
+# Production authenticity source is fixed. Repository override is allowed ONLY in
+# explicit MOCK/TEST mode (NYXVEIL_INSTALL_MOCK=1 or NYXVEIL_TEST_MODE=1).
+readonly FIXED_GITHUB_REPO="Moroz1212/Nyxveil"
+GITHUB_REPO="${FIXED_GITHUB_REPO}"
+if [[ "${NYXVEIL_INSTALL_MOCK:-0}" == "1" || "${NYXVEIL_TEST_MODE:-0}" == "1" ]]; then
+  if [[ -n "${NYXVEIL_GITHUB_REPO:-}" ]]; then
+    GITHUB_REPO="${NYXVEIL_GITHUB_REPO}"
+  fi
+elif [[ -n "${NYXVEIL_GITHUB_REPO:-}" && "${NYXVEIL_GITHUB_REPO}" != "${FIXED_GITHUB_REPO}" ]]; then
+  echo "ERROR: NYXVEIL_GITHUB_REPO override is forbidden outside MOCK/TEST mode (fixed trust: ${FIXED_GITHUB_REPO})" >&2
+  exit 1
+fi
+readonly GITHUB_REPO
+readonly DEFAULT_VPN_SUBNET="10.66.0.0/24"
+readonly MIN_RAM_MB_WARN=700
+readonly MIN_DISK_MB=200
+readonly GITHUB_RELEASE_RESOLVE_TIMEOUT_SEC="${NYXVEIL_GITHUB_RESOLVE_TIMEOUT_SEC:-30}"
+
+# Paths (overridden under NYXVEIL_INSTALL_MOCK=1)
+ETC_DIR="/etc/nyxveil"
+STATE_DIR="/var/lib/nyxveil"
+RUN_DIR="/run/nyxveil"
+BIN_DIR="/usr/local/sbin"
+SHARE_DIR="/usr/local/share/nyxveil"
+SCRIPTS_DIR="${SHARE_DIR}/scripts"
+LINK_DIR="/usr/local/bin"
+SYSCTL_FILE="/etc/sysctl.d/99-nyxveil.conf"
+SERVICE_UNIT="/etc/systemd/system/nyxveil-server.service"
+FIREWALL_UNIT="/etc/systemd/system/nyxveil-firewall.service"
+NFT_FILE="/etc/nftables.d/nyxveil.conf"
+CONFIG_FILE=""
+NODE_KEY=""
+MOCK=0
+
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]:-}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+COMMITTED=0
+CREATED_USER=0
+INSTALLED_BINARIES=0
+INSTALLED_UNIT=0
+INSTALLED_FIREWALL_UNIT=0
+INSTALLED_UPDATE_SERVICE=0
+INSTALLED_MANAGEMENT_POLKIT=0
+INSTALLED_SYSCTL=0
+INSTALLED_NFT=0
+MANIFEST_UPDATE_SERVICE=0
+MANIFEST_MANAGEMENT_POLKIT=0
+WROTE_CONFIG=0
+STARTED_SERVICE=0
+BACKUP_DIR=""
+PRESERVE_NODE_ID=""
+PRESERVE_HAD_KEY=0
+REGISTRATION_COMMITTED=0
+BOOTSTRAP_STDIN=0
+
+# Canonical release-manifest destinations (always Unix production paths).
+readonly WANT_SERVER_DEST="/usr/local/sbin/nyxveil-server"
+readonly WANT_CTL_DEST="/usr/local/sbin/nyxveilctl"
+readonly WANT_CATALOG_DEST="/usr/local/sbin/nyxveil-catalog-verify"
+readonly WANT_GATE_DEST="/usr/local/share/nyxveil/scripts/production-gate.sh"
+readonly WANT_VERSION_DEST="/usr/local/share/nyxveil/VERSION"
+readonly WANT_THIRD_PARTY_DEST="/usr/local/share/nyxveil/THIRD_PARTY_CORE.md"
+readonly WANT_UPDATE_SERVICE_DEST="/etc/systemd/system/nyxveil-update.service"
+readonly WANT_POLKIT_DEST="/etc/polkit-1/rules.d/50-nyxveil-management.rules"
+
+CONTROL_PLANE=""
+LOCATION_ID=""
+DISPLAY_NAME=""
+BOOTSTRAP_TOKEN=""
+PUBLIC_HOST=""
+PUBLIC_IP=""
+TLS_PORT="443"
+QUIC_PORT="443"
+BINARY_DIR=""
+SKIP_DOWNLOAD=0
+VPN_SUBNET="${DEFAULT_VPN_SUBNET}"
+DNS_SERVERS=()
+TLS_CERT_SRC=""
+TLS_KEY_SRC=""
+TLS_DOMAIN=""
+TLS_REPLACE=0
+ACME_EMAIL=""
+ACME_DIRECTORY=""
+NONINTERACTIVE=0
+TEST_SELF_SIGNED=0
+CONTROL_PLANE_CA_FILE=""
+CONTROL_PLANE_SPKI_PIN=""
+PINNED_CA_DEST=""
+
+log()  { printf '[nyxveil] %s\n' "$*"; }
+warn() { printf '[nyxveil] WARN: %s\n' "$*" >&2; }
+die()  { printf '[nyxveil] ERROR: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage: install.sh [options]
+
+  --control-plane URL          Control Plane base URL (https://...)
+  --location ID                Location ID
+  --name NAME                  Display name
+  --bootstrap-token TOKEN      One-time registration token (never written to disk)
+  --bootstrap-stdin            Read bootstrap token from stdin (one line; never logged)
+  --public-host HOST           Public hostname for endpoints (required in production)
+  --public-ip IP               Public IPv4 (used if --public-host omitted)
+  --tls-port PORT              TLS listen port (default 443)
+  --quic-port PORT             QUIC listen port (default 443)
+  --binary-dir DIR             Local directory with nyxveil-server + nyxveilctl
+  --skip-download              Do not fetch release binaries (requires --binary-dir)
+  --vpn-subnet CIDR            VPN client subnet (default 10.66.0.0/24)
+  --dns-servers IP[,IP...]     Operator DNS resolvers for TypeConfig (required for client DNS)
+  --tls-cert PATH              Operator-provided fullchain PEM (copied; not overwritten on repair)
+  --tls-key PATH               Operator-provided private key PEM (0600)
+  --tls-domain FQDN            ACME (Let's Encrypt HTTP-01 :80); reuses stable key for SPKI stability
+  --acme-directory URL         Optional ACME directory (empty = Let's Encrypt; lab/Pebble URL allowed)
+  --tls-email EMAIL            Optional ACME contact email
+  --tls-replace                Replace existing tls.crt/tls.key when installing operator/ACME material
+  --control-plane-ca-file PATH Pin Control Plane CA (written as pinned_ca_file)
+  --control-plane-spki-pin HEX Pin peer SPKI SHA-256 (control_plane_spki_pin)
+  --test-self-signed           Allow test/self-signed TLS mode (--test-mode on register)
+  --non-interactive            Fail instead of prompting
+  -h, --help                   Show this help
+
+Version selection:
+  NYXVEIL_VERSION=X.Y.Z        Exact override (operator / test harness); used as-is
+  Remote install (no override) resolve_stable_server_version → latest GitHub Release
+                               tag server-vX.Y.Z (draft=false, prerelease=false) from
+                               NYXVEIL_GITHUB_REPO (default Moroz1212/Nyxveil)
+  --binary-dir / --skip-download without override: read VERSION beside binary-dir / share
+  Never silently defaults to a pinned older release when env is unset for remote installs.
+
+Pinned production example (42mou.ru):
+  sudo bash install.sh --control-plane https://42mou.ru:8443 \
+    --control-plane-ca-file /path/to/cp-ca.pem \
+    --location ... --name ... --public-host ...
+
+Examples:
+  curl -fsSL https://raw.githubusercontent.com/Moroz1212/Nyxveil/main/server/installer/install.sh | sudo bash
+  sudo ./install.sh --binary-dir ./dist/linux-amd64 --skip-download
+  NYXVEIL_VERSION=1.1.12 sudo ./install.sh --binary-dir ./dist/linux-amd64 --skip-download
+EOF
+}
+
+# resolve_stable_server_version returns the newest stable server-vX.Y.Z release
+# version (no prerelease suffix) from GitHub Releases for GITHUB_REPO.
+resolve_stable_server_version() {
+  local url raw ver
+  url="https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=40"
+  raw="$(curl -fsSL --connect-timeout 10 --max-time "${GITHUB_RELEASE_RESOLVE_TIMEOUT_SEC}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "${url}")" || die "failed to list GitHub releases for ${GITHUB_REPO} (timeout ${GITHUB_RELEASE_RESOLVE_TIMEOUT_SEC}s)"
+
+  ver=""
+  if command -v jq >/dev/null 2>&1; then
+    # MAX SemVer — never assume GitHub API order == semantic order.
+    ver="$(printf '%s' "${raw}" | jq -r '
+      [.[]
+        | select(.draft == false and .prerelease == false)
+        | .tag_name
+        | select(test("^server-v[0-9]+\\.[0-9]+\\.[0-9]+$"))
+        | sub("^server-v"; "")
+        | capture("(?<maj>[0-9]+)\\.(?<min>[0-9]+)\\.(?<pat>[0-9]+)") as $c
+        | {v: "\($c.maj).\($c.min).\($c.pat)", maj: ($c.maj|tonumber), min: ($c.min|tonumber), pat: ($c.pat|tonumber)}
+      ]
+      | sort_by(.maj, .min, .pat)
+      | last
+      | .v // empty')"
+  fi
+
+  if [[ -z "${ver}" || "${ver}" == "null" ]]; then
+    local py=""
+    if command -v python3 >/dev/null 2>&1 && python3 -c 'import json' >/dev/null 2>&1; then
+      py=python3
+    elif command -v python >/dev/null 2>&1 && python -c 'import json' >/dev/null 2>&1; then
+      py=python
+    fi
+    if [[ -n "${py}" ]]; then
+      ver="$(NYXVEIL_RELEASES_JSON="${raw}" "${py}" - <<'PY'
+import json, os, re
+data = json.loads(os.environ.get("NYXVEIL_RELEASES_JSON") or "[]")
+pat = re.compile(r"^server-v(\d+)\.(\d+)\.(\d+)$")
+best = None  # (maj, min, pat, "x.y.z")
+for rel in data:
+    if rel.get("draft") or rel.get("prerelease"):
+        continue
+    m = pat.match(str(rel.get("tag_name") or ""))
+    if not m:
+        continue
+    tup = (int(m.group(1)), int(m.group(2)), int(m.group(3)), f"{m.group(1)}.{m.group(2)}.{m.group(3)}")
+    if best is None or tup[:3] > best[:3]:
+        best = tup
+if best:
+    print(best[3])
+PY
+)"
+    fi
+  fi
+
+  if [[ -z "${ver}" || "${ver}" == "null" ]]; then
+    # Text fallback: collect all eligible tags, pick MAX SemVer (not first hit).
+    ver="$(printf '%s' "${raw}" | tr '}' '\n' | {
+      best=""
+      best_key=""
+      while IFS= read -r obj; do
+        printf '%s' "${obj}" | grep -Eq '"draft"[[:space:]]*:[[:space:]]*true' && continue
+        printf '%s' "${obj}" | grep -Eq '"prerelease"[[:space:]]*:[[:space:]]*true' && continue
+        tag="$(printf '%s' "${obj}" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"server-v[0-9]+\.[0-9]+\.[0-9]+"' | head -n1 || true)"
+        [[ -n "${tag}" ]] || continue
+        v="$(printf '%s' "${tag}" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+        [[ -n "${v}" ]] || continue
+        maj="${v%%.*}"; rest="${v#*.}"; min="${rest%%.*}"; pat="${rest#*.}"
+        key="$(printf '%08d.%08d.%08d' "${maj}" "${min}" "${pat}")"
+        if [[ -z "${best_key}" || "${key}" > "${best_key}" ]]; then
+          best_key="${key}"
+          best="${v}"
+        fi
+      done
+      printf '%s\n' "${best}"
+    })"
+  fi
+
+  [[ -n "${ver}" && "${ver}" != "null" ]] || die "no stable server-vX.Y.Z release found for ${GITHUB_REPO}"
+  printf '%s\n' "${ver}"
+}
+
+resolve_installer_version() {
+  if [[ -n "${NYXVEIL_VERSION_ENV_OVERRIDE}" ]]; then
+    NYXVEIL_VERSION="${NYXVEIL_VERSION_ENV_OVERRIDE}"
+    log "using NYXVEIL_VERSION from environment: ${NYXVEIL_VERSION}"
+    return 0
+  fi
+
+  if [[ -n "${BINARY_DIR}" || "${SKIP_DOWNLOAD}" -eq 1 ]]; then
+    local ver_file="" cand
+    if [[ -n "${BINARY_DIR}" ]]; then
+      for cand in \
+        "${BINARY_DIR}/VERSION" \
+        "${BINARY_DIR}/../VERSION" \
+        "${BINARY_DIR}/share/nyxveil/VERSION" \
+        "${BINARY_DIR}/../share/nyxveil/VERSION"; do
+        if [[ -f "${cand}" ]]; then
+          ver_file="${cand}"
+          break
+        fi
+      done
+    fi
+    [[ -n "${ver_file}" ]] || die "NYXVEIL_VERSION unset for local --binary-dir/--skip-download; set NYXVEIL_VERSION or provide a VERSION file beside the binary dir"
+    NYXVEIL_VERSION="$(tr -d '\r[:space:]' < "${ver_file}")"
+    [[ -n "${NYXVEIL_VERSION}" ]] || die "empty VERSION file: ${ver_file}"
+    log "using local candidate version from ${ver_file}: ${NYXVEIL_VERSION}"
+    return 0
+  fi
+
+  # Release-packaged install.sh embeds DEFAULT_RELEASE_VERSION so
+  # server-vX.Y.Z/install.sh always installs that exact tag (reproducible).
+  if [[ -n "${DEFAULT_RELEASE_VERSION}" ]]; then
+    NYXVEIL_VERSION="${DEFAULT_RELEASE_VERSION}"
+    log "using release-pinned DEFAULT_RELEASE_VERSION: ${NYXVEIL_VERSION}"
+    return 0
+  fi
+
+  NYXVEIL_VERSION="$(resolve_stable_server_version)"
+  log "resolved latest stable server release (NYXVEIL_VERSION_RESOLVE): ${NYXVEIL_VERSION}"
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --control-plane) CONTROL_PLANE="${2:-}"; shift 2 ;;
+      --location) LOCATION_ID="${2:-}"; shift 2 ;;
+      --name) DISPLAY_NAME="${2:-}"; shift 2 ;;
+      --bootstrap-token) BOOTSTRAP_TOKEN="${2:-}"; shift 2 ;;
+      --bootstrap-stdin) BOOTSTRAP_STDIN=1; shift ;;
+      --public-host) PUBLIC_HOST="${2:-}"; shift 2 ;;
+      --public-ip) PUBLIC_IP="${2:-}"; shift 2 ;;
+      --tls-port) TLS_PORT="${2:-}"; shift 2 ;;
+      --quic-port) QUIC_PORT="${2:-}"; shift 2 ;;
+      --binary-dir) BINARY_DIR="${2:-}"; shift 2 ;;
+      --skip-download) SKIP_DOWNLOAD=1; shift ;;
+      --vpn-subnet) VPN_SUBNET="${2:-}"; shift 2 ;;
+      --dns-servers)
+        IFS=',' read -r -a DNS_SERVERS <<< "${2:-}"
+        shift 2
+        ;;
+      --tls-cert) TLS_CERT_SRC="${2:-}"; shift 2 ;;
+      --tls-key) TLS_KEY_SRC="${2:-}"; shift 2 ;;
+      --tls-domain) TLS_DOMAIN="${2:-}"; shift 2 ;;
+      --tls-email) ACME_EMAIL="${2:-}"; shift 2 ;;
+      --acme-directory) ACME_DIRECTORY="${2:-}"; shift 2 ;;
+      --tls-replace) TLS_REPLACE=1; shift ;;
+      --control-plane-ca-file) CONTROL_PLANE_CA_FILE="${2:-}"; shift 2 ;;
+      --control-plane-spki-pin) CONTROL_PLANE_SPKI_PIN="${2:-}"; shift 2 ;;
+      --test-self-signed) TEST_SELF_SIGNED=1; shift ;;
+      --non-interactive) NONINTERACTIVE=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown argument: $1" ;;
+    esac
+  done
+}
+
+init_paths() {
+  if [[ "${NYXVEIL_INSTALL_MOCK:-}" == "1" ]]; then
+    MOCK=1
+    local prefix
+    prefix="${NYXVEIL_INSTALL_MOCK_ROOT:-$(mktemp -d /tmp/nyxveil-mock.XXXXXX)}"
+    log "MOCK mode: root=${prefix}"
+    LINK_DIR="${prefix}/usr/local/bin"
+    ETC_DIR="${prefix}/etc/nyxveil"
+    STATE_DIR="${prefix}/var/lib/nyxveil"
+    RUN_DIR="${prefix}/run/nyxveil"
+    BIN_DIR="${prefix}/usr/local/sbin"
+    SHARE_DIR="${prefix}/usr/local/share/nyxveil"
+    SCRIPTS_DIR="${SHARE_DIR}/scripts"
+    SYSCTL_FILE="${prefix}/etc/sysctl.d/99-nyxveil.conf"
+    SERVICE_UNIT="${prefix}/etc/systemd/system/nyxveil-server.service"
+    FIREWALL_UNIT="${prefix}/etc/systemd/system/nyxveil-firewall.service"
+    NFT_FILE="${prefix}/etc/nftables.d/nyxveil.conf"
+  fi
+  CONFIG_FILE="${ETC_DIR}/server.json"
+  NODE_KEY="${STATE_DIR}/node.key"
+}
+
+require_root() {
+  [[ "${MOCK}" -eq 1 ]] && return 0
+  [[ "$(id -u)" -eq 0 ]] || die "must run as root (sudo)"
+}
+
+check_os() {
+  [[ "${MOCK}" -eq 1 ]] && return 0
+  [[ -r /etc/os-release ]] || die "cannot read /etc/os-release"
+  # shellcheck source=/dev/null
+  . /etc/os-release
+  if [[ "${ID:-}" != "ubuntu" ]]; then
+    die "Ubuntu required (found ID=${ID:-unknown})"
+  fi
+  if [[ "${VERSION_ID:-}" != "24.04" ]]; then
+    warn "Ubuntu 24.04 recommended (found ${VERSION_ID:-unknown}); continuing"
+  fi
+}
+
+check_systemd() {
+  [[ "${MOCK}" -eq 1 ]] && return 0
+  local pid1
+  pid1="$(ps -p 1 -o comm= 2>/dev/null || true)"
+  [[ "${pid1}" == "systemd" ]] || die "systemd must be PID 1 (found: ${pid1:-unknown})"
+}
+
+detect_arch() {
+  local m
+  m="$(uname -m)"
+  case "${m}" in
+    x86_64|amd64) echo "amd64" ;;
+    aarch64|arm64) echo "arm64" ;;
+    *) die "unsupported architecture: ${m} (need amd64 or arm64)" ;;
+  esac
+}
+
+check_tun() {
+  [[ "${MOCK}" -eq 1 ]] && return 0
+  if [[ ! -e /dev/net/tun ]]; then
+    die "/dev/net/tun missing вЂ” enable TUN/TAP (modprobe tun) before installing"
+  fi
+  if [[ ! -c /dev/net/tun ]]; then
+    die "/dev/net/tun is not a character device"
+  fi
+}
+
+check_resources() {
+  [[ "${MOCK}" -eq 1 ]] && return 0
+  local mem_kb mem_mb disk_mb
+  mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+  mem_mb=$((mem_kb / 1024))
+  if [[ "${mem_mb}" -lt "${MIN_RAM_MB_WARN}" ]]; then
+    warn "RAM ${mem_mb}MB < ${MIN_RAM_MB_WARN}MB вЂ” node may be constrained"
+  fi
+  disk_mb="$(df -Pm /var 2>/dev/null | awk 'NR==2 {print $4}')"
+  if [[ -z "${disk_mb}" ]]; then
+    disk_mb="$(df -Pm / | awk 'NR==2 {print $4}')"
+  fi
+  if [[ -n "${disk_mb}" && "${disk_mb}" -lt "${MIN_DISK_MB}" ]]; then
+    die "insufficient disk: ${disk_mb}MB free (need >= ${MIN_DISK_MB}MB on /var or /)"
+  fi
+}
+
+pkg_installed() {
+  dpkg -s "$1" >/dev/null 2>&1
+}
+
+ensure_packages() {
+  [[ "${MOCK}" -eq 1 ]] && return 0
+  local need=()
+  local p
+  for p in nftables iproute2 ca-certificates curl openssl jq util-linux; do
+    if ! pkg_installed "${p}"; then
+      need+=("${p}")
+    fi
+  done
+  if [[ ${#need[@]} -eq 0 ]]; then
+    log "apt packages already present"
+    return 0
+  fi
+  log "installing packages: ${need[*]}"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y -qq --no-install-recommends "${need[@]}"
+}
+
+prompt_if_empty() {
+  local var_name="$1"
+  local prompt="$2"
+  local secret="${3:-0}"
+  local current
+  current="$(eval "echo \"\${${var_name}}\"")"
+  if [[ -n "${current}" ]]; then
+    return 0
+  fi
+  if [[ "${NONINTERACTIVE}" -eq 1 ]]; then
+    die "missing required value: ${var_name} (non-interactive)"
+  fi
+  local tty_in="/dev/tty"
+  if [[ ! -r "${tty_in}" ]]; then
+    if [[ -t 0 ]]; then
+      tty_in="/dev/stdin"
+    else
+      die "missing required value: ${var_name} (no TTY; pass flags)"
+    fi
+  fi
+  if [[ "${secret}" -eq 1 ]]; then
+    read -r -s -p "${prompt}: " current < "${tty_in}"
+    echo
+  else
+    read -r -p "${prompt}: " current < "${tty_in}"
+  fi
+  eval "${var_name}=\"\${current}\""
+}
+
+detect_repair() {
+  PRESERVE_NODE_ID=""
+  PRESERVE_HAD_KEY=0
+  REGISTRATION_COMMITTED=0
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    PRESERVE_NODE_ID="$(sed -n 's/.*"node_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${CONFIG_FILE}" | head -n1 || true)"
+  fi
+  if [[ -f "${NODE_KEY}" ]]; then
+    PRESERVE_HAD_KEY=1
+    log "repair mode: preserving ${NODE_KEY}"
+  fi
+  if [[ -n "${PRESERVE_NODE_ID}" ]]; then
+    log "repair mode: preserving node_id=${PRESERVE_NODE_ID}"
+  fi
+  if [[ -f "${NODE_KEY}" && -n "${PRESERVE_NODE_ID}" ]]; then
+    log "repair mode: node.key + node_id present — identity preserved; bootstrap token still required"
+  fi
+}
+
+gather_inputs() {
+  prompt_if_empty CONTROL_PLANE "Control Plane URL (https://...)"
+  prompt_if_empty LOCATION_ID "Location ID"
+  prompt_if_empty DISPLAY_NAME "Node display name"
+
+  if [[ "${BOOTSTRAP_STDIN}" -eq 1 ]]; then
+    if [[ -n "${BOOTSTRAP_TOKEN}" ]]; then
+      die "use either --bootstrap-token or --bootstrap-stdin, not both"
+    fi
+    # One line from stdin; never echo/log the value. Prefer a real FD (not curl|bash script body).
+    if ! IFS= read -r BOOTSTRAP_TOKEN; then
+      die "failed to read bootstrap token from stdin (--bootstrap-stdin)"
+    fi
+  else
+    prompt_if_empty BOOTSTRAP_TOKEN "Bootstrap token" 1
+  fi
+  [[ -n "${BOOTSTRAP_TOKEN}" ]] || die "bootstrap token required"
+
+  [[ -n "${CONTROL_PLANE}" ]] || die "control plane URL required"
+  [[ -n "${LOCATION_ID}" ]] || die "location ID required"
+  [[ -n "${DISPLAY_NAME}" ]] || die "display name required"
+
+  if [[ -z "${PUBLIC_HOST}" && -n "${PUBLIC_IP}" ]]; then
+    PUBLIC_HOST="${PUBLIC_IP}"
+  fi
+  if [[ -z "${PUBLIC_HOST}" ]]; then
+    if [[ "${TEST_SELF_SIGNED}" -eq 1 ]]; then
+      warn "public_host empty with --test-self-signed"
+    else
+      if [[ "${NONINTERACTIVE}" -eq 0 ]]; then
+        if [[ -r /dev/tty ]]; then
+          read -r -p "Public host or IP (required): " PUBLIC_HOST < /dev/tty || true
+        elif [[ -t 0 ]]; then
+          read -r -p "Public host or IP (required): " PUBLIC_HOST || true
+        fi
+      fi
+      [[ -n "${PUBLIC_HOST}" ]] || die "PUBLIC_HOST or PUBLIC_IP required in production (or pass --test-self-signed)"
+    fi
+  fi
+
+  if [[ -n "${CONTROL_PLANE_CA_FILE}" ]]; then
+    [[ -f "${CONTROL_PLANE_CA_FILE}" ]] || die "control-plane CA file not found: ${CONTROL_PLANE_CA_FILE}"
+  fi
+  if [[ -n "${CONTROL_PLANE_SPKI_PIN}" ]]; then
+    case "${CONTROL_PLANE_SPKI_PIN}" in
+      *[!0-9a-fA-F]*|'') die "invalid --control-plane-spki-pin (hex SHA-256)" ;;
+    esac
+    if [[ "${#CONTROL_PLANE_SPKI_PIN}" -ne 64 ]]; then
+      die "invalid --control-plane-spki-pin length (want 64 hex chars)"
+    fi
+  fi
+
+  case "${TLS_PORT}" in
+    ''|*[!0-9]*) die "invalid --tls-port" ;;
+  esac
+  case "${QUIC_PORT}" in
+    ''|*[!0-9]*) die "invalid --quic-port" ;;
+  esac
+}
+
+# Precheck TLS to Control Plane before mutable install steps.
+precheck_control_plane_tls() {
+  [[ "${MOCK}" -eq 1 ]] && return 0
+  local url hostport
+  url="${CONTROL_PLANE%/}"
+  [[ "${url}" == https://* ]] || die "control plane URL must be https://"
+
+  log "prechecking TLS to Control PlaneвЂ¦"
+  if [[ -n "${CONTROL_PLANE_CA_FILE}" ]]; then
+    curl -fsS --connect-timeout 10 --max-time 30 \
+      --cacert "${CONTROL_PLANE_CA_FILE}" \
+      -o /dev/null -w '' "${url}/" 2>/dev/null \
+      || curl -fsS --connect-timeout 10 --max-time 30 \
+           --cacert "${CONTROL_PLANE_CA_FILE}" \
+           -o /dev/null "${url}/health" 2>/dev/null \
+      || curl -fsS --connect-timeout 10 --max-time 30 \
+           --cacert "${CONTROL_PLANE_CA_FILE}" \
+           -o /dev/null "${url}" \
+      || die "TLS precheck failed (cacert) against ${url}"
+    log "TLS precheck OK (pinned CA)"
+    return 0
+  fi
+
+  if [[ -n "${CONTROL_PLANE_SPKI_PIN}" ]]; then
+    hostport="${url#https://}"
+    hostport="${hostport%%/*}"
+    local host onlyhost tmp pin
+    host="${hostport%%:*}"
+    onlyhost="${host#[}"
+    onlyhost="${onlyhost%]}"
+    tmp="$(mktemp)"
+    # SelfSignedPinned: fetch leaf without requiring system trust; pin is the trust anchor.
+    # Match Go runtime: SPKI + hostname/SAN + NotBefore/NotAfter.
+    if ! echo | openssl s_client -connect "${hostport}" -servername "${host}" 2>/dev/null \
+         | openssl x509 -outform PEM > "${tmp}" 2>/dev/null; then
+      rm -f "${tmp}"
+      die "TLS precheck failed: could not fetch peer certificate from ${hostport}"
+    fi
+    pin="$(openssl x509 -in "${tmp}" -pubkey -noout 2>/dev/null \
+      | openssl pkey -pubin -outform DER 2>/dev/null \
+      | openssl dgst -sha256 -hex 2>/dev/null \
+      | awk '{print $NF}')"
+    [[ -n "${pin}" ]] || { rm -f "${tmp}"; die "TLS precheck failed: could not compute SPKI pin"; }
+    if [[ "${pin,,}" != "${CONTROL_PLANE_SPKI_PIN,,}" ]]; then
+      rm -f "${tmp}"
+      die "TLS precheck SPKI pin mismatch (got ${pin})"
+    fi
+    if ! openssl x509 -in "${tmp}" -noout -checkhost "${onlyhost}" >/dev/null 2>&1; then
+      rm -f "${tmp}"
+      die "TLS precheck hostname mismatch for ${onlyhost}"
+    fi
+    if ! openssl x509 -in "${tmp}" -noout -checkend 0 >/dev/null 2>&1; then
+      rm -f "${tmp}"
+      die "TLS precheck failed: peer certificate expired"
+    fi
+    local not_before_raw not_before_epoch now_epoch
+    now_epoch="$(date -u +%s)"
+    not_before_raw="$(openssl x509 -in "${tmp}" -noout -startdate 2>/dev/null | sed 's/^notBefore=//')"
+    not_before_epoch="$(date -u -d "${not_before_raw}" +%s 2>/dev/null || true)"
+    if [[ -n "${not_before_epoch}" ]] && [[ "${now_epoch}" -lt "${not_before_epoch}" ]]; then
+      rm -f "${tmp}"
+      die "TLS precheck failed: peer certificate not yet valid"
+    fi
+    rm -f "${tmp}"
+    log "TLS precheck OK (SelfSignedPinned SPKI)"
+    return 0
+  fi
+
+  curl -fsS --connect-timeout 10 --max-time 30 -o /dev/null "${url}/" 2>/dev/null \
+    || curl -fsS --connect-timeout 10 --max-time 30 -o /dev/null "${url}/health" 2>/dev/null \
+    || curl -fsS --connect-timeout 10 --max-time 30 -o /dev/null "${url}" \
+    || die "TLS precheck failed against ${url} (pass --control-plane-ca-file or --control-plane-spki-pin for pinned/self-signed)"
+  log "TLS precheck OK"
+}
+
+backup_existing() {
+  BACKUP_DIR="$(mktemp -d /tmp/nyxveil-install-backup.XXXXXX)"
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    cp -a "${CONFIG_FILE}" "${BACKUP_DIR}/server.json"
+  fi
+  if [[ -f "${NODE_KEY}" ]]; then
+    cp -a "${NODE_KEY}" "${BACKUP_DIR}/node.key"
+  fi
+  if [[ -f "${SERVICE_UNIT}" ]]; then
+    cp -a "${SERVICE_UNIT}" "${BACKUP_DIR}/nyxveil-server.service"
+  fi
+  if [[ -f "${FIREWALL_UNIT}" ]]; then
+    cp -a "${FIREWALL_UNIT}" "${BACKUP_DIR}/nyxveil-firewall.service"
+  fi
+  local update_unit polkit_rule
+  update_unit="$(dirname "${SERVICE_UNIT}")/nyxveil-update.service"
+  polkit_rule="$(dirname "${ETC_DIR}")/polkit-1/rules.d/50-nyxveil-management.rules"
+  if [[ -f "${update_unit}" ]]; then
+    cp -a "${update_unit}" "${BACKUP_DIR}/nyxveil-update.service"
+  fi
+  if [[ -f "${polkit_rule}" ]]; then
+    cp -a "${polkit_rule}" "${BACKUP_DIR}/50-nyxveil-management.rules"
+  fi
+  if [[ -f "${SYSCTL_FILE}" ]]; then
+    cp -a "${SYSCTL_FILE}" "${BACKUP_DIR}/99-nyxveil.conf"
+  fi
+  if [[ -f "${NFT_FILE}" ]]; then
+    cp -a "${NFT_FILE}" "${BACKUP_DIR}/nyxveil.nft"
+  fi
+  if [[ -x "${BIN_DIR}/nyxveil-server" ]]; then
+    cp -a "${BIN_DIR}/nyxveil-server" "${BACKUP_DIR}/nyxveil-server" || true
+  fi
+  if [[ -x "${BIN_DIR}/nyxveilctl" ]]; then
+    cp -a "${BIN_DIR}/nyxveilctl" "${BACKUP_DIR}/nyxveilctl" || true
+  fi
+}
+
+sysctl_cmd() {
+  [[ "${MOCK}" -eq 1 ]] && return 0
+  command sysctl "$@"
+}
+
+systemctl_cmd() {
+  [[ "${MOCK}" -eq 1 ]] && return 0
+  timeout -k 5 60 systemctl "$@"
+}
+
+nft_cmd() {
+  [[ "${MOCK}" -eq 1 ]] && return 0
+  timeout -k 5 30 nft "$@"
+}
+
+rollback() {
+  [[ "${COMMITTED}" -eq 0 ]] || return 0
+  if [[ "${REGISTRATION_COMMITTED}" -eq 1 ]]; then
+    warn "registration already committed; preserving node identity for PoP repair"
+  else
+    warn "rolling back incomplete install…"
+  fi
+  if [[ "${STARTED_SERVICE}" -eq 1 ]]; then
+    systemctl_cmd stop nyxveil-server 2>/dev/null || true
+    systemctl_cmd disable nyxveil-server 2>/dev/null || true
+    systemctl_cmd stop nyxveil-firewall 2>/dev/null || true
+    systemctl_cmd disable nyxveil-firewall 2>/dev/null || true
+  fi
+  if [[ "${INSTALLED_UNIT}" -eq 1 ]]; then
+    if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/nyxveil-server.service" ]]; then
+      cp -a "${BACKUP_DIR}/nyxveil-server.service" "${SERVICE_UNIT}"
+      systemctl_cmd daemon-reload || true
+    else
+      rm -f "${SERVICE_UNIT}"
+      systemctl_cmd daemon-reload || true
+    fi
+  fi
+  if [[ "${INSTALLED_FIREWALL_UNIT}" -eq 1 ]]; then
+    if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/nyxveil-firewall.service" ]]; then
+      cp -a "${BACKUP_DIR}/nyxveil-firewall.service" "${FIREWALL_UNIT}"
+      systemctl_cmd daemon-reload || true
+    else
+      rm -f "${FIREWALL_UNIT}"
+      systemctl_cmd daemon-reload || true
+    fi
+  fi
+  if [[ "${INSTALLED_UPDATE_SERVICE}" -eq 1 ]]; then
+    local update_unit
+    update_unit="$(dirname "${SERVICE_UNIT}")/nyxveil-update.service"
+    if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/nyxveil-update.service" ]]; then
+      cp -a "${BACKUP_DIR}/nyxveil-update.service" "${update_unit}"
+      systemctl_cmd daemon-reload || true
+    else
+      rm -f "${update_unit}"
+      systemctl_cmd daemon-reload || true
+    fi
+  fi
+  if [[ "${INSTALLED_MANAGEMENT_POLKIT}" -eq 1 ]]; then
+    local polkit_rule
+    polkit_rule="$(dirname "${ETC_DIR}")/polkit-1/rules.d/50-nyxveil-management.rules"
+    if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/50-nyxveil-management.rules" ]]; then
+      mkdir -p "$(dirname "${polkit_rule}")"
+      cp -a "${BACKUP_DIR}/50-nyxveil-management.rules" "${polkit_rule}"
+    else
+      rm -f "${polkit_rule}"
+    fi
+  fi
+  if [[ "${INSTALLED_SYSCTL}" -eq 1 ]]; then
+    if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/99-nyxveil.conf" ]]; then
+      cp -a "${BACKUP_DIR}/99-nyxveil.conf" "${SYSCTL_FILE}"
+    else
+      rm -f "${SYSCTL_FILE}"
+    fi
+    sysctl_cmd --system >/dev/null 2>&1 || true
+  fi
+  if [[ "${INSTALLED_NFT}" -eq 1 ]]; then
+    if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/nyxveil.nft" ]]; then
+      # Legacy backup files may lack destroy. Replace in one transaction, and
+      # retain the currently working table if validating/restoring fails.
+      { printf 'destroy table inet nyxveil\n'; cat "${BACKUP_DIR}/nyxveil.nft"; } >"${NFT_FILE}.rollback"
+      if nft_cmd --check -f "${NFT_FILE}.rollback" && nft_cmd -f "${NFT_FILE}.rollback"; then
+        cp -a "${BACKUP_DIR}/nyxveil.nft" "${NFT_FILE}" || warn "ROLLBACK_FAILED: persist previous firewall"
+      else
+        warn "ROLLBACK_FAILED: firewall restore failed; current table retained"
+      fi
+      rm -f "${NFT_FILE}.rollback"
+    else
+      if nft_cmd destroy table inet nyxveil; then
+        rm -f "${NFT_FILE}"
+      else
+        warn "ROLLBACK_FAILED: remove temporary Nyxveil firewall"
+      fi
+    fi
+  fi
+  rm -f "${NFT_FILE}.next"
+  if [[ "${INSTALLED_BINARIES}" -eq 1 ]]; then
+    if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/nyxveil-server" ]]; then
+      cp -a "${BACKUP_DIR}/nyxveil-server" "${BIN_DIR}/nyxveil-server"
+    else
+      rm -f "${BIN_DIR}/nyxveil-server"
+    fi
+    if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/nyxveilctl" ]]; then
+      cp -a "${BACKUP_DIR}/nyxveilctl" "${BIN_DIR}/nyxveilctl"
+    else
+      rm -f "${BIN_DIR}/nyxveilctl"
+    fi
+  fi
+  if [[ "${REGISTRATION_COMMITTED}" -eq 1 ]]; then
+    # Control Plane already accepted this node. Never delete local identity
+    # artifacts required for PoP repair (same node_id / node.key).
+    :
+  elif [[ "${PRESERVE_HAD_KEY}" -eq 1 ]]; then
+    # Partial/ambiguous registration: keep server.json + node.key so retry can
+    # re-PoP with the SAME identity. Scrub incomplete staged TLS only.
+    rm -f "${STATE_DIR}/tls.next.crt" "${STATE_DIR}/tls.next.key" 2>/dev/null || true
+  elif [[ "${WROTE_CONFIG}" -eq 1 ]]; then
+    if [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/server.json" ]]; then
+      cp -a "${BACKUP_DIR}/server.json" "${CONFIG_FILE}"
+    else
+      rm -f "${CONFIG_FILE}"
+    fi
+    # Pre-identity failure: drop incomplete ACME staging material.
+    rm -f "${STATE_DIR}/tls.next.crt" "${STATE_DIR}/tls.next.key" 2>/dev/null || true
+  fi
+  if [[ "${REGISTRATION_COMMITTED}" -eq 1 || "${PRESERVE_HAD_KEY}" -eq 1 ]]; then
+    # Keep node.key (and do not restore an older backup over a committed identity).
+    :
+  elif [[ -f "${NODE_KEY}" && ! -f "${BACKUP_DIR}/node.key" ]]; then
+    rm -f "${NODE_KEY}"
+  elif [[ -n "${BACKUP_DIR}" && -f "${BACKUP_DIR}/node.key" ]]; then
+    cp -a "${BACKUP_DIR}/node.key" "${NODE_KEY}"
+  fi
+  # applied-config.json is never deleted on rollback (CP-derived state for repair).
+  if [[ "${REGISTRATION_COMMITTED}" -eq 1 ]]; then
+    # Keep nyxveil system user so /var/lib/nyxveil ownership stays repairable.
+    :
+  elif [[ "${CREATED_USER}" -eq 1 ]]; then
+    [[ "${MOCK}" -eq 1 ]] || userdel nyxveil 2>/dev/null || true
+  fi
+  [[ -n "${BACKUP_DIR}" && -d "${BACKUP_DIR}" ]] && rm -rf "${BACKUP_DIR}"
+  if [[ "${REGISTRATION_COMMITTED}" -eq 1 ]]; then
+    warn "install failed but node identity preserved for PoP repair"
+  else
+    warn "rollback complete"
+  fi
+}
+
+on_exit() {
+  local code=$?
+  if [[ "${COMMITTED}" -eq 0 && "${code}" -ne 0 ]]; then
+    rollback || true
+  fi
+  unset BOOTSTRAP_TOKEN
+  exit "${code}"
+}
+
+ensure_user() {
+  if [[ "${MOCK}" -eq 1 ]]; then
+    log "MOCK: skip useradd"
+    return 0
+  fi
+  if id -u nyxveil >/dev/null 2>&1; then
+    log "user nyxveil already exists"
+    return 0
+  fi
+  useradd --system --home-dir "${STATE_DIR}" --shell /usr/sbin/nologin \
+    --comment "Nyxveil VPN node" nyxveil
+  CREATED_USER=1
+  log "created system user nyxveil"
+}
+
+ensure_dirs() {
+  if [[ "${MOCK}" -eq 1 ]]; then
+    mkdir -p "${ETC_DIR}" "${STATE_DIR}" "${STATE_DIR}/acme" "${RUN_DIR}" "$(dirname "${NFT_FILE}")" \
+      "${BIN_DIR}" "$(dirname "${SERVICE_UNIT}")" "$(dirname "${SYSCTL_FILE}")" \
+      "${SCRIPTS_DIR}" "${SHARE_DIR}" \
+      "$(dirname "${ETC_DIR}")/polkit-1/rules.d"
+    chmod 0755 "${ETC_DIR}" "${RUN_DIR}" "${BIN_DIR}" 2>/dev/null || true
+    chmod 0700 "${STATE_DIR}" "${STATE_DIR}/acme" 2>/dev/null || true
+    return 0
+  fi
+  install -d -m 0755 -o root -g root "${ETC_DIR}"
+  install -d -m 0700 -o nyxveil -g nyxveil "${STATE_DIR}"
+  install -d -m 0700 -o nyxveil -g nyxveil "${STATE_DIR}/acme"
+  install -d -m 0755 -o nyxveil -g nyxveil "${RUN_DIR}"
+  install -d -m 0755 -o root -g root "$(dirname "${NFT_FILE}")"
+  install -d -m 0755 -o root -g root "${BIN_DIR}"
+  install -d -m 0755 -o root -g root "$(dirname "${SERVICE_UNIT}")"
+  install -d -m 0755 -o root -g root "$(dirname "${SYSCTL_FILE}")"
+  install -d -m 0755 -o root -g root "${SCRIPTS_DIR}"
+  install -d -m 0755 -o root -g root /etc/polkit-1/rules.d
+}
+
+# --- Unsigned release manifest parse (GitHub Release trust + SHA-256) ---------
+
+json_query() {
+  # json_query FILE EXPR  — EXPR is a jq-style path used by this installer only.
+  local file="$1"
+  local expr="$2"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r "${expr}" "${file}"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; then
+    local py=python3
+    command -v python3 >/dev/null 2>&1 || py=python
+    "${py}" - "${file}" "${expr}" <<'PY'
+import json, sys
+from pathlib import Path
+m = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+expr = sys.argv[2]
+def walk(obj, parts):
+    if not parts:
+        return obj
+    p = parts[0]
+    if p.endswith("]") and "[" in p:
+        name, idx = p[:-1].split("[", 1)
+        if name:
+            obj = obj[name]
+        obj = obj[int(idx)]
+        return walk(obj, parts[1:])
+    if isinstance(obj, dict):
+        return walk(obj.get(p), parts[1:])
+    raise KeyError(p)
+# Support the small expr set used by install.sh.
+if expr in (".version // empty", ".version"):
+    print(m.get("version") or "")
+elif expr in (".arch // empty", ".arch"):
+    print(m.get("arch") or "")
+elif expr == "(.assets // []) | length":
+    print(len(m.get("assets") or []))
+elif expr == ".assets | length":
+    print(len(m.get("assets") or []))
+elif expr == ".sha256 // empty":
+    print(m.get("sha256") or "")
+elif expr == ".url // empty":
+    print(m.get("url") or "")
+elif expr.startswith(".assets[") and "].name" in expr:
+    i = int(expr.split("[",1)[1].split("]",1)[0])
+    print((m.get("assets") or [])[i].get("name") or "")
+elif expr.startswith(".assets[") and "].sha256" in expr:
+    i = int(expr.split("[",1)[1].split("]",1)[0])
+    print((m.get("assets") or [])[i].get("sha256") or "")
+elif expr.startswith(".assets[") and "].url" in expr:
+    i = int(expr.split("[",1)[1].split("]",1)[0])
+    print((m.get("assets") or [])[i].get("url") or "")
+elif expr.startswith(".assets[") and "destination // empty" in expr:
+    i = int(expr.split("[",1)[1].split("]",1)[0])
+    print((m.get("assets") or [])[i].get("destination") or "")
+elif expr.startswith(".assets[") and "mode // empty" in expr:
+    i = int(expr.split("[",1)[1].split("]",1)[0])
+    print((m.get("assets") or [])[i].get("mode") or "")
+elif expr.startswith(".assets[") and "required // false" in expr:
+    i = int(expr.split("[",1)[1].split("]",1)[0])
+    v = (m.get("assets") or [])[i].get("required", False)
+    print("true" if v is True else ("false" if v is False else str(v).lower()))
+else:
+    raise SystemExit(f"unsupported json expr: {expr}")
+PY
+    return 0
+  fi
+  die "jq or python3 required to parse release manifest"
+}
+
+verify_release_manifest() {
+  local manifest="$1"
+
+  local version arch
+  version="$(json_query "${manifest}" '.version // empty')"
+  arch="$(json_query "${manifest}" '.arch // empty')"
+  [[ -n "${version}" ]] || die "release manifest missing version"
+  [[ -n "${arch}" ]] || die "release manifest missing arch"
+
+  local assets_n
+  assets_n="$(json_query "${manifest}" '(.assets // []) | length')"
+  local legacy_ok=0
+  if [[ "$(json_query "${manifest}" '.sha256 // empty')" != "" && "$(json_query "${manifest}" '.url // empty')" != "" ]]; then
+    legacy_ok=1
+  fi
+  if [[ "${assets_n}" -eq 0 && "${legacy_ok}" -eq 0 ]]; then
+    die "release manifest missing assets (and no legacy url/sha256)"
+  fi
+  log "manifest parse OK (unsigned; GitHub Release trust)"
+}
+
+http_get() {
+  local url="$1"
+  local dest="$2"
+  local connect_timeout="${NYXVEIL_HTTP_CONNECT_TIMEOUT_SEC:-10}"
+  local max_time="${NYXVEIL_HTTP_MAX_TIME_SEC:-120}"
+  local attempts="${NYXVEIL_HTTP_RETRIES:-3}"
+  local delay=2
+  local i=1
+  if [[ "${MOCK}" -eq 1 ]]; then
+    if [[ "${url}" == *release-manifest* ]]; then
+      # Unsigned by default — exercises fail-closed unless test supplies a file.
+      if [[ -n "${NYXVEIL_INSTALL_MOCK_MANIFEST:-}" && -f "${NYXVEIL_INSTALL_MOCK_MANIFEST}" ]]; then
+        cp -a "${NYXVEIL_INSTALL_MOCK_MANIFEST}" "${dest}"
+      else
+        cat > "${dest}" <<EOF
+{"version":"${NYXVEIL_VERSION}","arch":"linux/amd64","min_core":"1.0.0","min_protocol":1,"assets":[{"name":"nyxveil-server","sha256":"00","url":"https://example.invalid/s"},{"name":"nyxveilctl","sha256":"00","url":"https://example.invalid/c"}]}
+EOF
+      fi
+      return 0
+    fi
+    printf 'mock-binary\n' > "${dest}"
+    return 0
+  fi
+  rm -f "${dest}" "${dest}.partial"
+  while [[ "${i}" -le "${attempts}" ]]; do
+    if curl -fsSL --connect-timeout "${connect_timeout}" --max-time "${max_time}" \
+         -o "${dest}.partial" "${url}"; then
+      mv -f "${dest}.partial" "${dest}"
+      return 0
+    fi
+    rm -f "${dest}.partial"
+    if [[ "${i}" -ge "${attempts}" ]]; then
+      break
+    fi
+    warn "download attempt ${i}/${attempts} failed for ${url}; retrying in ${delay}s"
+    sleep "${delay}"
+    delay=$((delay * 2))
+    if [[ "${delay}" -gt 30 ]]; then
+      delay=30
+    fi
+    i=$((i + 1))
+  done
+  die "download failed after ${attempts} attempt(s) (connect-timeout=${connect_timeout}s max-time=${max_time}s): ${url}"
+}
+
+assert_release_asset_origin() {
+  local url="$1" base="$2" leaf
+  [[ "${MOCK}" -eq 1 || "${NYXVEIL_TEST_MODE:-0}" == 1 ]] && return 0
+  leaf="${url#"${base}/"}"
+  [[ "${url}" == "${base}/"* && "${leaf}" =~ ^[a-zA-Z0-9_.-]+$ ]] || die "asset must come from the pinned production release"
+}
+
+assert_installed_mode() {
+  local path="$1" expected="$2" actual
+  [[ -f "${path}" ]] || die "installed asset missing: ${path}"
+  # Manifest contracts are checked on every platform. Only Windows MOCK lacks
+  # meaningful Unix mode bits; production and Linux mocks never bypass this.
+  if [[ "${MOCK}" -eq 1 ]]; then
+    case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
+  fi
+  actual="$(stat -c '%a' "${path}")" || die "cannot read installed mode: ${path}"
+  [[ "${actual}" == "${expected#0}" ]] || die "installed mode ${actual}, expected ${expected}: ${path}"
+  if [[ "${expected}" == "0755" ]]; then
+    [[ -x "${path}" ]] || die "installed asset not executable: ${path}"
+  fi
+}
+
+download_or_copy_binaries() {
+  local arch tmp
+  arch="$(detect_arch)"
+  mkdir -p "${BIN_DIR}" "${SCRIPTS_DIR}"
+
+  if [[ -n "${BINARY_DIR}" ]]; then
+    [[ -d "${BINARY_DIR}" ]] || die "binary dir not found: ${BINARY_DIR}"
+    [[ -f "${BINARY_DIR}/nyxveil-server" ]] || die "missing ${BINARY_DIR}/nyxveil-server"
+    [[ -f "${BINARY_DIR}/nyxveilctl" ]] || die "missing ${BINARY_DIR}/nyxveilctl"
+    install -m 0755 "${BINARY_DIR}/nyxveil-server" "${BIN_DIR}/nyxveil-server"
+    install -m 0755 "${BINARY_DIR}/nyxveilctl" "${BIN_DIR}/nyxveilctl"
+    if [[ -f "${BINARY_DIR}/nyxveil-catalog-verify" ]]; then
+      install -m 0755 "${BINARY_DIR}/nyxveil-catalog-verify" "${BIN_DIR}/nyxveil-catalog-verify"
+    elif [[ -f "${BINARY_DIR}/../nyxveil-catalog-verify-linux-${arch}" ]]; then
+      install -m 0755 "${BINARY_DIR}/../nyxveil-catalog-verify-linux-${arch}" "${BIN_DIR}/nyxveil-catalog-verify"
+    fi
+    local gate_src=""
+    for cand in \
+      "${BINARY_DIR}/scripts/production-gate.sh" \
+      "${BINARY_DIR}/../production-gate.sh" \
+      "${BINARY_DIR}/production-gate.sh"; do
+      if [[ -f "${cand}" ]]; then gate_src="${cand}"; break; fi
+    done
+    [[ -n "${gate_src}" ]] || die "missing production-gate.sh beside binary dir"
+    install -m 0755 "${gate_src}" "${SCRIPTS_DIR}/production-gate.sh"
+    local ver_src=""
+    for cand in "${BINARY_DIR}/VERSION" "${BINARY_DIR}/../VERSION"; do
+      if [[ -f "${cand}" ]]; then ver_src="${cand}"; break; fi
+    done
+    [[ -n "${ver_src}" ]] || die "missing VERSION share file beside binary dir"
+    install -m 0644 "${ver_src}" "${SHARE_DIR}/VERSION"
+    local tp_src=""
+    for cand in "${BINARY_DIR}/THIRD_PARTY_CORE.md" "${BINARY_DIR}/../THIRD_PARTY_CORE.md"; do
+      if [[ -f "${cand}" ]]; then tp_src="${cand}"; break; fi
+    done
+    [[ -n "${tp_src}" ]] || die "missing THIRD_PARTY_CORE.md beside binary dir"
+    install -m 0644 "${tp_src}" "${SHARE_DIR}/THIRD_PARTY_CORE.md"
+    local update_unit_dest polkit_dest
+    update_unit_dest="$(dirname "${SERVICE_UNIT}")/nyxveil-update.service"
+    polkit_dest="$(dirname "${ETC_DIR}")/polkit-1/rules.d/50-nyxveil-management.rules"
+    local unit_src=""
+    for cand in \
+      "${BINARY_DIR}/nyxveil-update.service" \
+      "${BINARY_DIR}/../nyxveil-update.service" \
+      "${BINARY_DIR}/systemd/nyxveil-update.service"; do
+      if [[ -f "${cand}" ]]; then unit_src="${cand}"; break; fi
+    done
+    if [[ -n "${unit_src}" ]]; then
+      mkdir -p "$(dirname "${update_unit_dest}")"
+      install -m 0644 "${unit_src}" "${update_unit_dest}"
+      MANIFEST_UPDATE_SERVICE=1
+      INSTALLED_UPDATE_SERVICE=1
+    fi
+    local polkit_src=""
+    for cand in \
+      "${BINARY_DIR}/50-nyxveil-management.rules" \
+      "${BINARY_DIR}/../50-nyxveil-management.rules" \
+      "${BINARY_DIR}/systemd/50-nyxveil-management.rules"; do
+      if [[ -f "${cand}" ]]; then polkit_src="${cand}"; break; fi
+    done
+    if [[ -n "${polkit_src}" ]]; then
+      mkdir -p "$(dirname "${polkit_dest}")"
+      install -m 0644 "${polkit_src}" "${polkit_dest}"
+      MANIFEST_MANAGEMENT_POLKIT=1
+      INSTALLED_MANAGEMENT_POLKIT=1
+    fi
+    INSTALLED_BINARIES=1
+    log "installed binaries + production-gate from ${BINARY_DIR} (no remote verify)"
+    return 0
+  fi
+
+  if [[ "${SKIP_DOWNLOAD}" -eq 1 ]]; then
+    die "--skip-download requires --binary-dir"
+  fi
+
+  # Fail-closed remote path: unsigned manifest + SHA-256 assets.
+  # (jq required to parse the release contract.)
+
+  tmp="$(mktemp -d /tmp/nyxveil-dl.XXXXXX)"
+  local tag base man
+  tag="server-v${NYXVEIL_VERSION}"
+  base="https://github.com/${GITHUB_REPO}/releases/download/${tag}"
+  man="${base}/release-manifest-linux-${arch}.json"
+  log "downloading manifest ${man}"
+  http_get "${man}" "${tmp}/manifest.json"
+  verify_release_manifest "${tmp}/manifest.json"
+
+  local want_arch="linux/${arch}"
+  local got_arch
+  got_arch="$(json_query "${tmp}/manifest.json" '.arch')"
+  [[ "${got_arch}" == "${want_arch}" ]] || die "manifest arch mismatch: have ${got_arch} want ${want_arch}"
+
+  local n i name sha url dest manifest_dest manifest_mode manifest_required
+  local have_server=0 have_ctl=0 have_catalog=0 have_gate=0 have_ver=0 have_tp=0
+  local have_update_service=0 have_management_polkit=0
+  local update_unit_dest polkit_dest
+  update_unit_dest="$(dirname "${SERVICE_UNIT}")/nyxveil-update.service"
+  polkit_dest="$(dirname "${ETC_DIR}")/polkit-1/rules.d/50-nyxveil-management.rules"
+  n="$(json_query "${tmp}/manifest.json" '.assets | length')"
+  [[ "${n}" -gt 0 ]] || die "manifest has no assets"
+  for ((i = 0; i < n; i++)); do
+    name="$(json_query "${tmp}/manifest.json" ".assets[${i}].name")"
+    sha="$(json_query "${tmp}/manifest.json" ".assets[${i}].sha256")"
+    url="$(json_query "${tmp}/manifest.json" ".assets[${i}].url")"
+    manifest_dest="$(json_query "${tmp}/manifest.json" ".assets[${i}].destination // empty")"
+    manifest_mode="$(json_query "${tmp}/manifest.json" ".assets[${i}].mode // empty")"
+    manifest_required="$(json_query "${tmp}/manifest.json" ".assets[${i}].required // false")"
+    [[ -n "${name}" && -n "${sha}" && -n "${url}" && -n "${manifest_dest}" && -n "${manifest_mode}" ]] ||
+      die "manifest asset[${i}] missing fields"
+    [[ "${manifest_required}" == "true" ]] || die "manifest asset ${name} is not required"
+    [[ "${sha}" =~ ^[0-9a-fA-F]{64}$ ]] || die "manifest asset ${name}: invalid sha256"
+    dest="${tmp}/asset-${i}"
+    assert_release_asset_origin "${url}" "${base}"
+    log "downloading ${name}"
+    http_get "${url}" "${dest}"
+    echo "${sha}  ${dest}" | sha256sum -c - >/dev/null || die "SHA256 mismatch for ${name}"
+    case "${name}" in
+      nyxveil-server|server)
+        [[ "${manifest_dest}" == "${WANT_SERVER_DEST}" && "${manifest_mode}" == "0755" ]] ||
+          die "manifest contract mismatch for ${name}"
+        install -m 0755 "${dest}" "${BIN_DIR}/nyxveil-server"
+        have_server=1
+        ;;
+      nyxveilctl|ctl)
+        [[ "${manifest_dest}" == "${WANT_CTL_DEST}" && "${manifest_mode}" == "0755" ]] ||
+          die "manifest contract mismatch for ${name}"
+        install -m 0755 "${dest}" "${BIN_DIR}/nyxveilctl"
+        have_ctl=1
+        ;;
+      nyxveil-catalog-verify)
+        [[ "${manifest_dest}" == "${WANT_CATALOG_DEST}" && "${manifest_mode}" == "0755" ]] ||
+          die "manifest contract mismatch for ${name}"
+        install -m 0755 "${dest}" "${BIN_DIR}/nyxveil-catalog-verify"
+        have_catalog=1
+        ;;
+      production-gate)
+        [[ "${manifest_dest}" == "${WANT_GATE_DEST}" && "${manifest_mode}" == "0755" ]] ||
+          die "manifest contract mismatch for ${name}"
+        install -m 0755 "${dest}" "${SCRIPTS_DIR}/production-gate.sh"
+        have_gate=1
+        ;;
+      share-version)
+        [[ "${manifest_dest}" == "${WANT_VERSION_DEST}" && "${manifest_mode}" == "0644" ]] ||
+          die "manifest contract mismatch for ${name}"
+        install -m 0644 "${dest}" "${SHARE_DIR}/VERSION"
+        have_ver=1
+        ;;
+      share-third-party-core)
+        [[ "${manifest_dest}" == "${WANT_THIRD_PARTY_DEST}" && "${manifest_mode}" == "0644" ]] ||
+          die "manifest contract mismatch for ${name}"
+        install -m 0644 "${dest}" "${SHARE_DIR}/THIRD_PARTY_CORE.md"
+        have_tp=1
+        ;;
+      nyxveil-update-service)
+        [[ "${manifest_dest}" == "${WANT_UPDATE_SERVICE_DEST}" && "${manifest_mode}" == "0644" ]] ||
+          die "manifest contract mismatch for ${name}"
+        mkdir -p "$(dirname "${update_unit_dest}")"
+        install -m 0644 "${dest}" "${update_unit_dest}"
+        have_update_service=1
+        MANIFEST_UPDATE_SERVICE=1
+        INSTALLED_UPDATE_SERVICE=1
+        ;;
+      nyxveil-management-polkit)
+        [[ "${manifest_dest}" == "${WANT_POLKIT_DEST}" && "${manifest_mode}" == "0644" ]] ||
+          die "manifest contract mismatch for ${name}"
+        mkdir -p "$(dirname "${polkit_dest}")"
+        install -m 0644 "${dest}" "${polkit_dest}"
+        have_management_polkit=1
+        MANIFEST_MANAGEMENT_POLKIT=1
+        INSTALLED_MANAGEMENT_POLKIT=1
+        ;;
+      *)
+        die "unknown required asset ${name}"
+        ;;
+    esac
+  done
+  [[ "${have_server}" -eq 1 ]] || die "nyxveil-server not installed from manifest"
+  [[ "${have_ctl}" -eq 1 ]] || die "nyxveilctl not installed from manifest"
+  [[ "${have_catalog}" -eq 1 ]] || die "nyxveil-catalog-verify not installed from manifest"
+  [[ "${have_gate}" -eq 1 ]] || die "production-gate.sh not installed from manifest"
+  [[ "${have_ver}" -eq 1 ]] || die "share VERSION not installed from manifest"
+  [[ "${have_tp}" -eq 1 ]] || die "THIRD_PARTY_CORE.md not installed from manifest"
+  [[ "${have_update_service}" -eq 1 ]] || die "nyxveil-update.service not installed from manifest"
+  [[ "${have_management_polkit}" -eq 1 ]] || die "50-nyxveil-management.rules not installed from manifest"
+  assert_installed_mode "${BIN_DIR}/nyxveil-server" 0755
+  assert_installed_mode "${BIN_DIR}/nyxveilctl" 0755
+  assert_installed_mode "${BIN_DIR}/nyxveil-catalog-verify" 0755
+  assert_installed_mode "${SCRIPTS_DIR}/production-gate.sh" 0755
+  assert_installed_mode "${SHARE_DIR}/VERSION" 0644
+  assert_installed_mode "${SHARE_DIR}/THIRD_PARTY_CORE.md" 0644
+  assert_installed_mode "${update_unit_dest}" 0644
+  assert_installed_mode "${polkit_dest}" 0644
+  [[ -f "${update_unit_dest}" ]] || die "nyxveil-update.service missing after install"
+  [[ -f "${polkit_dest}" ]] || die "50-nyxveil-management.rules missing after install"
+  rm -rf "${tmp}"
+  INSTALLED_BINARIES=1
+  log "installed binaries + gate + management assets (manifest verified)"
+}
+
+install_sysctl() {
+  mkdir -p "$(dirname "${SYSCTL_FILE}")"
+  cat > "${SYSCTL_FILE}" <<'EOF'
+# Nyxveil VPN node вЂ” enable IPv4 forwarding for client NAT
+net.ipv4.ip_forward = 1
+EOF
+  chmod 0644 "${SYSCTL_FILE}"
+  sysctl_cmd --system >/dev/null 2>&1 || sysctl_cmd -p "${SYSCTL_FILE}" >/dev/null 2>&1 || true
+  INSTALLED_SYSCTL=1
+  log "wrote ${SYSCTL_FILE}"
+}
+
+install_nftables() {
+  local acme_line=""
+  if [[ -n "${TLS_DOMAIN}" ]]; then
+    acme_line=$'    tcp dport 80 ct state new accept comment "nyxveil-acme-http01"\n'
+  fi
+  cat > "${NFT_FILE}.next" <<EOF
+# Managed by Nyxveil installer — table inet nyxveil only
+# destroy makes nft -f idempotent (no duplicate rules on re-apply / unit start).
+destroy table inet nyxveil
+table inet nyxveil {
+  chain input {
+    type filter hook input priority filter - 10; policy accept;
+${acme_line}    tcp dport ${TLS_PORT} ct state new accept comment "nyxveil-tls"
+    udp dport ${QUIC_PORT} ct state new accept comment "nyxveil-quic"
+  }
+
+  chain forward {
+    type filter hook forward priority filter - 10; policy accept;
+    iifname "nyxveil0" accept comment "nyxveil-fwd-in"
+    oifname "nyxveil0" accept comment "nyxveil-fwd-out"
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr ${VPN_SUBNET} oifname != "nyxveil0" masquerade comment "nyxveil-masq"
+  }
+}
+EOF
+  chmod 0644 "${NFT_FILE}.next"
+  nft_cmd --check -f "${NFT_FILE}.next" || die "invalid Nyxveil firewall"
+  INSTALLED_NFT=1
+  mv -f "${NFT_FILE}.next" "${NFT_FILE}"
+  # Replacement is one nft transaction: never delete the working table first.
+  nft_cmd -f "${NFT_FILE}" || [[ "${MOCK}" -eq 1 ]]
+  INSTALLED_NFT=1
+  log "applied nftables table inet nyxveil (idempotent destroy+load; no ruleset flush)"
+}
+
+# Embedded units — no resolve_unit_source / sibling systemd/ required.
+write_firewall_unit() {
+  cat > "${FIREWALL_UNIT}" <<'EOF'
+[Unit]
+Description=Nyxveil nftables firewall (table inet nyxveil)
+Documentation=https://github.com/Moroz1212/Nyxveil/tree/main/server/docs/FIREWALL.md
+Before=nyxveil-server.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/nyxveil.conf
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "${FIREWALL_UNIT}"
+}
+
+write_server_unit() {
+  cat > "${SERVICE_UNIT}" <<'EOF'
+[Unit]
+Description=Nyxveil VPN Node
+Documentation=https://github.com/Moroz1212/Nyxveil/tree/main/server/docs
+After=network-online.target nyxveil-firewall.service
+Wants=network-online.target nyxveil-firewall.service
+
+[Service]
+Type=simple
+User=nyxveil
+Group=nyxveil
+ExecStart=/usr/local/sbin/nyxveil-server --config /etc/nyxveil/server.json
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+DeviceAllow=/dev/net/tun rw
+ReadWritePaths=/var/lib/nyxveil /run/nyxveil
+RuntimeDirectory=nyxveil
+RuntimeDirectoryMode=0755
+StateDirectory=
+UMask=0077
+
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "${SERVICE_UNIT}"
+}
+
+write_update_unit() {
+  local dest
+  dest="$(dirname "${SERVICE_UNIT}")/nyxveil-update.service"
+  cat > "${dest}" <<'EOF'
+[Unit]
+Description=Nyxveil signed update (oneshot)
+Documentation=https://github.com/Moroz1212/Nyxveil/tree/main/server/docs
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/nyxveilctl update
+Nice=5
+TimeoutStartSec=900
+EOF
+  chmod 0644 "${dest}"
+  INSTALLED_UPDATE_SERVICE=1
+  log "installed ${dest} (embedded fallback)"
+}
+
+write_polkit_management_rules() {
+  local dest
+  dest="$(dirname "${ETC_DIR}")/polkit-1/rules.d/50-nyxveil-management.rules"
+  mkdir -p "$(dirname "${dest}")"
+  cat > "${dest}" <<'EOF'
+/* Nyxveil: allow node service user to restart its unit, start fixed update unit, and reboot the host
+ * via authenticated Control Plane remote commands (no SSH/shell). */
+polkit.addRule(function (action, subject) {
+    if (subject.user !== "nyxveil") {
+        return undefined;
+    }
+    if (action.id === "org.freedesktop.systemd1.manage-units" ||
+        action.id === "org.freedesktop.systemd1.manage-unit-files") {
+        var unit = action.lookup("unit");
+        if (unit === "nyxveil-server.service") {
+            return polkit.Result.YES;
+        }
+        if (unit === "nyxveil-update.service") {
+            return polkit.Result.YES;
+        }
+    }
+    if (action.id === "org.freedesktop.login1.reboot" ||
+        action.id === "org.freedesktop.login1.reboot-multiple-sessions") {
+        return polkit.Result.YES;
+    }
+    return undefined;
+});
+EOF
+  chmod 0644 "${dest}"
+  INSTALLED_MANAGEMENT_POLKIT=1
+  log "installed ${dest} (embedded fallback)"
+}
+
+install_systemd_units() {
+  write_firewall_unit
+  write_server_unit
+  # SHA256-verified release assets are authoritative. Embedded writers are
+  # fallback only when canonical management assets were not supplied.
+  if [[ "${MANIFEST_UPDATE_SERVICE}" -eq 1 ]]; then
+    log "keeping release-verified nyxveil-update.service (skip embedded overwrite)"
+  else
+    write_update_unit || warn "update unit not installed"
+  fi
+  if [[ "${MANIFEST_MANAGEMENT_POLKIT}" -eq 1 ]]; then
+    log "keeping release-verified 50-nyxveil-management.rules (skip embedded overwrite)"
+  else
+    write_polkit_management_rules || warn "polkit rules not installed (restart/reboot/update from CP may fail until granted)"
+  fi
+  systemctl_cmd daemon-reload
+  systemctl_cmd enable nyxveil-firewall.service
+  # Apply firewall now and mark active (oneshot RemainAfterExit).
+  systemctl_cmd restart nyxveil-firewall.service || die "failed to activate Nyxveil firewall"
+  INSTALLED_FIREWALL_UNIT=1
+  INSTALLED_UNIT=1
+  log "installed ${FIREWALL_UNIT} and ${SERVICE_UNIT}"
+}
+
+generate_node_id() {
+  if [[ -n "${PRESERVE_NODE_ID}" ]]; then
+    echo "${PRESERVE_NODE_ID}"
+    return 0
+  fi
+  local host rand
+  host="$(hostname -s 2>/dev/null || hostname || echo node)"
+  host="$(echo "${host}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-' | cut -c1-24)"
+  # Prefer od/hexdump over openssl/xxd (may be absent on minimal hosts).
+  if command -v od >/dev/null 2>&1; then
+    rand="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+  elif command -v hexdump >/dev/null 2>&1; then
+    rand="$(hexdump -n 4 -e '4/1 "%02x"' /dev/urandom)"
+  else
+    # Pure bash fallback via /dev/urandom bytes
+    rand="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  fi
+  echo "nv-${host}-${rand}"
+}
+
+json_str() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\t'/\\t}
+  printf '"%s"' "${s}"
+}
+
+write_server_json() {
+  local node_id server_name
+  node_id="$(generate_node_id)"
+  server_name="${PUBLIC_HOST:-${DISPLAY_NAME}}"
+
+  PINNED_CA_DEST=""
+  if [[ -n "${CONTROL_PLANE_CA_FILE}" ]]; then
+    PINNED_CA_DEST="${ETC_DIR}/cp-ca.pem"
+    install -m 0644 "${CONTROL_PLANE_CA_FILE}" "${PINNED_CA_DEST}"
+  fi
+
+  {
+    printf '{\n'
+    printf '  "control_plane_url": %s,\n' "$(json_str "${CONTROL_PLANE}")"
+    printf '  "node_id": %s,\n' "$(json_str "${node_id}")"
+    printf '  "location_id": %s,\n' "$(json_str "${LOCATION_ID}")"
+    printf '  "display_name": %s,\n' "$(json_str "${DISPLAY_NAME}")"
+    printf '  "config_version": 0,\n'
+    printf '  "server_name": %s,\n' "$(json_str "${server_name}")"
+    printf '  "public_host": %s,\n' "$(json_str "${PUBLIC_HOST}")"
+    printf '  "tls_listen": %s,\n' "$(json_str ":${TLS_PORT}")"
+    printf '  "quic_listen": %s,\n' "$(json_str ":${QUIC_PORT}")"
+    printf '  "vpn_subnet_cidr": %s,\n' "$(json_str "${VPN_SUBNET}")"
+    if [[ "${#DNS_SERVERS[@]}" -gt 0 ]]; then
+      printf '  "dns_servers": ['
+      local i
+      for i in "${!DNS_SERVERS[@]}"; do
+        [[ $i -gt 0 ]] && printf ', '
+        printf '%s' "$(json_str "${DNS_SERVERS[$i]}")"
+      done
+      printf '],\n'
+    fi
+    printf '  "heartbeat_seconds": 30,\n'
+    printf '  "tls_cert_file": %s,\n' "$(json_str "${STATE_DIR}/tls.crt")"
+    printf '  "tls_key_file": %s' "$(json_str "${STATE_DIR}/tls.key")"
+    if [[ -n "${TLS_DOMAIN}" ]]; then
+      printf ',\n  "acme_domain": %s' "$(json_str "${TLS_DOMAIN}")"
+      if [[ -n "${ACME_EMAIL}" ]]; then
+        printf ',\n  "acme_email": %s' "$(json_str "${ACME_EMAIL}")"
+      fi
+      if [[ -n "${ACME_DIRECTORY}" ]]; then
+        printf ',\n  "acme_directory": %s' "$(json_str "${ACME_DIRECTORY}")"
+      fi
+    fi
+    if [[ -n "${PINNED_CA_DEST}" ]]; then
+      printf ',\n  "pinned_ca_file": %s' "$(json_str "${PINNED_CA_DEST}")"
+    fi
+    if [[ -n "${CONTROL_PLANE_SPKI_PIN}" ]]; then
+      printf ',\n  "control_plane_spki_pin": %s' "$(json_str "${CONTROL_PLANE_SPKI_PIN}")"
+    fi
+    printf '\n}\n'
+  } > "${CONFIG_FILE}"
+  chmod 0644 "${CONFIG_FILE}"
+  chown root:root "${CONFIG_FILE}" 2>/dev/null || true
+  WROTE_CONFIG=1
+
+  # Operator TLS: copy without overwrite unless --tls-replace.
+  if [[ -n "${TLS_CERT_SRC}" || -n "${TLS_KEY_SRC}" ]]; then
+    [[ -n "${TLS_CERT_SRC}" && -n "${TLS_KEY_SRC}" ]] || die "--tls-cert and --tls-key must be used together"
+    [[ -f "${TLS_CERT_SRC}" ]] || die "tls cert not found: ${TLS_CERT_SRC}"
+    [[ -f "${TLS_KEY_SRC}" ]] || die "tls key not found: ${TLS_KEY_SRC}"
+    if [[ -f "${STATE_DIR}/tls.crt" && -f "${STATE_DIR}/tls.key" && "${TLS_REPLACE}" -eq 0 ]]; then
+      log "keeping existing ${STATE_DIR}/tls.crt (use --tls-replace to overwrite)"
+    else
+      install -m 0644 "${TLS_CERT_SRC}" "${STATE_DIR}/tls.crt"
+      install -m 0600 "${TLS_KEY_SRC}" "${STATE_DIR}/tls.key"
+      chown nyxveil:nyxveil "${STATE_DIR}/tls.crt" "${STATE_DIR}/tls.key" 2>/dev/null || true
+      log "installed operator TLS material (trusted leaf required for Windows clients)"
+    fi
+  fi
+
+  log "wrote ${CONFIG_FILE} (no bootstrap token)"
+}
+
+generate_identity_and_register() {
+  if [[ "${MOCK}" -eq 1 ]]; then
+    # Touch a placeholder key so repair-path tests can see state layout.
+    if [[ ! -f "${NODE_KEY}" ]]; then
+      printf 'mock-node-key\n' > "${NODE_KEY}"
+      chmod 0600 "${NODE_KEY}"
+    fi
+    # Simulate TLS material ownership layout expected after real register.
+    printf 'mock-tls-cert\n' > "${STATE_DIR}/tls.crt"
+    printf 'mock-tls-key\n' > "${STATE_DIR}/tls.key"
+    chmod 0644 "${STATE_DIR}/tls.crt"
+    chmod 0600 "${STATE_DIR}/tls.key"
+    if [[ ! -f "${STATE_DIR}/applied-config.json" ]]; then
+      printf '{"config_version":1,"mock":true}\n' > "${STATE_DIR}/applied-config.json"
+      chmod 0600 "${STATE_DIR}/applied-config.json"
+    fi
+    fix_state_ownership
+    log "MOCK: skip Control Plane registration"
+    BOOTSTRAP_TOKEN=""
+    unset BOOTSTRAP_TOKEN
+    REGISTRATION_COMMITTED=1
+    log "registration committed; identity preserved for PoP repair on later install failure"
+    return 0
+  fi
+
+  # State dir must be owned by service user before register creates keys/TLS.
+  install -d -m 0700 -o nyxveil -g nyxveil "${STATE_DIR}"
+  if [[ -f "${NODE_KEY}" ]]; then
+    chown nyxveil:nyxveil "${NODE_KEY}"
+    chmod 0600 "${NODE_KEY}"
+  fi
+  # server.json + pinned CA stay root-owned but world/group-readable for nyxveil.
+  chmod 0644 "${CONFIG_FILE}" 2>/dev/null || true
+  if [[ -n "${PINNED_CA_DEST}" && -f "${PINNED_CA_DEST}" ]]; then
+    chmod 0644 "${PINNED_CA_DEST}"
+  fi
+
+  if [[ -n "${TLS_DOMAIN}" ]]; then
+    log "PHASE 08 TLS/ACME PREPARE (domain=${TLS_DOMAIN}; ACME HTTP-01 may run inside register)"
+  fi
+
+  log "PHASE 09 CONTROL PLANE REGISTRATION"
+  log "registering with Control Plane as user nyxveil…"
+  local reg_flags=(--config "${CONFIG_FILE}" --register-stdin)
+  if [[ "${TEST_SELF_SIGNED}" -eq 1 ]]; then
+    reg_flags+=(--test-mode)
+  fi
+  local reg_rc=0
+  # GNU timeout cannot exec a shell function. Wrap an ACTUAL executable as nyxveil.
+  # Fail closed: unbounded registration is forbidden on production hosts.
+  printf '%s\n' "${BOOTSTRAP_TOKEN}" | run_as_nyxveil_bounded 600 15 \
+    "${BIN_DIR}/nyxveil-server" "${reg_flags[@]}" || reg_rc=$?
+  if [[ "${reg_rc}" -ne 0 ]]; then
+    # HTTP 200 + local decode/persist failure still leaves a CP-side node + consumed bootstrap.
+    # Never delete the freshly written node.key on rollback — retry must keep the same identity.
+    if [[ -f "${NODE_KEY}" ]]; then
+      PRESERVE_HAD_KEY=1
+      warn "registration failed locally but node.key exists — Control Plane may already have registered this node"
+      warn "preserving ${NODE_KEY}; retry with the SAME node_id/public key and a new bootstrap token"
+    fi
+    die "Control Plane registration failed — if CP accepted the node, keep node.key and retry with same identity + bootstrap token"
+  fi
+  fix_state_ownership
+  BOOTSTRAP_TOKEN=""
+  unset BOOTSTRAP_TOKEN
+  REGISTRATION_COMMITTED=1
+  PRESERVE_HAD_KEY=1
+  log "registration complete; identity at ${NODE_KEY}"
+  log "registration committed; identity preserved for PoP repair on later install failure"
+}
+
+# run_as_nyxveil executes a command as the runtime service user (no root TLS keys).
+# Does NOT grant CAP_NET_BIND_SERVICE — use run_as_nyxveil_bounded for ACME/register.
+run_as_nyxveil() {
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u nyxveil -- "$@"
+    return $?
+  fi
+  if command -v setpriv >/dev/null 2>&1; then
+    setpriv --reuid=nyxveil --regid=nyxveil --clear-groups -- "$@"
+    return $?
+  fi
+  local cmd
+  cmd="$(printf '%q ' "$@")"
+  su -s /bin/bash nyxveil -c "${cmd}"
+}
+
+# run_as_nyxveil_bounded runs an EXTERNAL executable as nyxveil under GNU timeout,
+# with a TRANSIENT CAP_NET_BIND_SERVICE so ACME HTTP-01 can bind :80 during
+# bootstrap registration. Capabilities are process-scoped only (never setcap on
+# the binary; never lower ip_unprivileged_port_start).
+#
+# Prefer systemd-run AmbientCapabilities (Ubuntu 24.04 / systemd PID1).
+# Fallback: setpriv inheritable+ambient net_bind_service from root.
+#
+# Usage: run_as_nyxveil_bounded <sec> <kill_after_sec> <executable> [args...]
+run_as_nyxveil_bounded() {
+  local sec="${1:?}"
+  local kill_after="${2:?}"
+  shift 2
+  local exe="${1:?}"
+  shift
+
+  command -v timeout >/dev/null 2>&1 || {
+    echo "ERROR: coreutils timeout required for bounded registration (fail closed)" >&2
+    return 97
+  }
+  [[ -x "${exe}" || -f "${exe}" ]] || {
+    echo "ERROR: bounded registration executable missing: ${exe}" >&2
+    return 98
+  }
+
+  # MOCK: no privilege drop / no caps needed.
+  if [[ "${MOCK}" -eq 1 ]]; then
+    timeout -k "${kill_after}" "${sec}" "${exe}" "$@"
+    return $?
+  fi
+
+  # Prefer systemd-run: AmbientCapabilities apply only to this transient unit.
+  if command -v systemd-run >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+    (
+    local unit="nyxveil-register-${BASHPID}-${RANDOM}.service"
+    trap 'timeout -k 2 10 systemctl stop "${unit}" >/dev/null 2>&1 || true' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    timeout -k "${kill_after}" "$((sec + kill_after + 10))" \
+      systemd-run --unit="${unit}" --uid=nyxveil --gid=nyxveil \
+      --property=RuntimeMaxSec="${sec}" \
+      --property=TimeoutStopSec="${kill_after}" \
+      --property=KillMode=control-group \
+      --property=AmbientCapabilities=CAP_NET_BIND_SERVICE \
+      --property=CapabilityBoundingSet=CAP_NET_BIND_SERVICE \
+      --property=NoNewPrivileges=true \
+      --wait --pipe --collect --quiet \
+      /usr/bin/timeout -k "${kill_after}" "${sec}" "${exe}" "$@"
+    )
+    return $?
+  fi
+
+  # Fallback: setpriv keeps CAP_NET_BIND_SERVICE across uid drop (util-linux).
+  if command -v setpriv >/dev/null 2>&1; then
+    setpriv --reuid=nyxveil --regid=nyxveil --clear-groups \
+      --bounding-set=-all,+net_bind_service --no-new-privs \
+      --inh-caps=-all,+net_bind_service --ambient-caps=-all,+net_bind_service \
+      -- \
+      timeout -k "${kill_after}" "${sec}" "${exe}" "$@"
+    return $?
+  fi
+
+  echo "ERROR: systemd-run or setpriv required to grant transient CAP_NET_BIND_SERVICE for ACME HTTP-01 (fail closed)" >&2
+  return 96
+}
+
+# fix_state_ownership enforces service-user ownership on all private state.
+fix_state_ownership() {
+  chmod 0700 "${STATE_DIR}" 2>/dev/null || true
+  [[ -f "${NODE_KEY}" ]] && chmod 0600 "${NODE_KEY}"
+  [[ -f "${STATE_DIR}/tls.key" ]] && chmod 0600 "${STATE_DIR}/tls.key"
+  [[ -f "${STATE_DIR}/tls.crt" ]] && chmod 0644 "${STATE_DIR}/tls.crt"
+  [[ -f "${STATE_DIR}/applied-config.json" ]] && chmod 0600 "${STATE_DIR}/applied-config.json"
+  [[ -f "${STATE_DIR}/ech-private.key" ]] && chmod 0600 "${STATE_DIR}/ech-private.key"
+  [[ -f "${STATE_DIR}/ticket-keys.json" ]] && chmod 0600 "${STATE_DIR}/ticket-keys.json"
+  [[ "${MOCK}" -eq 1 ]] && return 0
+  chown -R nyxveil:nyxveil "${STATE_DIR}"
+  if [[ -f "${NODE_KEY}" ]]; then
+    chown nyxveil:nyxveil "${NODE_KEY}"
+  fi
+  if [[ -f "${STATE_DIR}/tls.key" ]]; then
+    chown nyxveil:nyxveil "${STATE_DIR}/tls.key"
+  fi
+  if [[ -f "${STATE_DIR}/tls.crt" ]]; then
+    chown nyxveil:nyxveil "${STATE_DIR}/tls.crt"
+  fi
+  if [[ -f "${STATE_DIR}/applied-config.json" ]]; then
+    chown nyxveil:nyxveil "${STATE_DIR}/applied-config.json"
+  fi
+  if [[ -f "${STATE_DIR}/ech-private.key" ]]; then
+    chown nyxveil:nyxveil "${STATE_DIR}/ech-private.key"
+  fi
+  if [[ -f "${STATE_DIR}/ticket-keys.json" ]]; then
+    chown nyxveil:nyxveil "${STATE_DIR}/ticket-keys.json"
+  fi
+}
+
+start_and_test() {
+  if [[ "${MOCK}" -eq 1 ]]; then
+    log "MOCK: skip systemctl start / health gate"
+    STARTED_SERVICE=1
+    return 0
+  fi
+  systemctl_cmd enable nyxveil-firewall.service
+  systemctl_cmd enable nyxveil-server
+  systemctl_cmd restart nyxveil-firewall.service || die "failed to activate Nyxveil firewall"
+  systemctl_cmd restart nyxveil-server
+  STARTED_SERVICE=1
+  local i
+  for i in $(seq 1 30); do
+    if systemctl_cmd is-active --quiet nyxveil-server; then
+      break
+    fi
+    sleep 1
+  done
+  systemctl_cmd is-active --quiet nyxveil-server || die "nyxveil-server failed to become active"
+
+  local ok=0
+  for i in $(seq 1 60); do
+    if "${BIN_DIR}/nyxveilctl" health >/dev/null 2>&1; then
+      ok=1
+      break
+    fi
+    sleep 1
+  done
+  [[ "${ok}" -eq 1 ]] || die "self-test failed: nyxveilctl health unhealthy after 60s"
+  log "self-test OK"
+}
+
+install_serv_wrappers() {
+  local wrap="" cmds cmd
+  if [[ -n "${SCRIPT_DIR}" ]]; then
+    wrap="${SCRIPT_DIR}/../scripts/serv_wrappers.sh"
+  fi
+  cmds=(status health start stop restart logs version config configure update uninstall)
+  mkdir -p "${LINK_DIR}"
+
+  # Prefer repo script when present (offline tarball). curl|bash uses embedded list.
+  if [[ "${MOCK}" -eq 0 && -n "${wrap}" && -f "${wrap}" ]]; then
+    if NYXVEIL_BIN_DIR="${BIN_DIR}" NYXVEIL_LINK_DIR="${LINK_DIR}" bash "${wrap}" install; then
+      return 0
+    fi
+    warn "serv_wrappers install failed; writing embedded wrappers"
+  fi
+
+  for cmd in "${cmds[@]}"; do
+    cat > "${LINK_DIR}/serv_${cmd}" <<EOF
+#!/usr/bin/env bash
+exec ${BIN_DIR}/nyxveilctl ${cmd} "\$@"
+EOF
+    chmod 0755 "${LINK_DIR}/serv_${cmd}"
+  done
+  cat > "${LINK_DIR}/serv_update_bootstrap" <<EOF
+#!/usr/bin/env bash
+exec ${BIN_DIR}/nyxveilctl bootstrap-cli --version "\${NYXVEIL_BOOTSTRAP_VERSION:-${NYXVEIL_VERSION}}" --then-update "\$@"
+EOF
+  chmod 0755 "${LINK_DIR}/serv_update_bootstrap"
+  # Ship legacy helper next to binaries when packaging offline trees.
+  if [[ -f "${SCRIPT_DIR}/../scripts/bootstrap-cli-update.sh" ]]; then
+    install -m 0755 "${SCRIPT_DIR}/../scripts/bootstrap-cli-update.sh" "${BIN_DIR}/nyxveil-bootstrap-cli-update" 2>/dev/null || true
+  fi
+  log "installed serv_* wrappers in ${LINK_DIR}"
+}
+
+print_success() {
+  cat <<EOF
+
+========================================================================
+  Nyxveil node installed successfully (v${NYXVEIL_VERSION})
+========================================================================
+
+  Config:   ${CONFIG_FILE}  (static, root-owned, daemon read-only)
+  Applied:  ${STATE_DIR}/applied-config.json  (dynamic CP state)
+  State:    ${STATE_DIR}
+  Service:  systemctl status nyxveil-server
+  Firewall: systemctl status nyxveil-firewall
+
+  Quick commands:
+    serv_status
+    serv_health
+    serv_restart
+    serv_update
+    serv_update_bootstrap   # legacy в‰¤1.0.4: CLI-only then full update
+    serv_configure --status
+    serv_logs
+    serv_version
+
+  Or: nyxveilctl status | health | configure | logs | update | version
+
+  Legacy upgrade from 1.0.3/1.0.4 (broken updater):
+    see docs/LEGACY-UPDATE.md
+    sudo bash scripts/bootstrap-cli-update.sh --version 1.0.5 --then-update
+
+  Existing-node TLS/DNS cutover (no bootstrap token):
+    see docs/CONFIGURE.md  (serv_configure / nyxveilctl configure)
+
+========================================================================
+EOF
+}
+
+main() {
+  # CI / interop helpers (no root, no install side effects).
+  if [[ "${1:-}" == "--verify-manifest" ]]; then
+    [[ -n "${2:-}" && -f "${2}" ]] || die "usage: install.sh --verify-manifest PATH"
+    verify_release_manifest "$2"
+    exit 0
+  fi
+
+  parse_args "$@"
+  init_paths
+  resolve_installer_version
+  require_root
+  check_os
+  check_systemd
+  detect_arch >/dev/null
+  check_tun
+  check_resources
+  trap on_exit EXIT
+
+  detect_repair
+  gather_inputs
+  precheck_control_plane_tls
+
+  backup_existing
+  ensure_packages
+  ensure_user
+  ensure_dirs
+  download_or_copy_binaries
+  install_sysctl
+  install_nftables
+  install_systemd_units
+  write_server_json
+  if [[ "${NYXVEIL_INSTALL_FAIL_BEFORE_REGISTER:-0}" -eq 1 ]]; then
+    die "forced failure before registration (test)"
+  fi
+  # Test-only: simulate PHASE 09 mid-registration failure after identity+staging
+  # material exists (ACME/CP ambiguity). Preserve node.key; scrub tls.next.*.
+  if [[ "${NYXVEIL_INSTALL_FAIL_DURING_REGISTER:-0}" -eq 1 ]]; then
+    mkdir -p "${STATE_DIR}"
+    chmod 0700 "${STATE_DIR}" 2>/dev/null || true
+    printf 'mock-node-key\n' > "${NODE_KEY}"
+    chmod 0600 "${NODE_KEY}" 2>/dev/null || true
+    printf 'staged\n' > "${STATE_DIR}/tls.next.crt"
+    printf 'staged\n' > "${STATE_DIR}/tls.next.key"
+    PRESERVE_HAD_KEY=1
+    die "forced failure during registration (test)"
+  fi
+  generate_identity_and_register
+  # Test-only: simulate post-registration health/start failure without CP.
+  if [[ "${NYXVEIL_INSTALL_FAIL_AFTER_REGISTER:-0}" -eq 1 ]]; then
+    die "forced failure after registration (test)"
+  fi
+  start_and_test
+  install_serv_wrappers
+
+  COMMITTED=1
+  [[ -n "${BACKUP_DIR}" && -d "${BACKUP_DIR}" ]] && rm -rf "${BACKUP_DIR}"
+  print_success
+}
+
+main "$@"

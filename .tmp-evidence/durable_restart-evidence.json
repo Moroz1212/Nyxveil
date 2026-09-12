@@ -1,0 +1,11 @@
+{
+  "command_result_code": "",
+  "command_status": "",
+  "finished_at": "2026-09-12T12:40:42Z",
+  "gate": "durable_restart",
+  "marker_path": "/var/lib/nyxveil/management/update-command.json",
+  "new_pid": "",
+  "old_pid": "",
+  "result": "FAIL",
+  "version_after": ""
+}

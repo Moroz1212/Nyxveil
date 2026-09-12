@@ -1,0 +1,12 @@
+{
+  "acme_domain": "node-e2e.test",
+  "finished_at": "2026-09-12T17:40:56Z",
+  "gate": "acme_pebble",
+  "ownership_after": "nyxveil:nyxveil 700",
+  "ownership_before": "nyxveil:nyxveil 700",
+  "ownership_legacy": "root:root 700",
+  "pebble_directory": "https://127.0.0.1:14000/dir",
+  "result": "PASS",
+  "server_sha256": "18b05cbb9b0f2ffced73a78271bcd5ec5976e0c2877bca5f8f29c1a4cfa561a9",
+  "target_version": "1.1.18"
+}

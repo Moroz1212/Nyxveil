@@ -1,0 +1,10 @@
+{
+  "command_result_code": "renew_certbot_failed",
+  "command_status": "4",
+  "dead_acme_directory": "https://127.0.0.1:1/dead-acme-directory",
+  "finished_at": "2026-09-12T16:40:00Z",
+  "gate": "rollback_recovery",
+  "result": "PASS",
+  "served_thumbprint": "a28dfbe76beebba3dbe07025f7d49e7f0e53496c8337eefbacc34911f84bd48a",
+  "ui_stuck_renewing": false
+}
