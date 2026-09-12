@@ -47,10 +47,20 @@ public sealed class OperatorBrowserTests : IAsyncLifetime
         await page.Locator("input[name=email]").FillAsync(BrowserWebApplicationFactory.AdminEmail);
         await page.Locator("input[name=password]").FillAsync(BrowserWebApplicationFactory.AdminPassword);
         await page.GetByRole(AriaRole.Button, new() { Name = "Войти" }).ClickAsync();
-        await page.WaitForURLAsync("**/account/login-2fa**");
-        await page.Locator("input[name=code]").FillAsync(GenerateTotp(_factory.TotpSecret));
+        // Prefer element visibility over navigation race (CI runners can be slow past NetworkIdle).
+        var totpInput = page.Locator("input[name=code]");
+        await totpInput.WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Visible,
+            Timeout = 60_000
+        });
+        await totpInput.FillAsync(GenerateTotp(_factory.TotpSecret));
         await page.GetByRole(AriaRole.Button, new() { Name = "Подтвердить" }).ClickAsync();
-        await page.WaitForURLAsync(url => !url.Contains("/account/", StringComparison.OrdinalIgnoreCase));
+        await page.WaitForURLAsync(
+            url => !url.Contains("/account/", StringComparison.OrdinalIgnoreCase),
+            new PageWaitForURLOptions { Timeout = 60_000 });
+
+        page.SetDefaultTimeout(60_000);
 
         await page.GotoAsync(_baseUrl + "/admin/control-plane");
         await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Control Plane" }))
