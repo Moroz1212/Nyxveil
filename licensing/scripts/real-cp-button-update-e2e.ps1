@@ -122,6 +122,11 @@ if (-not $sqlSvc) {
     if ($LASTEXITCODE -ne 0) { Fail "SQL Express setup failed exit=$LASTEXITCODE" }
 }
 
+# Overlay current Deploy.psm1 onto the 1.3.8 package so LocalSystem SID grants work on GHA.
+# Product binaries remain published 1.3.8; only installer helper is upgraded for lab SCM.
+Copy-Item -LiteralPath (Join-Path $scriptRoot 'Nyxveil.ControlPlane.Deploy.psm1') `
+    -Destination (Join-Path $extract138 'scripts\Nyxveil.ControlPlane.Deploy.psm1') -Force
+
 # Call install in-process so SecureString AdminPassword survives (powershell.exe -File cannot).
 $env:NYXVEIL_ADMIN_PASSWORD = $AdminPasswordPlain
 try {
@@ -138,7 +143,7 @@ try {
         -TrustSqlServerCertificate `
         -AdminUser $AdminUser `
         -AdminPassword $securePass `
-        -ServiceAccount 'NT AUTHORITY\SYSTEM' `
+        -ServiceAccount LocalSystem `
         -NonInteractive `
         -SkipFirewall
     if ($LASTEXITCODE -ne 0) { Fail "install-windows.ps1 failed exit=$LASTEXITCODE" }
@@ -147,8 +152,7 @@ finally {
     Remove-Item Env:NYXVEIL_ADMIN_PASSWORD -ErrorAction SilentlyContinue
 }
 
-Write-Host 'CP_BUTTON_NOTE=ServiceAccount=NT AUTHORITY\SYSTEM for disposable GHA SCM (real CreateService; updater LocalSystem)'
-
+Write-Host 'CP_BUTTON_NOTE=ServiceAccount=LocalSystem + current Deploy.psm1 overlay for GHA SID/CreateService'
 # Accelerate GitHub discovery cache for the button gate (1.3.8 already defaults to Moroz1212/Nyxveil).
 $appsettings = Join-Path $InstallDir 'appsettings.Production.json'
 if (Test-Path -LiteralPath $appsettings) {
