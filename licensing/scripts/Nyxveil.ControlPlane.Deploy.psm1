@@ -2136,6 +2136,9 @@ function Grant-CertificatePrivateKeyAccess {
         [Parameter(Mandatory = $true)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
         [Parameter(Mandatory = $true)][string]$Account
     )
+    if ($Account -match '^(?i)LocalSystem$') {
+        $Account = 'NT AUTHORITY\SYSTEM'
+    }
     $rsa = $null
     $ecdsa = $null
     try {
@@ -2398,6 +2401,9 @@ function Grant-SqlLoginForServiceAccount {
 
     # db_owner on the application database only (simplifies EF migrations under the service).
     # Split runtime vs migration roles later if desired (db_datareader/writer + ddladmin).
+    if ($ServiceAccount -match '^(?i)LocalSystem$') {
+        $ServiceAccount = 'NT AUTHORITY\SYSTEM'
+    }
     $login = $ServiceAccount.Replace("'", "''")
     $db = $DatabaseName.Replace("'", "''")
     $sql = @"

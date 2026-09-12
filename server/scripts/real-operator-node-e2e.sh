@@ -9,7 +9,7 @@
 #
 # This script NEVER emits FULL_OPERATOR_E2E=PASS. It writes partial evidence JSON under
 # --evidence-dir. Exit non-zero unless node_button_update and durable_restart are PASS.
-# When the ACME phase runs, ACME-related gate failures also force a non-zero exit.
+# When NYXVEIL_ENABLE_PEBBLE=1, ACME/cert/TLS/QUIC/rollback must also be PASS (fail-closed).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -128,7 +128,21 @@ write_evidence_placeholders() {
 }
 
 acme_gates_ok() {
-  [[ "${ACME_PHASE_RAN}" -eq 0 ]] && return 0
+  # Fail-closed: ENABLE_PEBBLE=1 requires a completed ACME phase with all PASS.
+  # Never treat ACME_PHASE_RAN=0 as success when Pebble was requested (truncated
+  # scripts / early EXIT traps previously false-PASSed here).
+  if [[ "${ENABLE_PEBBLE}" == "1" ]]; then
+    [[ "${ACME_PHASE_RAN}" -eq 1 \
+      && "${ACME_PEBBLE_RESULT}" == "PASS" \
+      && "${CERT_BUTTON_RESULT}" == "PASS" \
+      && "${TLS_SERVED_RESULT}" == "PASS" \
+      && "${QUIC_HANDSHAKE_RESULT}" == "PASS" \
+      && "${ROLLBACK_RECOVERY_RESULT}" == "PASS" ]]
+    return $?
+  fi
+  if [[ "${ACME_PHASE_RAN}" -eq 0 ]]; then
+    return 0
+  fi
   [[ "${ACME_PEBBLE_RESULT}" == "PASS" \
     && "${CERT_BUTTON_RESULT}" == "PASS" \
     && "${TLS_SERVED_RESULT}" == "PASS" \
@@ -138,12 +152,22 @@ acme_gates_ok() {
 
 FINISHED=0
 SIBLING_REFRESH_PID=""
+PEBBLE_PID=""
+stop_pebble_lab() {
+  if [[ -n "${PEBBLE_PID}" ]] && kill -0 "${PEBBLE_PID}" 2>/dev/null; then
+    kill "${PEBBLE_PID}" 2>/dev/null || true
+    wait "${PEBBLE_PID}" 2>/dev/null || true
+  fi
+  PEBBLE_PID=""
+  docker rm -f nyxveil-lab-pebble >/dev/null 2>&1 || true
+}
 finish() {
   if [[ "${FINISHED}" -eq 1 ]]; then
     return 0
   fi
   FINISHED=1
   [[ -n "${SIBLING_REFRESH_PID}" ]] && kill "${SIBLING_REFRESH_PID}" 2>/dev/null || true
+  stop_pebble_lab 2>/dev/null || true
   write_json "${EVIDENCE_DIR}/systemd_preflight-evidence.json" \
     gate=systemd_preflight result="${SYSTEMD_PREFLIGHT_RESULT}" \
     pid1_comm="${PID1_COMM:-}" \
@@ -329,60 +353,142 @@ log "downloading published server-v${FROM_VERSION} assets"
 log "SHA256SUMS verification PASS for server-v${FROM_VERSION}"
 chmod 0755 "${ASSET_DIR}/install.sh"
 
-ensure_pebble_host_network() {
-  log "ensuring Pebble ACME lab CA with --network host"
-  docker rm -f nyxveil-lab-pebble >/dev/null 2>&1 || true
-  local out="" rc=1
-  # Prefer Docker Hub image with default entrypoint (no custom config path).
-  # Host networking so HTTP-01 validation reaches the node on :80.
-  set +e
-  out="$(docker run -d --name nyxveil-lab-pebble --network host \
-      -e PEBBLE_VA_NOSLEEP=1 \
-      letsencrypt/pebble:v2.7.0 2>&1)"
-  rc=$?
-  if [[ "${rc}" -ne 0 ]]; then
-    docker rm -f nyxveil-lab-pebble >/dev/null 2>&1 || true
-    out="$(docker run -d --name nyxveil-lab-pebble --network host \
-        -e PEBBLE_VA_NOSLEEP=1 \
-        letsencrypt/pebble:latest 2>&1)"
-    rc=$?
-  fi
-  if [[ "${rc}" -ne 0 ]]; then
-    docker rm -f nyxveil-lab-pebble >/dev/null 2>&1 || true
-    out="$(docker run -d --name nyxveil-lab-pebble --network host \
-        -e PEBBLE_VA_NOSLEEP=1 \
-        ghcr.io/letsencrypt/pebble:v2.7.0 2>&1)"
-    rc=$?
-  fi
-  set -e
-  if [[ "${rc}" -ne 0 ]]; then
-    log "pebble docker run failed: ${out}"
-    return 1
-  fi
-  log "pebble container started: ${out}"
+PEBBLE_SRC_DIR=""
+PEBBLE_SRC_DIR=""
+wait_pebble_directory() {
   local i
-  for i in $(seq 1 45); do
+  for i in $(seq 1 60); do
     if curl -skf "https://127.0.0.1:14000/dir" >/dev/null 2>&1; then
       PEBBLE_DIR_URL="https://127.0.0.1:14000/dir"
       return 0
     fi
     sleep 1
   done
-  log "pebble directory not reachable on https://127.0.0.1:14000/dir"
-  docker logs nyxveil-lab-pebble 2>&1 | tail -n 40 || true
   return 1
 }
 
-# Optional Pebble (ACME evidence remains NOT_EXECUTED until post-durable phase)
+start_pebble_from_source() {
+  # Docker Hub no longer hosts letsencrypt/pebble; GHCR often needs auth.
+  # Build upstream Pebble and run with httpPort=80 so HTTP-01 hits the node.
+  local tag="${NYXVEIL_PEBBLE_GIT_REF:-v2.7.0}"
+  PEBBLE_SRC_DIR="${WORK_DIR}/pebble-src"
+  rm -rf "${PEBBLE_SRC_DIR}"
+  log "cloning letsencrypt/pebble@${tag} for host ACME lab"
+  git clone --depth 1 --branch "${tag}" https://github.com/letsencrypt/pebble.git "${PEBBLE_SRC_DIR}"
+  (
+    cd "${PEBBLE_SRC_DIR}"
+    go build -o "${WORK_DIR}/pebble" ./cmd/pebble
+  )
+  # Upstream test config uses httpPort 5002; product ACME listens on :80.
+  cat >"${WORK_DIR}/pebble-lab-config.json" <<'EOF'
+{
+  "pebble": {
+    "listenAddress": "0.0.0.0:14000",
+    "managementListenAddress": "0.0.0.0:15000",
+    "certificate": "test/certs/localhost/cert.pem",
+    "privateKey": "test/certs/localhost/key.pem",
+    "httpPort": 80,
+    "tlsPort": 443,
+    "ocspResponderURL": "",
+    "externalAccountBindingRequired": false,
+    "domainBlocklist": ["blocked-domain.example"]
+  }
+}
+EOF
+  stop_pebble_lab
+  (
+    cd "${PEBBLE_SRC_DIR}"
+    PEBBLE_VA_NOSLEEP=1 \
+      "${WORK_DIR}/pebble" -config "${WORK_DIR}/pebble-lab-config.json" \
+      >"${WORK_DIR}/pebble.log" 2>&1 &
+    echo $! >"${WORK_DIR}/pebble.pid"
+  )
+  PEBBLE_PID="$(tr -d '[:space:]' <"${WORK_DIR}/pebble.pid")"
+  log "pebble process started pid=${PEBBLE_PID}"
+  if wait_pebble_directory; then
+    return 0
+  fi
+  log "pebble directory not reachable after source start"
+  tail -n 80 "${WORK_DIR}/pebble.log" >&2 || true
+  stop_pebble_lab
+  return 1
+}
+
+ensure_pebble_host_network() {
+  log "ensuring Pebble ACME lab CA (HTTP-01 validation port 80)"
+  # Prefer source-built Pebble: Docker Hub image is gone, GHCR often needs auth,
+  # and upstream container config defaults httpPort=5002 (product listens on :80).
+  if start_pebble_from_source; then
+    return 0
+  fi
+  stop_pebble_lab
+  local out="" rc=1
+  set +e
+  if [[ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]]; then
+    local tok="${GH_TOKEN:-${GITHUB_TOKEN}}"
+    echo "${tok}" | docker login ghcr.io -u "${GITHUB_ACTOR:-nyxveil}" --password-stdin >/dev/null 2>&1
+  fi
+  out="$(docker run -d --name nyxveil-lab-pebble --network host \
+      -e PEBBLE_VA_NOSLEEP=1 \
+      -v "${WORK_DIR}/pebble-lab-config.json:/test/config/pebble-config.json:ro" \
+      ghcr.io/letsencrypt/pebble:v2.7.0 \
+      -config /test/config/pebble-config.json 2>&1)"
+  rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    docker rm -f nyxveil-lab-pebble >/dev/null 2>&1 || true
+    # Write lab config for volume mount even if source clone failed earlier.
+    if [[ ! -f "${WORK_DIR}/pebble-lab-config.json" ]]; then
+      cat >"${WORK_DIR}/pebble-lab-config.json" <<'EOF'
+{
+  "pebble": {
+    "listenAddress": "0.0.0.0:14000",
+    "managementListenAddress": "0.0.0.0:15000",
+    "certificate": "test/certs/localhost/cert.pem",
+    "privateKey": "test/certs/localhost/key.pem",
+    "httpPort": 80,
+    "tlsPort": 443,
+    "ocspResponderURL": "",
+    "externalAccountBindingRequired": false
+  }
+}
+EOF
+    fi
+    out="$(docker run -d --name nyxveil-lab-pebble --network host \
+        -e PEBBLE_VA_NOSLEEP=1 \
+        ghcr.io/letsencrypt/pebble:latest 2>&1)"
+    rc=$?
+  fi
+  set -e
+  if [[ "${rc}" -ne 0 ]]; then
+    log "pebble docker fallback failed: ${out}"
+    return 1
+  fi
+  log "pebble container started: ${out}"
+  if wait_pebble_directory; then
+    return 0
+  fi
+  log "pebble directory not reachable on https://127.0.0.1:14000/dir"
+  docker logs nyxveil-lab-pebble 2>&1 | tail -n 40 || true
+  stop_pebble_lab
+  return 1
+}
+
+# Pebble preflight when requested (ACME evidence remains NOT_EXECUTED until post-durable phase)
 if [[ "${ENABLE_PEBBLE}" == "1" ]]; then
   if ensure_pebble_host_network; then
     write_json "${EVIDENCE_DIR}/acme_pebble-evidence.json" \
       gate=acme_pebble result=NOT_EXECUTED \
-      note="Pebble container started (--network host); cert phase pending durable PASS" \
+      note="Pebble lab started; cert phase pending durable PASS" \
       pebble_directory="${PEBBLE_DIR_URL}" \
       finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   else
-    log "WARN: could not start Pebble image; continuing without ACME lab"
+    log "ERROR: could not start Pebble ACME lab (required when NYXVEIL_ENABLE_PEBBLE=1)"
+    write_json "${EVIDENCE_DIR}/acme_pebble-evidence.json" \
+      gate=acme_pebble result=FAIL \
+      note="pebble_start_failed_preflight" \
+      finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    ACME_PEBBLE_RESULT=FAIL
+    # Continue node button / durable; finish() will FAIL because ENABLE_PEBBLE=1.
     PEBBLE_DIR_URL=""
   fi
 fi
@@ -984,4 +1090,21 @@ if [[ "${DURABLE_RESTART_RESULT}" == "PASS" ]] && { [[ "${ENABLE_PEBBLE}" == "1"
   fi
   if [[ "${UI_STUCK}" == "true" ]]; then
     fail_acme_gate rollback_recovery "ui_stuck_renewing" \
-      command_status="${FAIL_STATUS}" command_result_c
+      command_status="${FAIL_STATUS}" command_result_code="${FAIL_RESULT_CODE}" \
+      served_thumbprint="${POST_FAIL_FP}"
+    exit 1
+  fi
+
+  ROLLBACK_RECOVERY_RESULT=PASS
+  write_json "${EVIDENCE_DIR}/rollback_recovery-evidence.json" \
+    gate=rollback_recovery result=PASS \
+    served_thumbprint="${POST_FAIL_FP}" \
+    command_status="${FAIL_STATUS}" \
+    command_result_code="${FAIL_RESULT_CODE}" \
+    dead_acme_directory="${DEAD_DIR_URL}" \
+    ui_stuck_renewing=json:false \
+    finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  log "rollback_recovery PASS thumbprint unchanged result=${FAIL_RESULT_CODE}"
+fi
+
+exit 0
