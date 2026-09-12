@@ -182,37 +182,9 @@ finally {
 }
 
 Write-Host 'CP_BUTTON_NOTE=ServiceAccount=LocalSystem + current Deploy.psm1 overlay for GHA SID/CreateService'
-# Accelerate GitHub discovery cache for the button gate (1.3.8 already defaults to Moroz1212/Nyxveil).
-$appsettings = Join-Path $InstallDir 'appsettings.Production.json'
-if (Test-Path -LiteralPath $appsettings) {
-    # Patch with System.Text.Json-style minimal edit via Node to avoid PowerShell ConvertTo-Json
-    # rewriting/breaking nested ASP.NET configuration on restart.
-    $patchJs = Join-Path $work 'patch-appsettings.js'
-    $patchBody = @'
-const fs = require('fs');
-const p = process.argv[2];
-const raw = fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
-const cfg = JSON.parse(raw);
-cfg.ServerReleasePolicy = Object.assign({}, cfg.ServerReleasePolicy || {}, {
-  CacheMinutes: 1,
-  GitHubOwner: 'Moroz1212',
-  GitHubRepo: 'Nyxveil'
-});
-fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
-console.log('patched ServerReleasePolicy CacheMinutes=1');
-'@
-    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($patchJs, $patchBody, $utf8NoBom)
-    node $patchJs $appsettings
-    if ($LASTEXITCODE -ne 0) { Fail 'appsettings.Production.json patch failed' }
-    Restart-Service -Name NyxveilControlPlane -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 3
-    $svc = Get-Service NyxveilControlPlane
-    if ($svc.Status -ne 'Running') {
-        Start-Service NyxveilControlPlane
-        Start-Sleep -Seconds 5
-    }
-}
+# Do NOT rewrite appsettings.Production.json after install: a full JSON round-trip previously
+# broke ConnectionStrings so HTTP login returned error=1 against an empty/wrong database.
+# 1.3.8 already targets Moroz1212/Nyxveil; the UI "Проверить обновления" forces discovery.
 
 # Ensure privileged updater from 1.3.8 package exists (1.3.8 CreateService path).
 Import-Module (Join-Path $extract138 'scripts\Nyxveil.ControlPlane.Deploy.psm1') -Force
