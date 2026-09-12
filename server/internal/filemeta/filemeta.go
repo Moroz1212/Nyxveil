@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -297,6 +298,40 @@ func EnforceRuntimeTLS(stateDir string) error {
 			first = err
 		}
 		_ = os.Chmod(key, RuntimeTLSKeyMode)
+	}
+	// ACME state (account key + challenge cache) must be writable by the service
+	// user. Legacy rootful installs often leave /var/lib/nyxveil/acme root-owned,
+	// which surfaces as a generic renew_failed after upgrades.
+	if err := EnforceRuntimeACME(filepath.Join(stateDir, "acme"), uid, gid); err != nil && first == nil {
+		first = err
+	}
+	return first
+}
+
+// EnforceRuntimeACME ensures the ACME state directory (and account key, if present)
+// is owned by the nyxveil service identity with restrictive modes.
+func EnforceRuntimeACME(acmeDir string, uid, gid int) error {
+	if strings.TrimSpace(acmeDir) == "" {
+		return nil
+	}
+	if uid < 0 || gid < 0 {
+		if u, g, err := LookupServiceIDs(); err == nil {
+			uid, gid = u, g
+		}
+	}
+	if err := os.MkdirAll(acmeDir, RuntimeStateDirMode); err != nil {
+		return fmt.Errorf("filemeta: mkdir acme: %w", err)
+	}
+	var first error
+	if err := ApplyOwnerMode(acmeDir, uid, gid, RuntimeStateDirMode); err != nil {
+		first = err
+	}
+	account := filepath.Join(acmeDir, "acme-account.key")
+	if _, err := os.Stat(account); err == nil {
+		if err := ApplyOwnerMode(account, uid, gid, RuntimeTLSKeyMode); err != nil && first == nil {
+			first = err
+		}
+		_ = os.Chmod(account, RuntimeTLSKeyMode)
 	}
 	return first
 }

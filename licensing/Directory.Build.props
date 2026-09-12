@@ -1,0 +1,11 @@
+<Project>
+  <!--
+    Host default ANSI on many RU Windows installs is CP1251.
+    Without an explicit code page, Roslyn may decode UTF-8-without-BOM
+    sources as CP1251 and bake mojibake into Release string literals.
+    Force UTF-8 (65001) for all licensing C# compiles.
+  -->
+  <PropertyGroup>
+    <CodePage>65001</CodePage>
+  </PropertyGroup>
+</Project>

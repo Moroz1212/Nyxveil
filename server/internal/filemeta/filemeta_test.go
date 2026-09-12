@@ -156,4 +156,21 @@ func TestEnforceRuntimeTLSModes(t *testing.T) {
 	if st.Mode().Perm() != 0o644 {
 		t.Fatalf("cert mode %o", st.Mode().Perm())
 	}
+	acme := filepath.Join(dir, "acme")
+	st, err := os.Stat(acme)
+	if err != nil || !st.IsDir() {
+		t.Fatalf("acme dir missing after EnforceRuntimeTLS: %v", err)
+	}
+}
+
+func TestEnforceRuntimeACMECreatesDir(t *testing.T) {
+	dir := t.TempDir()
+	acme := filepath.Join(dir, "acme")
+	if err := filemeta.EnforceRuntimeACME(acme, -1, -1); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(acme)
+	if err != nil || !st.IsDir() {
+		t.Fatalf("acme dir: %v", err)
+	}
 }

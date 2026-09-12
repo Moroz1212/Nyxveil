@@ -9,7 +9,7 @@ mkdir -p "${STAGE}"
 cp -a dist/release/. "${STAGE}/"
 cp scripts/run-local-candidate-gate.sh "${STAGE}/run-local-candidate-gate.sh"
 cat >"${STAGE}/LOCAL-CANDIDATE.txt" <<'EOF'
-Nyxveil Server 1.1.14 — LOCAL candidate, not a GitHub Release.
+Nyxveil Server 1.1.15 — LOCAL candidate, not a GitHub Release.
 Only for a clean disposable Ubuntu 24.04 host with systemd PID1 and /dev/net/tun.
 Required tools: bash, coreutils, util-linux, curl, jq, openssl, nftables,
 libcap2-bin, python3, iproute2, ca-certificates. Public DNS must point to the host;

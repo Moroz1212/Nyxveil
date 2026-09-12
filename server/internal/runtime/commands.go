@@ -298,9 +298,17 @@ func (n *Node) executeRenewCertificate(ctx context.Context, commandID string) {
 				explicitRenewRateLimitWindow.String()))
 		return
 	}
-	_, _, _, _, err := n.issueACMEForced(ctx, cfg)
+	renewCtx := ctx
+	var cancel context.CancelFunc
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		renewCtx, cancel = context.WithTimeout(ctx, 8*time.Minute)
+		defer cancel()
+	}
+	_, _, _, _, err := n.issueACMEForced(renewCtx, cfg)
 	if err != nil {
-		n.reportCommandFailure(ctx, commandID, "renew_failed", safeRenewalError(err))
+		log.Printf("runtime: RenewCertificate ACME: %v", err)
+		code, msg := classifyRenewalFailure(err)
+		n.reportCommandFailure(ctx, commandID, code, msg)
 		return
 	}
 	n.reportCommandSuccess(ctx, commandID, "renewed", "Certificate renewed successfully")

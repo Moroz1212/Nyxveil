@@ -1,9 +1,10 @@
 @namespace Nyxveil.ControlPlane.Web.Components.Shared
+@using Nyxveil.ControlPlane.Application.Common
 
 @if (Items.Count > 0)
 {
     <div class="panel attention-panel">
-        <h3>Требует внимания</h3>
+        <h3>@AttentionCopy.PanelTitle</h3>
         <div class="attention-list">
             @foreach (var item in Items)
             {
@@ -35,7 +36,7 @@
 else if (ShowEmpty)
 {
     <div class="panel attention-panel">
-        <h3>Требует внимания</h3>
+        <h3>@AttentionCopy.PanelTitle</h3>
         <p class="muted">Сейчас нет событий, требующих внимания.</p>
     </div>
 }

@@ -158,20 +158,20 @@ public sealed class DashboardQueryService : IDashboardQueryService
         var configs = await db.NodeConfigs.AsNoTracking().ToDictionaryAsync(c => c.NodeId, cancellationToken)
             .ConfigureAwait(false);
 
-        var unknownCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "expired_outcome_unknown", "outcome_unknown", "rollback_failed"
-        };
-        var problemCommands = await db.NodeCommands.AsNoTracking()
+        // Pull a bounded window; actionable filter applied in-memory (resolution beats age).
+        var recentCommands = await db.NodeCommands.AsNoTracking()
             .Where(c => c.CompletedAt != null
                         && c.CompletedAt > now.AddDays(-7)
                         && c.ResultCode != null
                         && (c.Status == NodeCommandStatus.Failed
-                            || c.Status == NodeCommandStatus.Expired
-                            || unknownCodes.Contains(c.ResultCode)))
+                            || c.Status == NodeCommandStatus.Expired))
             .OrderByDescending(c => c.CompletedAt)
-            .Take(50)
+            .Take(80)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var problemCommands = recentCommands
+            .Where(c => AttentionCommandPolicy.IsActionableAttentionCommand(c.Status, c.ResultCode, c.CompletedAt, now))
+            .Take(50)
+            .ToList();
 
         var items = new List<AttentionItem>();
         string Name(Node n) => string.IsNullOrWhiteSpace(n.DisplayName) ? n.NodeId : n.DisplayName;
@@ -189,8 +189,8 @@ public sealed class DashboardQueryService : IDashboardQueryService
                 items.Add(new AttentionItem
                 {
                     Severity = AttentionSeverity.Critical,
-                    Title = "Сервер не в сети",
-                    Detail = "Нет свежего heartbeat.",
+                    Title = AttentionCopy.ServerOffline,
+                    Detail = AttentionCopy.NoFreshHeartbeat,
                     NodeId = n.NodeId,
                     NodeName = Name(n),
                     LocationId = n.LocationId,
@@ -204,7 +204,7 @@ public sealed class DashboardQueryService : IDashboardQueryService
                 items.Add(new AttentionItem
                 {
                     Severity = AttentionSeverity.Warning,
-                    Title = "Ограниченная работа",
+                    Title = AttentionCopy.Degraded,
                     Detail = "Статус Degraded.",
                     NodeId = n.NodeId,
                     NodeName = Name(n),
@@ -222,7 +222,7 @@ public sealed class DashboardQueryService : IDashboardQueryService
             if (h?.TunReady == false)
                 items.Add(MakeRuntime(n, Name(n), ageText, href, "TUN FAIL", AttentionSeverity.Critical, "tun"));
             if (h?.CpConnected == false)
-                items.Add(MakeRuntime(n, Name(n), ageText, href, "Нет связи с Control Plane", AttentionSeverity.Critical, "cp"));
+                items.Add(MakeRuntime(n, Name(n), ageText, href, AttentionCopy.CpDisconnected, AttentionSeverity.Critical, "cp"));
 
             var cert = CertificateExpiry.Evaluate(n.CertNotAfter, now, _expiry);
             if (cert == CertificateHealthStatus.Expired)
@@ -230,8 +230,8 @@ public sealed class DashboardQueryService : IDashboardQueryService
                 items.Add(new AttentionItem
                 {
                     Severity = AttentionSeverity.Critical,
-                    Title = "Сертификат истёк",
-                    Detail = "Требуется обновление TLS-сертификата.",
+                    Title = AttentionCopy.CertExpired,
+                    Detail = AttentionCopy.CertExpiredDetail,
                     NodeId = n.NodeId,
                     NodeName = Name(n),
                     LocationId = n.LocationId,
@@ -310,15 +310,15 @@ public sealed class DashboardQueryService : IDashboardQueryService
         foreach (var c in problemCommands.Where(c => visibleNodeIds.Contains(c.NodeId)))
         {
             var n = nodes.First(x => x.NodeId == c.NodeId);
-            var sev = unknownCodes.Contains(c.ResultCode ?? "")
+            var sev = AttentionCommandPolicy.IsUnknownOutcome(c.ResultCode)
                 ? AttentionSeverity.Critical
                 : AttentionSeverity.Warning;
             items.Add(new AttentionItem
             {
                 Severity = sev,
-                Title = unknownCodes.Contains(c.ResultCode ?? "")
-                    ? "Неопределённый результат обновления"
-                    : "Операция завершилась с ошибкой",
+                Title = AttentionCommandPolicy.IsUnknownOutcome(c.ResultCode)
+                    ? AttentionCopy.UnknownUpdateOutcome
+                    : AttentionCopy.OperationFailed,
                 Detail = $"{c.Type}: {c.ResultCode}",
                 NodeId = c.NodeId,
                 NodeName = Name(n),
@@ -369,7 +369,7 @@ public sealed class DashboardQueryService : IDashboardQueryService
         {
         }
 
-        return "1.3.5";
+        return "1.3.6";
     }
 
     private void TryPopulateControlPlaneCertificate(DashboardSummary summary, DateTime now)
