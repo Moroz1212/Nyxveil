@@ -83,32 +83,36 @@ async function expectEnabled(locator, label) {
   try {
     await page.goto(base + '/account/login', { waitUntil: 'domcontentloaded' });
     await page.locator('input[name=email]').waitFor({ state: 'visible', timeout: 60000 });
-    await page.fill('input[name=email]', '');
-    await page.fill('input[name=password]', '');
     await page.fill('input[name=email]', email);
     await page.fill('input[name=password]', password);
-    // Form POST navigates into Blazor MFA pages; do not wait for full load on click.
     await page.locator('button[type=submit]').click({ noWaitAfter: true });
 
-    // Login failure stays on /account/login?error=1 — fail fast with diagnostics.
-    for (let i = 0; i < 30; i++) {
-      const u = page.url();
-      if (u.includes('error=1')) {
-        await dumpDiag(page, 'login_error');
-        throw new Error('login rejected (error=1) — password/email mismatch with install');
-      }
-      if ((await page.locator('input[name=code]').count()) > 0) break;
-      if (u.includes('/account/mfa') || u.includes('/account/login-2fa') || u.includes('/admin')) break;
-      await page.waitForTimeout(1000);
+    // Wait for MFA enrollment / 2FA / error without racing locator.count during navigation.
+    try {
+      await Promise.race([
+        page.waitForURL((u) => String(u).includes('error=1'), { timeout: 120000 }),
+        page.waitForURL((u) => String(u).includes('/account/mfa/setup'), { timeout: 120000 }),
+        page.waitForURL((u) => String(u).includes('/account/login-2fa'), { timeout: 120000 }),
+        page.getByRole('heading', { name: 'Настройка MFA' }).waitFor({
+          state: 'visible',
+          timeout: 120000,
+        }),
+        page.locator('input[name=code]').first().waitFor({ state: 'visible', timeout: 120000 }),
+      ]);
+    } catch (e) {
+      await dumpDiag(page, 'post_login_wait');
+      throw e;
     }
-    // MFA enrollment (first SuperAdmin) or login-2fa.
-    const codeInput = page.locator('input[name=code]');
-    await codeInput.first().waitFor({ state: 'visible', timeout: 120000 });
+    if (page.url().includes('error=1')) {
+      await dumpDiag(page, 'login_error');
+      throw new Error('login rejected (error=1)');
+    }
 
-    if (
+    // Prefer MFA setup when that page is active (first SuperAdmin).
+    const onSetup =
       page.url().includes('/account/mfa/setup') ||
-      (await page.getByRole('heading', { name: 'Настройка MFA' }).count())
-    ) {
+      (await page.getByRole('heading', { name: 'Настройка MFA' }).isVisible().catch(() => false));
+    if (onSetup) {
       await page.locator('details summary').first().click({ timeout: 30000 }).catch(() => {});
       const keyInput = page.locator('input.mono[readonly]').first();
       await keyInput.waitFor({ state: 'visible', timeout: 60000 });
@@ -118,12 +122,14 @@ async function expectEnabled(locator, label) {
         extractSecret(shared + ' ' + uri, uri) || shared.replace(/\s+/g, '').toUpperCase();
       if (!totpSecret) throw new Error('could not extract MFA shared key');
       if (process.env.CP_TOTP_OUT) fs.writeFileSync(process.env.CP_TOTP_OUT, totpSecret);
+      await page.locator('input[name=code]').first().waitFor({ state: 'visible', timeout: 60000 });
       await page.fill('input[name=code]', totp(totpSecret));
       await page.getByRole('button', { name: 'Включить MFA' }).click({ noWaitAfter: true });
       const cont = page.getByRole('link', { name: 'Продолжить' });
       await cont.waitFor({ state: 'visible', timeout: 60000 });
       await cont.click({ noWaitAfter: true });
     } else {
+      await page.locator('input[name=code]').first().waitFor({ state: 'visible', timeout: 60000 });
       if (!totpSecret) throw new Error('TOTP required for login-2fa');
       await page.fill('input[name=code]', totp(totpSecret));
       await page
