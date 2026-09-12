@@ -893,3 +893,17 @@ Ship Control Plane **1.3.5** with safe self-update and Fleet Overview, without C
 
 Commit + tag `control-plane-v1.3.5`, publish GitHub Release with validated ZIP, open PR to `main`.
 
+
+### Release published
+
+- Branch: `control-plane-1.3.5`
+- Final product HEAD: `4d4051b375bb6bc1e2e3a9d1ab71d66dc8b14179`
+- Tag: `control-plane-v1.3.5` → `4d4051b375bb6bc1e2e3a9d1ab71d66dc8b14179`
+- Release: https://github.com/Moroz1212/Nyxveil/releases/tag/control-plane-v1.3.5
+- Asset SHA256: `24C1BB42EB69599B9D8B8B807C27334A99AF6CB5C860578B83718E7988F64F9A` (download-back PASS)
+- Control Plane CI (push): https://github.com/Moroz1212/Nyxveil/actions/runs/34678539224 SUCCESS
+- Control Plane CI (PR): https://github.com/Moroz1212/Nyxveil/actions/runs/34678597661 SUCCESS
+- Main sync: PR #1 merge → `origin/main` `727e57d7cef17f03260731e42c556e5f7eeb7565`
+- DEPLOY: not executed on this host
+- Browser E2E: BLOCKED / NOT RUN
+
