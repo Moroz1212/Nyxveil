@@ -42,9 +42,34 @@ if (-not $EvidencePath) {
 }
 
 function Fail([string]$Msg) {
+    try { Stop-LabGitHubApiProxy } catch { }
     Write-Output "CP_BUTTON_UPDATE_E2E=FAIL"
     Write-Error $Msg
     exit 1
+}
+
+$script:LabProxyStarted = $false
+$script:LabProxyProc = $null
+$script:LabHostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+$script:LabHostsBackup = $null
+function Stop-LabGitHubApiProxy {
+    if (-not $script:LabProxyStarted) { return }
+    $script:LabProxyStarted = $false
+    if ($script:LabProxyProc -and -not $script:LabProxyProc.HasExited) {
+        try { Stop-Process -Id $script:LabProxyProc.Id -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    if ($script:LabHostsBackup -and (Test-Path -LiteralPath $script:LabHostsBackup)) {
+        Copy-Item -LiteralPath $script:LabHostsBackup -Destination $script:LabHostsPath -Force
+    } elseif (Test-Path -LiteralPath $script:LabHostsPath) {
+        $hostsText = Get-Content -LiteralPath $script:LabHostsPath -Raw
+        $hostsText = ($hostsText -split "`r?`n" | Where-Object { $_ -notmatch '^\s*127\.0\.0\.1\s+api\.github\.com\s*$' }) -join "`r`n"
+        Set-Content -LiteralPath $script:LabHostsPath -Value $hostsText -Encoding ascii
+    }
+    try {
+        Get-ChildItem Cert:\LocalMachine\Root -ErrorAction SilentlyContinue |
+            Where-Object { $_.Subject -match 'CN=api\.github\.com' -and $_.Issuer -match 'NyxveilLab' } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    } catch { }
 }
 
 function Assert-Admin {
@@ -108,6 +133,67 @@ if ([string]::IsNullOrWhiteSpace($AdminPasswordPlain)) {
 $securePass = ConvertTo-SecureString $AdminPasswordPlain -AsPlainText -Force
 Write-Host "CP_BUTTON_ADMIN_USER=$AdminUser"
 Write-Host "CP_BUTTON_ADMIN_PASSWORD_LEN=$($AdminPasswordPlain.Length)"
+
+# --- Lab GitHub API proxy (external infrastructure; not a product overlay) -------
+# Immutable published CP builds call api.github.com without a token and hit GHA
+# shared unauthenticated 403 rate limits. Hijack hosts → local TLS terminator
+# that injects GH_TOKEN for release discovery only.
+$labCertCer = Join-Path $work 'lab-api-github.cer'
+try {
+    Write-Host 'CP_BUTTON_STEP=lab_github_api_proxy'
+    $token = $env:GH_TOKEN
+    if ([string]::IsNullOrWhiteSpace($token)) { $token = $env:GITHUB_TOKEN }
+    if ([string]::IsNullOrWhiteSpace($token)) { Fail 'GH_TOKEN/GITHUB_TOKEN required for lab GitHub API proxy' }
+    $script:LabHostsBackup = Join-Path $work 'hosts.bak'
+    Copy-Item -LiteralPath $script:LabHostsPath -Destination $script:LabHostsBackup -Force
+    $hostsNow = Get-Content -LiteralPath $script:LabHostsPath -Raw
+    if ($hostsNow -notmatch '(?m)^\s*127\.0\.0\.1\s+api\.github\.com\s*$') {
+        Add-Content -LiteralPath $script:LabHostsPath -Value "`r`n127.0.0.1 api.github.com`r`n" -Encoding ascii
+    }
+    $cert = New-SelfSignedCertificate `
+        -DnsName 'api.github.com' `
+        -FriendlyName 'NyxveilLabGitHubApiProxy' `
+        -CertStoreLocation 'Cert:\LocalMachine\My' `
+        -KeyExportPolicy Exportable `
+        -NotAfter (Get-Date).AddDays(2) `
+        -Subject 'CN=api.github.com, O=NyxveilLab'
+    Export-Certificate -Cert $cert -FilePath $labCertCer -Force | Out-Null
+    Import-Certificate -FilePath $labCertCer -CertStoreLocation 'Cert:\LocalMachine\Root' | Out-Null
+    $pfx = Join-Path $work 'lab-api-github.pfx'
+    $pfxPass = ConvertTo-SecureString 'LabProxyOnly' -AsPlainText -Force
+    Export-PfxCertificate -Cert $cert -FilePath $pfx -Password $pfxPass | Out-Null
+    $pemCert = Join-Path $work 'lab-api-github.crt'
+    $pemKey = Join-Path $work 'lab-api-github.key'
+    $openssl = Get-Command openssl.exe -ErrorAction SilentlyContinue
+    if (-not $openssl) {
+        $openssl = Get-Command 'C:\Program Files\Git\usr\bin\openssl.exe' -ErrorAction SilentlyContinue
+    }
+    if (-not $openssl) { Fail 'openssl required to export lab proxy PEM key' }
+    & $openssl.Source pkcs12 -in $pfx -out $pemCert -clcerts -nokeys -passin pass:LabProxyOnly | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "openssl cert export failed exit=$LASTEXITCODE" }
+    & $openssl.Source pkcs12 -in $pfx -out $pemKey -nocerts -nodes -passin pass:LabProxyOnly | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "openssl key export failed exit=$LASTEXITCODE" }
+    $proxyJs = Join-Path $scriptRoot 'lab-github-api-proxy.cjs'
+    if (-not (Test-Path -LiteralPath $proxyJs)) { Fail "missing $proxyJs" }
+    $env:CERT_PATH = $pemCert
+    $env:KEY_PATH = $pemKey
+    $env:GH_TOKEN = $token
+    $script:LabProxyProc = Start-Process -FilePath (Get-Command node.exe).Source `
+        -ArgumentList @($proxyJs) `
+        -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput (Join-Path $work 'lab-proxy.out') `
+        -RedirectStandardError (Join-Path $work 'lab-proxy.err')
+    $script:LabProxyStarted = $true
+    Start-Sleep -Seconds 2
+    if ($script:LabProxyProc.HasExited) {
+        Write-Host (Get-Content (Join-Path $work 'lab-proxy.err') -Raw -ErrorAction SilentlyContinue)
+        Fail "lab GitHub API proxy exited early code=$($script:LabProxyProc.ExitCode)"
+    }
+    Write-Host "CP_BUTTON_LAB_PROXY_PID=$($script:LabProxyProc.Id)"
+} catch {
+    Stop-LabGitHubApiProxy
+    throw
+}
 
 Write-Host 'CP_BUTTON_STEP=download_source_release'
 $zipSrc = Join-Path $work ("Nyxveil-ControlPlane-v{0}-release.zip" -f $SourceVersion)
@@ -438,6 +524,7 @@ if ($browserExit -ne 0) {
         Write-Host "CP_BUTTON_EVIDENCE=$EvidencePath"
         Write-Output 'CP_BUTTON_UPDATE_E2E=FAIL'
         Write-Output 'CONTROL_PLANE_BOOTSTRAP_LIMITATION=CONFIRMED'
+        try { Stop-LabGitHubApiProxy } catch { }
         exit 2
     }
     Fail "Playwright button click failed exit=$browserExit"
@@ -485,6 +572,7 @@ if ($after -ne $TargetVersion) {
         $json = $evidence | ConvertTo-Json -Depth 6 -Compress
         [System.IO.File]::WriteAllText($EvidencePath, $json, (New-Object System.Text.UTF8Encoding $false))
         Write-Output 'CONTROL_PLANE_BOOTSTRAP_LIMITATION=CONFIRMED'
+        try { Stop-LabGitHubApiProxy } catch { }
         exit 2
     }
     Fail "post-update VERSION want=$TargetVersion have=$after"
@@ -555,4 +643,5 @@ Write-Host "CP_BUTTON_EVIDENCE=$EvidencePath"
 Write-Host "CP_BUTTON_EVIDENCE_BYTES=$((Get-Item -LiteralPath $EvidencePath).Length)"
 Write-Output 'CP_BUTTON_UPDATE_E2E=PASS'
 Write-Output ("CONTROL_PLANE_{0}_TO_{1}_REAL_UPDATE_BY_BUTTON=PASS" -f ($SourceVersion -replace '\.','_'), ($TargetVersion -replace '\.','_'))
+try { Stop-LabGitHubApiProxy } catch { }
 exit 0
