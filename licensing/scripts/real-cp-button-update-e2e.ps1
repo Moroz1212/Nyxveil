@@ -384,14 +384,13 @@ if ($ExpectedTargetVersion -ne '1.3.9') {
 }
 
 Wait-HttpOk "$baseUrl/health/live" 120
-try {
-    $ready = Invoke-WebRequest -Uri "$baseUrl/health/ready" -UseBasicParsing -TimeoutSec 15
-    if ($ready.StatusCode -lt 200 -or $ready.StatusCode -ge 300) {
-        Fail "health/ready status=$($ready.StatusCode)"
-    }
-} catch {
-    Fail "health/ready failed after update: $_"
+$readyOut = Join-Path $work 'ready.body'
+& curl.exe -skf --max-time 15 -o $readyOut "$baseUrl/health/ready"
+if ($LASTEXITCODE -ne 0) {
+    Write-CpButtonSelfUpdateDiag 'health_ready_failed'
+    Fail "health/ready failed after update curl_exit=$LASTEXITCODE"
 }
+Write-Host 'CP_BUTTON_HEALTH_READY=PASS'
 
 # Capture restart evidence: service running after binary replacement.
 $mainStatus = (Get-Service NyxveilControlPlane).Status.ToString()
