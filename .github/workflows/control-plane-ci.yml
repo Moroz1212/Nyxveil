@@ -65,12 +65,19 @@ jobs:
 
       - name: Windows service CreateService integration
         # Use Windows PowerShell 5.1 to match LIVE production-deploy host semantics.
-        # The test also re-probes the sc.exe 1639 quoting defect via powershell.exe explicitly.
+        # The test also re-proves the sc.exe 1639 quoting defect via powershell.exe explicitly.
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           .\scripts\test-windows-service-create.ps1
           # The script writes WINDOWS_SERVICE_CREATE_TEST=PASS on success.
+
+      - name: Production-deploy updater file-lock regression
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\scripts\test-production-deploy-updater-lock.ps1
+          if ($LASTEXITCODE -ne 0) { throw "updater lock test exit $LASTEXITCODE" }
 
       - name: Control Plane contract lab gates
         shell: powershell
@@ -128,6 +135,8 @@ jobs:
             'docs\RELEASE-1.3.9.md',
             'docs\RELEASE-1.3.10.md',
             'docs\RELEASE-1.3.11.md',
+            'docs\RELEASE-1.3.12.md',
+            'scripts\test-production-deploy-updater-lock.ps1',
             'release-manifest.json'
           )
           foreach ($rel in $required) {
@@ -152,9 +161,10 @@ jobs:
           Write-Host "EXTRACTED_PACKAGE_VALIDATION=PASS"
 
       - name: Upload release ZIP
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
           name: control-plane-release-zip
-          path: licensing/Nyxveil-ControlPlane-v*.zip
+          path: |
+            licensing/Nyxveil-ControlPlane-v*.zip
+            licensing/Nyxveil-ControlPlane-v*.zip.sha256
           if-no-files-found: error

@@ -1,13 +1,18 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Hardened emergency production deployment for Nyxveil Control Plane 1.3.11.
+  Hardened emergency production deployment for Nyxveil Control Plane 1.3.12.
 
 .DESCRIPTION
   Backs up and verifies production, rehearses schema v5 against a disposable
   restored database, then performs the service outage and deploy. No live
   service, production database, or installed files are changed before rehearsal passes.
   When production is already schema >= 5, migration is a no-op (validate only).
+
+  Before ANY InstallDir mutation both NyxveilControlPlane and
+  NyxveilControlPlaneUpdater are stopped so running updater DLLs cannot block
+  Clear-DirectoryContents (LIVE 1.3.8→1.3.10 failure mode). Supports repair
+  from a partial failed deploy (services exist, binaries incomplete, Web not healthy).
 #>
 [CmdletBinding()]
 param(
@@ -48,6 +53,7 @@ $originalOperationalJson = ''
 $updaterServiceName = 'NyxveilControlPlaneUpdater'
 $updaterExistedBefore = $false
 $updaterSnapshotBefore = $null
+$webSnapshotBefore = $null
 $updaterTouched = $false
 $events = [Collections.Generic.List[string]]::new()
 
@@ -357,7 +363,7 @@ function New-SanitizedDiagnosticBundle {
     $bundle = Join-Path ([IO.Path]::GetTempPath()) ("nyxveil-production-deploy-{0:yyyyMMdd-HHmmss}-{1}" -f (Get-Date), [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $bundle -Force | Out-Null
     @(
-        'release_version=1.3.11'
+        'release_version=1.3.12'
         "powershell_version=$($PSVersionTable.PSVersion)"
         "os_version=$([Environment]::OSVersion.VersionString)"
         "expected_schema_version=$script:ExpectedSchemaVersion"
@@ -389,11 +395,11 @@ try {
         throw "This deploy may only operate on service '$requiredServiceName'."
     }
     if ($ExpectedSchemaVersion -cne '5') {
-        throw "Control Plane 1.3.11 requires ExpectedSchemaVersion=5."
+        throw "Control Plane 1.3.12 requires ExpectedSchemaVersion=5."
     }
     $releaseVersion = (Get-Content -LiteralPath (Join-Path $licensingRoot 'VERSION') -Raw).Trim()
-    if ($releaseVersion -cne '1.3.11') {
-        throw "This wrapper requires licensing VERSION 1.3.11; found '$releaseVersion'."
+    if ($releaseVersion -cne '1.3.12') {
+        throw "This wrapper requires licensing VERSION 1.3.12; found '$releaseVersion'."
     }
 
     $PublishDir = (Resolve-Path -LiteralPath $PublishDir -ErrorAction Stop).Path
@@ -405,6 +411,11 @@ try {
     $originalOperationalJson = $op | ConvertTo-Json -Depth 20
     if ([string]::IsNullOrWhiteSpace($InstallDir)) {
         $InstallDir = if ($op.InstallDir) { [string]$op.InstallDir } else { 'C:\Program Files\Nyxveil\ControlPlane' }
+    }
+    # Repair path: InstallDir may exist but be partially emptied after a failed deploy.
+    if (-not (Test-Path -LiteralPath $InstallDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        Add-DeployEvent "Created missing InstallDir for repair deploy: $InstallDir"
     }
     $InstallDir = (Resolve-Path -LiteralPath $InstallDir -ErrorAction Stop).Path
     Assert-SeparateDirectoryTrees -First $PublishDir -Second $InstallDir
@@ -488,8 +499,8 @@ try {
     }
     else {
         $zipCandidates = @(
-            (Join-Path $licensingRoot 'Nyxveil-ControlPlane-v1.3.11-release.zip'),
-            (Join-Path (Split-Path -Parent $licensingRoot) 'Nyxveil-ControlPlane-v1.3.11-release.zip')
+            (Join-Path $licensingRoot 'Nyxveil-ControlPlane-v1.3.12-release.zip'),
+            (Join-Path (Split-Path -Parent $licensingRoot) 'Nyxveil-ControlPlane-v1.3.12-release.zip')
         )
         $ReleaseZip = $zipCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
     }
@@ -526,11 +537,17 @@ try {
         throw
     }
 
-    # 5. BACK UP INSTALLED BINARIES AND CONFIGURATION.
+    # 5. BACK UP INSTALLED BINARIES AND CONFIGURATION (best-effort for partial installs).
     $stage = 'backup_binaries_config'
     $binaryBackup = Join-Path $backupDir 'binaries'
     $configBackup = Join-Path $backupDir 'configuration'
-    Copy-DirectoryExact -Source $InstallDir -Destination $binaryBackup
+    if (@(Get-ChildItem -LiteralPath $InstallDir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
+        Copy-DirectoryExact -Source $InstallDir -Destination $binaryBackup
+    }
+    else {
+        New-Item -ItemType Directory -Path $binaryBackup -Force | Out-Null
+        Add-DeployEvent 'InstallDir empty/partial — binary backup is empty (repair deploy).'
+    }
     New-Item -ItemType Directory -Path $configBackup -Force | Out-Null
     foreach ($configItem in @('appsettings.Production.json', 'config')) {
         $source = Join-Path $InstallDir $configItem
@@ -546,15 +563,20 @@ try {
     }
 
     $deployStarted = $true
+    $webSnapshotBefore = Get-NyxveilWindowsServiceSnapshot -ServiceName $requiredServiceName
     $updaterSnapshotBefore = Get-NyxveilWindowsServiceSnapshot -ServiceName $updaterServiceName
     $updaterExistedBefore = [bool]$updaterSnapshotBefore.Exists
-    Add-DeployEvent ("Updater service before deploy exists=$updaterExistedBefore")
+    Add-DeployEvent ("Web service before deploy Exists=$($webSnapshotBefore.Exists) State=$($webSnapshotBefore.State)")
+    Add-DeployEvent ("Updater service before deploy Exists=$updaterExistedBefore State=$($updaterSnapshotBefore.State)")
 
-    # 6. STOP ONLY THE CONTROL PLANE SERVICE.
+    # 6. STOP WEB + UPDATER BEFORE ANY InstallDir MUTATION.
     $stage = 'stop_service'
-    Add-DeployEvent "Stopping only $requiredServiceName."
-    Stop-Service -Name $requiredServiceName -Force -ErrorAction Stop
-    (Get-Service -Name $requiredServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+    Add-DeployEvent "Stopping $requiredServiceName then $updaterServiceName before InstallDir mutation."
+    Stop-NyxveilWindowsServiceFully -ServiceName $requiredServiceName
+    # Always attempt updater stop (no-op if absent). LIVE repair may have updater Running
+    # while InstallDir is partially missing; never clear InstallDir with updater holding DLLs.
+    Stop-NyxveilWindowsServiceFully -ServiceName $updaterServiceName
+    Assert-NyxveilInstallDirUnlockedForMutation -UpdaterServiceName $updaterServiceName
 
     # 7. APPLY PRODUCTION MIGRATION ONLY WHEN REQUIRED.
     $stage = 'apply_production_migration'
@@ -576,6 +598,7 @@ try {
 
     # 9. DEPLOY BINARIES WHILE PRESERVING PRODUCTION CONFIG.
     $stage = 'deploy_binaries'
+    Assert-NyxveilInstallDirUnlockedForMutation -UpdaterServiceName $updaterServiceName
     Clear-DirectoryContents -Path $InstallDir
     Copy-DirectoryExact -Source $PublishDir -Destination $InstallDir
     foreach ($configItem in @('appsettings.Production.json', 'config')) {
@@ -595,20 +618,20 @@ try {
         Remove-Item -LiteralPath $devSettings -Force
     }
 
-    # Install/refresh privileged updater service before starting Web.
+    # Install/refresh privileged updater service, then start updater, then Web.
     $stage = 'install_updater_service'
     $updaterTouched = $true
     Install-NyxveilControlPlaneUpdaterService -InstallDir $InstallDir
-    Add-DeployEvent 'Privileged updater service installed/verified.'
+    Add-DeployEvent 'Privileged updater service installed/verified Running.'
 
     # 10. RECORD EXPECTED SCHEMA VERSION.
     $stage = 'write_operational_config'
     $op | Add-Member -NotePropertyName ExpectedSchemaVersion -NotePropertyValue '5' -Force
     Write-OperationalConfig -Config $op -InstallDir $InstallDir
 
-    # 11. START ONLY THE CONTROL PLANE SERVICE.
+    # 11. START THE CONTROL PLANE WEB SERVICE (updater already Running).
     $stage = 'start_service'
-    Add-DeployEvent "Starting only $requiredServiceName."
+    Add-DeployEvent "Starting $requiredServiceName."
     Start-Service -Name $requiredServiceName -ErrorAction Stop
     (Get-Service -Name $requiredServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
 
@@ -679,17 +702,26 @@ catch {
         }
 
         try {
-            Stop-Service -Name $requiredServiceName -Force -ErrorAction SilentlyContinue
-            (Get-Service -Name $requiredServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
-            Clear-DirectoryContents -Path $InstallDir
-            Copy-DirectoryExact -Source $binaryBackup -Destination $InstallDir
+            # Both services must be Stopped before binary restore (same lock defect otherwise).
+            Stop-NyxveilWindowsServiceFully -ServiceName $requiredServiceName -TimeoutSeconds 90
+            Stop-NyxveilWindowsServiceFully -ServiceName $updaterServiceName -TimeoutSeconds 90
+            Assert-NyxveilInstallDirUnlockedForMutation -UpdaterServiceName $updaterServiceName
+            if (Test-Path -LiteralPath $InstallDir) {
+                Clear-DirectoryContents -Path $InstallDir
+            }
+            else {
+                New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+            }
+            if (Test-Path -LiteralPath $binaryBackup) {
+                Copy-DirectoryExact -Source $binaryBackup -Destination $InstallDir
+            }
             $rollbackBinaries = $true
         }
         catch {
             $rollbackErrors.Add("binary_restore: $($_.Exception.Message)")
         }
 
-        # Updater service is a separate SCM object — roll it back before restarting Web.
+        # Updater SCM configuration restore (services remain Stopped until state restore below).
         try {
             if (-not $updaterTouched) {
                 $rollbackUpdater = $true
@@ -745,15 +777,17 @@ catch {
         }
 
         try {
-            Start-Service -Name $requiredServiceName -ErrorAction Stop
-            (Get-Service -Name $requiredServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+            # Restore original Running/Stopped states (updater first, then Web).
+            Start-NyxveilWindowsServiceIfWasRunning -Snapshot $updaterSnapshotBefore
+            Start-NyxveilWindowsServiceIfWasRunning -Snapshot $webSnapshotBefore
             $rollbackService = $true
         }
         catch {
             $rollbackErrors.Add("service_restart: $($_.Exception.Message)")
         }
 
-        if ($rollbackService) {
+        if ($rollbackService -and $webSnapshotBefore -and $webSnapshotBefore.Exists -and
+            [string]$webSnapshotBefore.State -eq 'Running') {
             try {
                 if (-not (Test-RollbackHealth)) { throw 'Rollback health verification failed.' }
                 $rollbackHealth = $true
@@ -761,6 +795,11 @@ catch {
             catch {
                 $rollbackErrors.Add("rollback_health: $($_.Exception.Message)")
             }
+        }
+        elseif ($rollbackService) {
+            # Pre-deploy Web was not Running — health gate N/A but mark health true for complete.
+            $rollbackHealth = $true
+            Add-DeployEvent 'Rollback health skipped (Web was not Running before deploy).'
         }
 
         $rollbackComplete = $rollbackBinaries -and $rollbackConfig -and $rollbackDatabase -and

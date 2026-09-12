@@ -1514,3 +1514,59 @@ user-only PENDING (not a DEVELOPMENT COMPLETE blocker).
 
 - **YES** (lab/CI + published final releases). LIVE USER ACCEPTANCE = **PENDING**.
 
+
+---
+
+## 2026-09-13 — CRITICAL: CP production-deploy updater file lock (1.3.12)
+
+### Goal
+
+Fix LIVE elevated `production-deploy` failure path (1.3.8>1.3.10) where
+`NyxveilControlPlaneUpdater` remained Running and locked InstallDir DLLs.
+Revoke prior CP production-deploy COMPLETE. Ship `control-plane-v1.3.12` with
+repair deploy support (no manual sc/file repair).
+
+### Baseline HEAD
+
+- `0aa0b20707806e690c1528c529d25af92125d069`
+- Branch: `real-operator-e2e-gates`
+- Preserved dirty: `licensing/tests/CoreInterop/verify-signed/go.mod`
+
+### Root cause (LIVE, accepted)
+
+Stop only Web > `Clear-DirectoryContents` InstallDir while updater Running >
+Access denied (e.g. `System.Diagnostics.EventLog.dll`). Rollback repeated the
+same lock defect > `rollback_complete=false`, VERSION stayed 1.3.8.
+
+### Behavior changed
+
+- Snapshot Web + Updater; stop both; assert unlocked; then mutate InstallDir
+- Rollback: stop both > restore binaries > restore updater SCM > restore Running states > health
+- Repair: allow empty/partial InstallDir; precheck does not require healthy Web
+- Version metadata > **1.3.12**; schema remains **5**
+- Self-update 1.3.10/1.3.11 behavior preserved (separate path)
+
+### Files changed (product)
+
+- `licensing/scripts/production-deploy.ps1`
+- `licensing/scripts/Nyxveil.ControlPlane.Deploy.psm1`
+- `licensing/scripts/test-production-deploy-updater-lock.ps1` (new)
+- `licensing/scripts/production-gate.ps1`, VERSION, release-manifest, ApiContracts, DashboardQueryService
+- unit/integration deploy order tests; `docs/RELEASE-1.3.12.md`
+- `.github/workflows/control-plane-ci.yml` (lock test + package required files)
+
+### Tests run (local before push)
+
+- MigrationDeployHardeningTests: PASS (20)
+- ProductionDeployOrchestrationTests: PASS (7)
+- Full Control Plane CI + lock host test: pending on GHA after push
+- FULL RELEASE E2E: not run (CP-only)
+
+### Compatibility
+
+- Frozen Core untouched
+- Direct LIVE recovery: elevated 1.3.12 `production-deploy` (skip 1.3.10/1.3.11)
+
+### DEVELOPMENT COMPLETE
+
+- **NO** until CI + release PASS; LIVE USER ACCEPTANCE remains **PENDING**

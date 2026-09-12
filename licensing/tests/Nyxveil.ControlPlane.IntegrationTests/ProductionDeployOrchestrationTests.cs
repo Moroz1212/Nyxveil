@@ -53,13 +53,49 @@ public sealed class ProductionDeployOrchestrationTests
     {
         var rehearsal = Script.IndexOf("$stage = 'migration_rehearsal'", StringComparison.OrdinalIgnoreCase);
         var deployStarted = Script.IndexOf("$deployStarted = $true", StringComparison.OrdinalIgnoreCase);
-        var stopping = Script.IndexOf("Stopping only $requiredServiceName", StringComparison.OrdinalIgnoreCase);
+        var stopping = Script.IndexOf("before InstallDir mutation", StringComparison.OrdinalIgnoreCase);
 
         Assert.True(rehearsal >= 0 && deployStarted > rehearsal && stopping > deployStarted,
             "Migration rehearsal must complete before the deployment mutates or stops the service.");
+        Assert.Contains("Stop-NyxveilWindowsServiceFully", Script, StringComparison.Ordinal);
+        Assert.Contains("Assert-NyxveilInstallDirUnlockedForMutation", Script, StringComparison.Ordinal);
+        // Must stop updater before Clear-DirectoryContents on InstallDir.
+        var unlockIdx = Script.IndexOf("Assert-NyxveilInstallDirUnlockedForMutation", StringComparison.Ordinal);
+        var clearIdx = Script.IndexOf("Clear-DirectoryContents -Path $InstallDir", StringComparison.Ordinal);
+        Assert.True(unlockIdx > 0 && clearIdx > unlockIdx,
+            "InstallDir unlock assert must precede Clear-DirectoryContents.");
         Assert.All(Regex.Matches(Script, @"(?im)^\s*Stop-Service\b").Cast<Match>(),
             match => Assert.True(match.Index > rehearsal,
                 "No service stop is allowed before migration rehearsal."));
+    }
+
+    [Fact]
+    public void TestRollbackStopsUpdaterBeforeBinaryRestore()
+    {
+        var catchIdx = Script.IndexOf("if ($deployStarted)", StringComparison.Ordinal);
+        Assert.True(catchIdx > 0);
+        var rollback = Script.Substring(catchIdx);
+        var stopUpdater = rollback.IndexOf("Stop-NyxveilWindowsServiceFully -ServiceName $updaterServiceName", StringComparison.Ordinal);
+        var clear = rollback.IndexOf("Clear-DirectoryContents -Path $InstallDir", StringComparison.Ordinal);
+        Assert.True(stopUpdater >= 0 && clear > stopUpdater,
+            "Rollback must stop updater before clearing InstallDir for binary restore.");
+        Assert.Contains("Start-NyxveilWindowsServiceIfWasRunning -Snapshot $updaterSnapshotBefore", rollback, StringComparison.Ordinal);
+        Assert.Contains("Start-NyxveilWindowsServiceIfWasRunning -Snapshot $webSnapshotBefore", rollback, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestRepairDeployAllowsEmptyInstallDirBackup()
+    {
+        Assert.Contains("Created missing InstallDir for repair deploy", Script, StringComparison.Ordinal);
+        Assert.Contains("binary backup is empty (repair deploy)", Script, StringComparison.Ordinal);
+        // Precheck must not require healthy Web — only that the service exists.
+        var precheck = Script.IndexOf("# 1. PRECHECK:", StringComparison.Ordinal);
+        var packageValidation = Script.IndexOf("$stage = 'package_validation'", StringComparison.Ordinal);
+        Assert.True(precheck >= 0 && packageValidation > precheck);
+        var precheckBody = Script.Substring(precheck, packageValidation - precheck);
+        Assert.DoesNotContain("Wait-HttpsHealthy", precheckBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("health/live", precheckBody, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Get-Service -Name $requiredServiceName -ErrorAction Stop", precheckBody, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -392,6 +392,107 @@ function Get-NyxveilWindowsServiceSnapshot {
     }
 }
 
+function Stop-NyxveilWindowsServiceFully {
+    <#
+    .SYNOPSIS
+      Stops a Windows service and waits until SCM reports Stopped.
+      Used before InstallDir mutation so ImagePath DLLs are released.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [int]$TimeoutSeconds = 90
+    )
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $svc) {
+        Write-Host "Stop-NyxveilWindowsServiceFully: $ServiceName not present (ok)."
+        return
+    }
+    if ($svc.Status -ne 'Stopped') {
+        Write-Host "Stopping $ServiceName (was $($svc.Status))..."
+        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        try {
+            $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds($TimeoutSeconds))
+        }
+        catch {
+            throw "service '$ServiceName' did not reach Stopped within ${TimeoutSeconds}s: $($_.Exception.Message)"
+        }
+    }
+    $snap = Get-NyxveilWindowsServiceSnapshot -ServiceName $ServiceName
+    if ($snap.Exists -and $snap.State -ne 'Stopped') {
+        throw "service '$ServiceName' still reports State=$($snap.State) after stop"
+    }
+    # Wait until ImagePath process exits so InstallDir DLLs are released.
+    if ($snap.Exists -and $snap.PathName) {
+        $exe = ([string]$snap.PathName).Trim()
+        if ($exe -match '^\s*"([^"]+)"') { $exe = $Matches[1] }
+        elseif ($exe -match '^(\S+\.exe)') { $exe = $Matches[1] }
+        if ($exe) {
+            $deadline = [DateTime]::UtcNow.AddSeconds([Math]::Min(30, $TimeoutSeconds))
+            while ([DateTime]::UtcNow -lt $deadline) {
+                $escaped = $exe.Replace('\', '\\').Replace("'", "''")
+                $procs = @(Get-CimInstance Win32_Process -Filter "ExecutablePath='$escaped'" -ErrorAction SilentlyContinue)
+                if ($procs.Count -eq 0) { break }
+                Start-Sleep -Milliseconds 250
+            }
+        }
+    }
+    Write-Host "Service $ServiceName is Stopped."
+}
+
+function Start-NyxveilWindowsServiceIfWasRunning {
+    <#
+    .SYNOPSIS
+      Restores Running state from a pre-deploy service snapshot when State was Running.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Snapshot,
+        [int]$TimeoutSeconds = 60
+    )
+    if (-not $Snapshot -or -not $Snapshot.Exists) { return }
+    if ([string]$Snapshot.State -ne 'Running') {
+        Write-Host ("Leaving {0} stopped (pre-deploy State={1})." -f $Snapshot.Name, $Snapshot.State)
+        return
+    }
+    $name = [string]$Snapshot.Name
+    if (-not (Get-Service -Name $name -ErrorAction SilentlyContinue)) {
+        throw "cannot restore Running state; service missing: $name"
+    }
+    Start-Service -Name $name -ErrorAction Stop
+    (Get-Service -Name $name).WaitForStatus('Running', [TimeSpan]::FromSeconds($TimeoutSeconds))
+    Write-Host "Service $name restored to Running."
+}
+
+function Assert-NyxveilInstallDirUnlockedForMutation {
+    <#
+    .SYNOPSIS
+      Fails if NyxveilControlPlaneUpdater is Running before InstallDir clear/copy.
+      Also fails if a process still holds the updater ImagePath after SCM Stopped.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$UpdaterServiceName = 'NyxveilControlPlaneUpdater'
+    )
+    $snap = Get-NyxveilWindowsServiceSnapshot -ServiceName $UpdaterServiceName
+    if ($snap.Exists -and $snap.State -eq 'Running') {
+        throw ("REFUSING InstallDir mutation: $UpdaterServiceName is Running (would lock .NET DLLs under InstallDir). Stop updater first.")
+    }
+    if ($snap.Exists -and $snap.PathName) {
+        $exe = ([string]$snap.PathName).Trim().Trim('"')
+        # PathName may be quoted "C:\...\Updater.exe"
+        if ($exe -match '^\s*"([^"]+)"') { $exe = $Matches[1] }
+        elseif ($exe -match '^(\S+\.exe)') { $exe = $Matches[1] }
+        if ($exe -and (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            $escaped = $exe.Replace('\', '\\').Replace("'", "''")
+            $procs = @(Get-CimInstance Win32_Process -Filter "ExecutablePath='$escaped'" -ErrorAction SilentlyContinue)
+            if ($procs.Count -gt 0) {
+                throw ("REFUSING InstallDir mutation: updater ImagePath still has {0} process(es) after stop: {1}" -f $procs.Count, $exe)
+            }
+        }
+    }
+}
+
 function Assert-NyxveilWindowsServiceConfig {
     [CmdletBinding()]
     param(
@@ -2796,6 +2897,9 @@ Export-ModuleMember -Function @(
     'Remove-NyxveilWindowsService',
     'Get-NyxveilServiceBinaryPathName',
     'Get-NyxveilWindowsServiceSnapshot',
+    'Stop-NyxveilWindowsServiceFully',
+    'Start-NyxveilWindowsServiceIfWasRunning',
+    'Assert-NyxveilInstallDirUnlockedForMutation',
     'Assert-NyxveilWindowsServiceConfig',
     'Ensure-NyxveilServiceNative',
     'ConvertTo-NyxveilSanitizedText',

@@ -134,16 +134,18 @@ public sealed class MigrationDeployHardeningTests
     public void TestProductionDeployRequiresMigrationRehearsalBeforeStop()
     {
         var deploy = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-deploy.ps1"));
-        Assert.Contains("1.3.11", deploy, StringComparison.Ordinal);
+        Assert.Contains("1.3.12", deploy, StringComparison.Ordinal);
         Assert.Contains("migration_rehearsal", deploy, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("publish_payload_sha256", deploy, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("rollback_complete", deploy, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("database=", deploy, StringComparison.OrdinalIgnoreCase);
 
         var rehearsalIdx = deploy.IndexOf("migration_rehearsal", StringComparison.OrdinalIgnoreCase);
-        var stopIdx = deploy.IndexOf("Stopping only", StringComparison.OrdinalIgnoreCase);
+        var stopIdx = deploy.IndexOf("before InstallDir mutation", StringComparison.OrdinalIgnoreCase);
         Assert.True(rehearsalIdx > 0 && stopIdx > rehearsalIdx,
             "migration rehearsal must run before stopping the production service");
+        Assert.Contains("Stop-NyxveilWindowsServiceFully", deploy, StringComparison.Ordinal);
+        Assert.Contains("Assert-NyxveilInstallDirUnlockedForMutation", deploy, StringComparison.Ordinal);
     }
 
     [Fact]
