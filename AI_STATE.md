@@ -16,7 +16,7 @@ This is a snapshot, not a desired-state manifest. Never reset the repo to match 
 | Protocol | `NVP/1` | Frozen |
 | Core | `1.0.0` | Frozen |
 | Server node | `1.1.14` | Unchanged this stage |
-| Control Plane | `1.3.5` | Self-update + Fleet local gate PASS; release pending/recorded below |
+| Control Plane | `1.3.5` | Self-update + Fleet local gate PASS; Release published; main synced via PR #1 |
 | Windows client | `1.1.2` | Unchanged |
 | Android client | `1.0.0` | Unchanged |
 
