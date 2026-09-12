@@ -242,15 +242,43 @@ Wait-HttpOk "$baseUrl/health/live" 180
 # Prove admin credentials via real HTTP POST before Playwright (fail fast on install/auth mismatch).
 Write-Host 'CP_BUTTON_STEP=verify_login_http'
 $loginProbe = Join-Path $work 'login-probe.txt'
+$formFile = Join-Path $work 'login.form'
+# Write form body to a file so PowerShell cannot split on '&' when invoking curl.
 $formBody = "email=$([uri]::EscapeDataString($AdminUser))&password=$([uri]::EscapeDataString($AdminPasswordPlain))&returnUrl=%2F"
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($formFile, $formBody, $utf8NoBom)
+Write-Host "CP_BUTTON_LOGIN_FORM_BYTES=$([System.IO.File]::ReadAllBytes($formFile).Length)"
 $headers = & curl.exe -sk -o $loginProbe -D - -X POST "$baseUrl/account/login" `
     -H 'Content-Type: application/x-www-form-urlencoded' `
-    --data-binary $formBody 2>&1 | Out-String
+    --data-binary "@$formFile" 2>&1 | Out-String
 Write-Host "CP_BUTTON_LOGIN_PROBE_HEADERS<<EOF`n$headers`nEOF"
 if ($headers -match '(?im)^Location:\s*.*error=1') {
-    Fail "HTTP login probe returned error=1 (credentials rejected). headers=$headers"
+    # Fallback: HttpClient-style form post (avoids curl/ps quoting entirely).
+    try {
+        Add-Type -AssemblyName System.Net.Http
+        $handler = [System.Net.Http.HttpClientHandler]::new()
+        $handler.AllowAutoRedirect = $false
+        $handler.ServerCertificateCustomValidationCallback = { $true }
+        $client = [System.Net.Http.HttpClient]::new($handler)
+        $content = [System.Net.Http.FormUrlEncodedContent]::new(@(
+            [System.Collections.Generic.KeyValuePair[string,string]]::new('email', $AdminUser),
+            [System.Collections.Generic.KeyValuePair[string,string]]::new('password', $AdminPasswordPlain),
+            [System.Collections.Generic.KeyValuePair[string,string]]::new('returnUrl', '/')
+        ))
+        $resp = $client.PostAsync("$baseUrl/account/login", $content).GetAwaiter().GetResult()
+        $loc = $resp.Headers.Location
+        Write-Host "CP_BUTTON_LOGIN_HTTPCLIENT_STATUS=$([int]$resp.StatusCode) Location=$loc"
+        if ($loc -and "$loc" -match 'error=1') {
+            Fail "HTTP login probe returned error=1 after password reset (curl+HttpClient). headers=$headers"
+        }
+        if (-not $resp.StatusCode.ToString().StartsWith('3')) {
+            Fail "HTTP login HttpClient expected redirect, got $([int]$resp.StatusCode)"
+        }
+    } catch {
+        Fail "HTTP login probe returned error=1 (credentials rejected). headers=$headers; httpclient=$($_.Exception.Message)"
+    }
 }
-if ($headers -notmatch '(?im)^HTTP/\S+\s+302') {
+elseif ($headers -notmatch '(?im)^HTTP/\S+\s+302') {
     Fail "HTTP login probe expected 302 redirect. headers=$headers"
 }
 Write-Host 'CP_BUTTON_LOGIN_HTTP=PASS'
