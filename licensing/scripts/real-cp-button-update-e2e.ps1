@@ -185,10 +185,11 @@ if (Test-Path -LiteralPath $appsettings) {
     # Patch with System.Text.Json-style minimal edit via Node to avoid PowerShell ConvertTo-Json
     # rewriting/breaking nested ASP.NET configuration on restart.
     $patchJs = Join-Path $work 'patch-appsettings.js'
-    @'
+    $patchBody = @'
 const fs = require('fs');
 const p = process.argv[2];
-const cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
+const raw = fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
+const cfg = JSON.parse(raw);
 cfg.ServerReleasePolicy = Object.assign({}, cfg.ServerReleasePolicy || {}, {
   CacheMinutes: 1,
   GitHubOwner: 'Moroz1212',
@@ -196,7 +197,9 @@ cfg.ServerReleasePolicy = Object.assign({}, cfg.ServerReleasePolicy || {}, {
 });
 fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
 console.log('patched ServerReleasePolicy CacheMinutes=1');
-'@ | Set-Content -LiteralPath $patchJs -Encoding UTF8
+'@
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($patchJs, $patchBody, $utf8NoBom)
     node $patchJs $appsettings
     if ($LASTEXITCODE -ne 0) { Fail 'appsettings.Production.json patch failed' }
     Restart-Service -Name NyxveilControlPlane -Force -ErrorAction SilentlyContinue
