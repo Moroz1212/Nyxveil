@@ -49,6 +49,7 @@ public static class AdminResetPasswordCommand
         {
             var builder = Host.CreateApplicationBuilder(args);
             builder.Configuration["Https:RequireHttpsInProduction"] = "false";
+            builder.Services.AddAuthentication();
 
             var programData = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),

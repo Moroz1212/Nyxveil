@@ -41,9 +41,15 @@ jobs:
 
       - name: Install SQL Express for SCM E2E
         shell: powershell
+        id: sql
         run: |
           $ErrorActionPreference = 'Stop'
-          .\licensing\scripts\install-sql-express-for-e2e.ps1
+          $out = @(& .\licensing\scripts\install-sql-express-for-e2e.ps1 2>&1)
+          $out | ForEach-Object { Write-Host $_ }
+          $connLine = $out | Where-Object { $_ -match '^SQL_EXPRESS_CONNECTION=' } | Select-Object -Last 1
+          if (-not $connLine) { throw 'SQL_EXPRESS_CONNECTION missing from setup output' }
+          $conn = ($connLine -split '=',2)[1].Trim()
+          "SQL_CONNECTION=$conn" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Run real Control Plane button update
         shell: powershell
@@ -51,8 +57,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force -Path evidence | Out-Null
+          $db = if ($env:SQL_CONNECTION) { $env:SQL_CONNECTION } else { 'localhost\SQLEXPRESS' }
           .\licensing\scripts\real-cp-button-update-e2e.ps1 `
-            -DatabaseServer 'localhost\SQLEXPRESS' `
+            -DatabaseServer $db `
             -EvidencePath "$env:GITHUB_WORKSPACE\evidence\cp-button-update-evidence.json"
 
       - name: Upload Control Plane button evidence

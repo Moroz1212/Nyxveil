@@ -6,6 +6,7 @@ using Nyxveil.ControlPlane.Domain.Enums;
 using Nyxveil.ControlPlane.Infrastructure.Configuration;
 using Nyxveil.ControlPlane.Infrastructure.DependencyInjection;
 using Nyxveil.ControlPlane.Infrastructure.Identity;
+// AddAuthentication lives in the shared framework; used so Development ValidateOnBuild succeeds.
 
 namespace Nyxveil.ControlPlane.Web.Cli;
 
@@ -56,6 +57,9 @@ public static class AdminCreateCommand
             var builder = Host.CreateApplicationBuilder(args);
             // CLI must not fail-closed on HTTPS certificates.
             builder.Configuration["Https:RequireHttpsInProduction"] = "false";
+            // Development enables ValidateOnBuild; Identity's SignInManager needs auth schemes
+            // even when admin create only resolves UserManager/RoleManager.
+            builder.Services.AddAuthentication();
 
             var programData = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),

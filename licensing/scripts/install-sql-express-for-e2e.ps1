@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 function Fail([string]$Msg) {
-    Write-Output "SQL_EXPRESS_E2E_SETUP=FAIL"
+    Write-Output 'SQL_EXPRESS_E2E_SETUP=FAIL'
     throw $Msg
 }
 
@@ -23,7 +23,8 @@ if ([string]::IsNullOrWhiteSpace($SaPassword)) {
     $SaPassword = 'Nyxveil-SqlE2E-' + [guid]::NewGuid().ToString('N').Substring(0, 16) + '!'
 }
 
-$existing = Get-Service -Name ("MSSQL`$" + $InstanceName) -ErrorAction SilentlyContinue
+$svcName = 'MSSQL$' + $InstanceName
+$existing = Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $svcName }
 if ($existing) {
     if ($existing.Status -ne 'Running') {
         Start-Service -Name $existing.Name
@@ -34,71 +35,42 @@ if ($existing) {
     exit 0
 }
 
-$work = Join-Path $env:TEMP ('nyxveil-sqlexpress-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Force -Path $work | Out-Null
-$setup = Join-Path $work 'SQLEXPR_x64_ENU.exe'
-# Microsoft SQL Server 2022 Express bootstrapper (public CDN).
-$url = 'https://download.microsoft.com/download/5/1/4/5145b935-505c-4522-9ece-bd817748e89b/SQL2022-SSEI-Expr.exe'
-Write-Host "SQL_EXPRESS_STEP=download"
-Invoke-WebRequest -Uri $url -OutFile $setup -UseBasicParsing
+# Prefer Chocolatey on GitHub windows-latest (stable, no brittle CDN media IDs).
+if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+    Fail 'chocolatey (choco) is required to install SQL Server Express on this host'
+}
 
-$ini = Join-Path $work 'ConfigurationFile.ini'
-@"
-[OPTIONS]
-ACTION="Install"
-FEATURES=SQLENGINE
-INSTANCENAME="$InstanceName"
-INSTANCEID="$InstanceName"
-SQLSYSADMINACCOUNTS="BUILTIN\Administrators"
-SECURITYMODE=SQL
-SAPWD="$SaPassword"
-TCPENABLED=1
-NPENABLED=1
-IACCEPTSQLSERVERLICENSETERMS="True"
-QUIET="True"
-UPDATEENABLED=False
-AGTSVCSTARTUPTYPE="Manual"
-SQLSVCSTARTUPTYPE="Automatic"
-"@ | Set-Content -LiteralPath $ini -Encoding ASCII
-
-Write-Host "SQL_EXPRESS_STEP=install"
-$args = @(
-    '/Q',
-    '/Action=Install',
-    '/IAcceptSqlServerLicenseTerms',
-    "/ConfigurationFile=$ini",
-    "/SAPWD=$SaPassword",
-    "/INSTANCENAME=$InstanceName",
-    '/FEATURES=SQLENGINE',
-    '/SQLSYSADMINACCOUNTS=BUILTIN\Administrators',
-    '/TCPENABLED=1',
-    '/SECURITYMODE=SQL',
-    '/UpdateEnabled=0'
-)
-$p = Start-Process -FilePath $setup -ArgumentList $args -Wait -PassThru
-if ($p.ExitCode -notin 0, 3010) {
-    # Fallback: chocolatey if bootstrapper shape differs on the runner image.
-    Write-Host "SQL_EXPRESS_STEP=choco_fallback exit=$($p.ExitCode)"
-    if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-        Fail "SQL Express installer failed exit=$($p.ExitCode) and choco is unavailable"
-    }
-    choco install sql-server-express -y --no-progress --params "/CONFIGURATIONFILE=$ini"
+Write-Host 'SQL_EXPRESS_STEP=choco_install'
+# Package params follow chocolatey.org/packages/sql-server-express conventions.
+$params = "/CONFIGURATIONFILE= /INSTANCENAME=$InstanceName /SAPWD=$SaPassword /SECURITYMODE=SQL /TCPENABLED=1 /IACCEPTSQLSERVERLICENSETERMS /FEATURES=SQLENGINE /SQLSYSADMINACCOUNTS=BUILTIN\Administrators"
+choco install sql-server-express -y --no-progress --params $params
+if ($LASTEXITCODE -ne 0) {
+    # Retry without custom params; default instance is often SQLEXPRESS.
+    Write-Host 'SQL_EXPRESS_STEP=choco_retry_default'
+    choco install sql-server-express -y --no-progress
     if ($LASTEXITCODE -ne 0) {
         Fail "choco sql-server-express failed exit=$LASTEXITCODE"
     }
 }
 
-$svc = Get-Service -Name ("MSSQL`$" + $InstanceName) -ErrorAction SilentlyContinue
+$deadline = [datetime]::UtcNow.AddMinutes(3)
+$svc = $null
+while ([datetime]::UtcNow -lt $deadline) {
+    $svc = Get-Service -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -eq $svcName -or $_.Name -eq 'MSSQLSERVER'
+    } | Select-Object -First 1
+    if ($svc) { break }
+    Start-Sleep -Seconds 5
+}
 if (-not $svc) {
-    Fail "MSSQL`$$InstanceName service missing after install"
+    Fail "SQL Engine service missing after choco install (expected $svcName)"
 }
 if ($svc.Status -ne 'Running') {
     Start-Service -Name $svc.Name
     Start-Sleep -Seconds 8
 }
 
-# Ensure TCP is enabled for the instance (Windows auth from NT SERVICE works locally via shared memory/named pipes too).
-Write-Output ("SQL_EXPRESS_E2E_SETUP=PASS instance=localhost\{0}" -f $InstanceName)
-Write-Output ("SQL_EXPRESS_CONNECTION=localhost\{0}" -f $InstanceName)
-# Do not print SA password.
+$conn = if ($svc.Name -eq 'MSSQLSERVER') { 'localhost' } else { "localhost\$InstanceName" }
+Write-Output ("SQL_EXPRESS_E2E_SETUP=PASS instance={0}" -f $conn)
+Write-Output ("SQL_EXPRESS_CONNECTION={0}" -f $conn)
 exit 0
