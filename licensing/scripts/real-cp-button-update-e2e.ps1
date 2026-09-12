@@ -239,8 +239,8 @@ $baseUrl = "https://127.0.0.1:$Port"
 Wait-HttpOk "$baseUrl/health/live" 180
 
 Write-Host 'CP_BUTTON_STEP=browser_click_update'
-$clickJs = Join-Path $work 'click-update.mjs'
-@'
+$clickJs = Join-Path $work 'click-update.cjs'
+$clickBody = @'
 const { chromium } = require('playwright');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -357,7 +357,9 @@ async function expectEnabled(locator) {
   }
   throw new Error('update button stayed disabled (1.3.9 not discovered?)');
 }
-'@ | Set-Content -LiteralPath $clickJs -Encoding UTF8
+'@
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($clickJs, $clickBody, $utf8NoBom)
 
 Push-Location $work
 try {
