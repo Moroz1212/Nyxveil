@@ -261,6 +261,7 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 		if err := issue(ctx, ACMEIssueArgs{
 			Domain:    opts.TLSDomain,
 			Email:     opts.TLSEmail,
+			Directory: opts.ACMEDirectory,
 			StateDir:  acmeDir,
 			StageCert: stageCert,
 			StageKey:  stageKey,
@@ -380,6 +381,7 @@ func Apply(ctx context.Context, opts Options) (*Result, error) {
 type ACMEIssueArgs struct {
 	Domain    string
 	Email     string
+	Directory string
 	StateDir  string
 	StageCert string
 	StageKey  string
@@ -390,6 +392,7 @@ func defaultIssueACME(ctx context.Context, a ACMEIssueArgs) error {
 	_, _, _, _, err := nodetls.IssueOrRenew(ctx, nodetls.ACMEConfig{
 		Domain:     a.Domain,
 		Email:      a.Email,
+		Directory:  a.Directory,
 		StateDir:   a.StateDir,
 		Dest:       nodetls.Paths{CertFile: a.StageCert, KeyFile: a.StageKey},
 		Replace:    a.Replace,

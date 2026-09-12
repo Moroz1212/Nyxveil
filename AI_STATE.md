@@ -1,30 +1,33 @@
 # AI_STATE.md — Nyxveil current project state
 
-> Updated 2026-09-12 after releases **control-plane-v1.3.9** and **server-v1.1.17**.  
+> Updated 2026-09-12 during **real-operator-e2e-gates** (honest semantics; gates in progress).  
 > Schema **5**. Frozen Core unchanged.  
-> LIVE three operator clicks: **PENDING**.  
 > Preserved dirty: `licensing/tests/CoreInterop/verify-signed/go.mod`.
 
-## Releases
+## Releases (immutable — do not retag)
 
 | Component | Version | Tag | Product SHA |
 |---|---|---|---|
 | Control Plane | 1.3.9 | `control-plane-v1.3.9` | `3f3e750d9eeab575e5edaaa40c7e54cffa51b1a4` |
 | Server | 1.1.17 | `server-v1.1.17` | `3f3e750d9eeab575e5edaaa40c7e54cffa51b1a4` |
 
-- CP CI: https://github.com/Moroz1212/Nyxveil/actions/runs/34690952992 (480 unit / 130 integration / Browser E2E / SCM / FULL_OPERATOR lab PASS)
-- Server CI: https://github.com/Moroz1212/Nyxveil/actions/runs/34690953034 + Server Release `34691224528`
-- CP ZIP SHA256: `C206E77B101BB061E1B550D1B7549BC8AACEEFDCD999B3B2B841B83BFE014C93` (download-back matched)
-- CP release: https://github.com/Moroz1212/Nyxveil/releases/tag/control-plane-v1.3.9
-- Server release: https://github.com/Moroz1212/Nyxveil/releases/tag/server-v1.1.17
+- CP ZIP SHA256: `C206E77B101BB061E1B550D1B7549BC8AACEEFDCD999B3B2B841B83BFE014C93`
+- Server candidate source VERSION now **1.1.18** (ACME `acme_directory` + lab delay/TLS opts) — **not released yet**.
 
-## LIVE operator acceptance (user only)
+## Gate semantics (corrected)
 
-1. Control Plane button: **1.3.8 → 1.3.9**
-2. Node update button: **1.1.15 or 1.1.16 → 1.1.17**
-3. Renew certificate button
+- Contract lab harnesses emit `CONTRACT_OPERATOR_GATES` / `SERVER_CONTRACT_GATES` only.
+- `FULL_OPERATOR_E2E` and `AUTOMATED_PRODUCTION_GATES` are owned exclusively by
+  `licensing/scripts/aggregate-production-gates.ps1` + `assert-production-gates.ps1`.
+- PARTIAL / SKIPPED / NOT_EXECUTED / MISSING / BLOCKED ≠ PASS.
 
-No PowerShell/SSH/chmod/sc manual repair.
+## Current work branch
+
+`real-operator-e2e-gates` — real CP button E2E, Ubuntu systemd node E2E, Pebble/TLS/QUIC pending green CI evidence.
+
+## LIVE operator acceptance
+
+**PENDING** — not offered until `AUTOMATED_PRODUCTION_GATES=PASS`.
 
 ## Frozen Core
 

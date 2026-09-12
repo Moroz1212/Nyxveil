@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -317,6 +318,13 @@ func runUpdate(args []string) error {
 		preBaseline.VersionBlocked, preBaseline.DataplaneOK)
 
 	reportUpdateCommandProgress("", "downloading", "Downloading release manifest and assets")
+	if delaySec := strings.TrimSpace(os.Getenv("NYXVEIL_UPDATE_ARTIFICIAL_DELAY_SECONDS")); delaySec != "" {
+		if n, err := strconv.Atoi(delaySec); err == nil && n > 0 && n <= 600 {
+			fmt.Printf("lab artificial update delay: %ds (NYXVEIL_UPDATE_ARTIFICIAL_DELAY_SECONDS)\n", n)
+			reportUpdateCommandProgress("", "downloading", fmt.Sprintf("Lab artificial delay %ds", n))
+			time.Sleep(time.Duration(n) * time.Second)
+		}
+	}
 	fmt.Printf("fetching update manifest %s\n", manifestURL)
 	localDir := strings.TrimSpace(os.Getenv("NYXVEIL_UPDATE_LOCAL_DIR"))
 	var b []byte

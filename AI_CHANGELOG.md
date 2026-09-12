@@ -1246,3 +1246,135 @@ ClaimNext drain-wait returned null without refreshing ExpiresAt past DeliveryTtl
 - Releases: control-plane-v1.3.9, server-v1.1.17
 - LIVE three clicks PENDING; Frozen Core unchanged; dirty go.mod preserved
 
+---
+
+## 2026-09-12 — Production release E2E evidence scaffolding
+
+### Goal / baseline
+
+- Branch: `real-operator-e2e-gates`
+- Baseline HEAD: `f41b50268e01e283bf896970433fd569f6fdd7d1`
+- Correct false full-operator PASS semantics and add fail-closed production
+  evidence aggregation without changing releases or Frozen Core
+
+### Changes
+
+- Control Plane lab coverage now emits `CONTRACT_OPERATOR_GATES`; both FAIL and
+  PARTIAL exit non-zero, and reserved release mode fails because it has no real
+  button path
+- Server contract coverage now emits `SERVER_CONTRACT_GATES`
+- `FULL_OPERATOR_E2E` is owned only by the production evidence aggregator
+- Added assertion and aggregation for all mandatory production evidence keys;
+  missing, conflicting, BLOCKED, PARTIAL, FAIL, or non-exact PASS values fail
+- Added manual `production-release-e2e.yml` scaffolding for real CP button,
+  Windows SCM, systemd PID 1 preflight, artifact upload, and fail-closed
+  aggregation
+- Updated component CI workflows to require their contract markers and reject
+  PARTIAL/FAIL; contract coverage is never promoted to full production E2E
+- Corrected `AI_STATE.md`: the previous `FULL_OPERATOR lab PASS` description was
+  incorrect because that run covered contracts only
+- Version metadata and schema were not changed
+
+### Verification
+
+- PASS: PowerShell parser for the three changed/new gate scripts
+- PASS: reserved Control Plane release mode emitted
+  `CONTRACT_OPERATOR_GATES=FAIL` and exited 1
+- PASS: production assertion rejected incomplete evidence with
+  `AUTOMATED_PRODUCTION_GATES=FAIL` and exited 1
+- PASS: Server shell syntax check
+- PASS: `git diff --check`
+- Not run: Control Plane lab tests, elevated Windows SCM/button paths, Server Go
+  contract tests (Go unavailable in the local bash environment), GitHub Actions,
+  or any production/live operation
+- Frozen Core unchanged; existing
+  `licensing/tests/CoreInterop/verify-signed/go.mod` and the pre-existing
+  untracked real CP button script were preserved
+- No commit, push, tag, retag, release, deployment, or production mutation
+
+### Unresolved / next action
+
+- The manual production workflow intentionally fails aggregation until evidence
+  for every mandatory production gate is supplied by real button/lifecycle,
+  Pebble, TLS, QUIC, restart, and rollback jobs.
+
+---
+
+## 2026-09-12 — Real node operator E2E scripts (Ubuntu disposable)
+
+### Goal / baseline
+
+- Baseline HEAD: `f41b50268e01e283bf896970433fd569f6fdd7d1`
+- Implement disposable Ubuntu 24.04 systemd harness for published
+  server-v1.1.15 → browser button → server-v1.1.17 without claiming
+  FULL_OPERATOR_E2E from this path alone
+
+### Files added
+
+- `server/scripts/real-operator-node-e2e.sh` — main gate (systemd/disposable,
+  published asset install, Playwright update, durable SUCCESS/PID evidence)
+- `server/scripts/lab-control-plane-start.sh` — Docker MSSQL + source-built lab
+  CP HTTPS + SuperAdmin + SQL Location/BootstrapToken seed
+- `licensing/scripts/real-node-button-browser.mjs` — Playwright MFA +
+  `data-testid=node-update` + preflight confirm
+
+### Behavior notes
+
+- Location safety requires a synthetic healthy sibling row (SQL) so a single
+  lab node can enqueue UpdateNodeLatest
+- Legacy ACME fixture `root:root 0700` under `/var/lib/nyxveil/acme` is created
+  while still on 1.1.15
+- Optional Pebble start when `NYXVEIL_ENABLE_PEBBLE=1`; ACME/cert/TLS/QUIC/
+  rollback evidence keys remain `NOT_EXECUTED`
+- Does not emit `FULL_OPERATOR_E2E=PASS`; exits non-zero unless
+  `node_button_update` and `durable_restart` are PASS
+- Frozen Core not modified; version metadata not bumped
+
+### Tests run
+
+- PASS: `bash -n` on both new shell scripts (LF-normalized)
+- Not run: live Ubuntu disposable host, Docker MSSQL, published install,
+  Playwright against lab CP, or GitHub Actions `ubuntu-node-operator-e2e`
+
+### Suggested next action
+
+Run `production-release-e2e.yml` / `sudo -E bash server/scripts/real-operator-node-e2e.sh`
+on a disposable Ubuntu 24.04 host with systemd PID 1 and GH_TOKEN.
+
+
+## 2026-09-12 — Real operator E2E gates (in progress; prior false PASS corrected)
+
+### Goal
+Make FULL_OPERATOR_E2E / AUTOMATED_PRODUCTION_GATES fail-closed and execute real
+button/SCM/systemd/Pebble/TLS/QUIC gates against published 1.3.8→1.3.9 and
+1.1.15→1.1.17 (then 1.1.18 if ACME directory product fix required).
+
+### Baseline HEAD
+`f41b50268e01e283bf896loot433fd569f6fdd7d1` (typo fix below)
+
+Actual: `f41b50268e01e283bf896970433fd569f6fdd7d1`
+
+### Behavior / files
+- Semantics: `full-operator-e2e.ps1` → CONTRACT only; server script → SERVER_CONTRACT_GATES
+- Aggregator: `assert-production-gates.ps1`, `aggregate-production-gates.ps1`
+- Workflow: `.github/workflows/production-release-e2e.yml`
+- CP real button: `licensing/scripts/real-cp-button-update-e2e.ps1` (+ SQL Express helper)
+- Node real button: `server/scripts/real-operator-node-e2e.sh`, `lab-control-plane-start.sh`, Playwright mjs
+- Product: server `acme_directory` wire-up; VERSION → 1.1.18 (unreleased); lab ACME insecure directory TLS opt-in; update artificial delay env; CP DeliveryTtl env overrides for lab
+- LocalDB recognized as local in Deploy.psm1; production-gate PARTIAL documented as non-mandatory in local CI mode only
+
+### Versions
+- Published CP 1.3.9 / server 1.1.17 unchanged (immutable)
+- Source server VERSION set to 1.1.18 for ACME directory product fix (release pending green path)
+
+### Tests
+- Frozen Core assert: PASS (`7b13097…`)
+- production-release-e2e: not yet green on this handoff (work continues)
+
+### Explicit non-claims
+- Do NOT claim FULL_OPERATOR_E2E=PASS or AUTOMATED_PRODUCTION_GATES=PASS until aggregator evidence is all PASS
+- Contract SCM/BrowserE2E ≠ OS/button/ACME/TLS/QUIC production E2E
+
+### Preserved dirty
+`licensing/tests/CoreInterop/verify-signed/go.mod`
+

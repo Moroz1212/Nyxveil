@@ -72,12 +72,22 @@ jobs:
           .\scripts\test-windows-service-create.ps1
           # The script writes WINDOWS_SERVICE_CREATE_TEST=PASS on success.
 
-      - name: Full operator lab gate
+      - name: Control Plane contract lab gates
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          .\scripts\full-operator-e2e.ps1 -GateMode lab
-          if ($LASTEXITCODE -ne 0) { throw "full-operator-e2e lab failed: $LASTEXITCODE" }
+          $output = @(& .\scripts\full-operator-e2e.ps1 -GateMode lab 2>&1)
+          $exitCode = $LASTEXITCODE
+          $output | ForEach-Object { Write-Host $_ }
+          $text = $output -join "`n"
+          if ($text -match 'CONTRACT_OPERATOR_GATES=(PARTIAL|FAIL)') {
+            throw 'Control Plane contract gates were not complete.'
+          }
+          if ($exitCode -ne 0) { throw "Control Plane contract gates failed: $exitCode" }
+          if ($text -notmatch '(?m)^CONTRACT_OPERATOR_GATES=PASS$') {
+            throw 'Missing CONTRACT_OPERATOR_GATES=PASS result.'
+          }
+          # Contract coverage is not FULL_OPERATOR_E2E production evidence.
 
       - name: Publish
         run: dotnet publish src/Nyxveil.ControlPlane.Web/Nyxveil.ControlPlane.Web.csproj -c Release -o artifacts/web

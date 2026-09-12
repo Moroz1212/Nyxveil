@@ -18,24 +18,42 @@ public sealed class NodeCommandService : INodeCommandService
     /// Delivery / claim deadline while the command is still waiting to be handed to the node
     /// (Pending, before drain/claim). LIVE 1.1.15→1.1.16 failed because drain wait left the
     /// command Pending under this window without refreshing a separate execution lease.
+    /// Lab override: NYXVEIL_NODE_COMMAND_DELIVERY_TTL_SECONDS (e.g. 15 for accelerated E2E).
     /// </summary>
-    public static readonly TimeSpan PendingTtl = TimeSpan.FromMinutes(15);
+    public static readonly TimeSpan PendingTtl = ReadTtlSeconds(
+        "NYXVEIL_NODE_COMMAND_DELIVERY_TTL_SECONDS", TimeSpan.FromMinutes(15));
     /// <summary>Alias for <see cref="PendingTtl"/> — delivery semantics.</summary>
     public static readonly TimeSpan DeliveryTtl = PendingTtl;
-    public static readonly TimeSpan RunningTtl = TimeSpan.FromMinutes(30);
+    public static readonly TimeSpan RunningTtl = ReadTtlSeconds(
+        "NYXVEIL_NODE_COMMAND_RUNNING_TTL_SECONDS", TimeSpan.FromMinutes(30));
     public static readonly TimeSpan RebootRunningTtl = TimeSpan.FromMinutes(45);
     /// <summary>
     /// Progress lease window after drain/claim/start. Refreshed by progress reports and by
     /// ClaimNext drain-wait polls. Must not alone expire a healthy in-flight update.
+    /// Lab: NYXVEIL_NODE_COMMAND_PROGRESS_LEASE_SECONDS.
     /// </summary>
-    public static readonly TimeSpan UpdateRunningTtl = TimeSpan.FromMinutes(60);
+    public static readonly TimeSpan UpdateRunningTtl = ReadTtlSeconds(
+        "NYXVEIL_NODE_COMMAND_UPDATE_RUNNING_TTL_SECONDS", TimeSpan.FromMinutes(60));
     /// <summary>How far a progress/drain-wait touch extends <see cref="NodeCommand.ExpiresAt"/>.</summary>
-    public static readonly TimeSpan ProgressLease = TimeSpan.FromMinutes(20);
+    public static readonly TimeSpan ProgressLease = ReadTtlSeconds(
+        "NYXVEIL_NODE_COMMAND_PROGRESS_LEASE_SECONDS", TimeSpan.FromMinutes(20));
     /// <summary>
     /// Absolute maximum wall-clock for UpdateNodeLatest from drain entry (or claim if no drain).
     /// Progress lease refreshes cannot exceed this deadline.
+    /// Lab: NYXVEIL_NODE_COMMAND_UPDATE_EXECUTION_TIMEOUT_SECONDS.
     /// </summary>
-    public static readonly TimeSpan UpdateExecutionTimeout = TimeSpan.FromMinutes(90);
+    public static readonly TimeSpan UpdateExecutionTimeout = ReadTtlSeconds(
+        "NYXVEIL_NODE_COMMAND_UPDATE_EXECUTION_TIMEOUT_SECONDS", TimeSpan.FromMinutes(90));
+
+    private static TimeSpan ReadTtlSeconds(string envName, TimeSpan fallback)
+    {
+        var raw = Environment.GetEnvironmentVariable(envName);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        if (!int.TryParse(raw.Trim(), out var seconds) || seconds < 5 || seconds > (int)TimeSpan.FromDays(2).TotalSeconds)
+            return fallback;
+        return TimeSpan.FromSeconds(seconds);
+    }
     public static readonly TimeSpan HeartbeatFreshness = TimeSpan.FromMinutes(5);
     /// <summary>
     /// Bounded wait for CurrentSessions==0 after setting Draining=true before update proceeds.

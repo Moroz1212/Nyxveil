@@ -83,6 +83,15 @@ func IssueOrRenew(ctx context.Context, cfg ACMEConfig) (cert tls.Certificate, pr
 		return tls.Certificate{}, nil, nil, false, err
 	}
 	client := &acme.Client{Key: accountKey, DirectoryURL: cfg.Directory}
+	if os.Getenv("NYXVEIL_ACME_INSECURE_DIRECTORY_TLS") == "1" {
+		// Lab/Pebble only: directory endpoint presents a test CA.
+		client.HTTPClient = &http.Client{
+			Timeout: 60 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // explicit lab opt-in
+			},
+		}
+	}
 
 	leafKey, err := LoadOrCreateStableKey(cfg.Dest.KeyFile)
 	if err != nil {

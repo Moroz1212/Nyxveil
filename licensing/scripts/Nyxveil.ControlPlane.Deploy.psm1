@@ -1003,6 +1003,7 @@ function Test-IsLocalDatabaseServer {
     if ([string]::IsNullOrWhiteSpace($s)) { return $true }
     # Strip instance: "host\INSTANCE" or "host,port"
     $hostPart = ($s -split '[\\,]', 2)[0].Trim()
+    if ($hostPart -match '^\(localdb\)$' -or $hostPart -match '^localdb$') { return $true }
     if ($hostPart -match '^(localhost|127\.0\.0\.1|\.|::1)$') { return $true }
     if ($hostPart -eq $env:COMPUTERNAME) { return $true }
     if ($hostPart -eq "$env:COMPUTERNAME.$env:USERDNSDOMAIN" -and $env:USERDNSDOMAIN) { return $true }

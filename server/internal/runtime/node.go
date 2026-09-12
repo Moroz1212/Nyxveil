@@ -1329,6 +1329,7 @@ func (n *Node) issueACMEWithOptions(ctx context.Context, cfg localconfig.File, f
 	_, _, _, _, err = issuer(ctx, nodetls.ACMEConfig{
 		Domain:     domain,
 		Email:      strings.TrimSpace(cfg.ACMEEmail),
+		Directory:  strings.TrimSpace(cfg.ACMEDirectory),
 		StateDir:   stateDir,
 		AccountKey: filepath.Join(stateDir, "acme-account.key"),
 		Dest:       nodetls.Paths{CertFile: stageCert, KeyFile: stageKey},
@@ -1490,6 +1491,7 @@ func (n *Node) prepareACMEForRegistration(ctx context.Context, cfg localconfig.F
 	_, _, _, _, err := issuer(ctx, nodetls.ACMEConfig{
 		Domain:     domain,
 		Email:      strings.TrimSpace(cfg.ACMEEmail),
+		Directory:  strings.TrimSpace(cfg.ACMEDirectory),
 		StateDir:   stateDir,
 		AccountKey: filepath.Join(stateDir, "acme-account.key"),
 		Dest:       nodetls.Paths{CertFile: stageCert, KeyFile: stageKey},

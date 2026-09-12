@@ -1,0 +1,171 @@
+name: Production Release E2E
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-cp-button-e2e:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify administrator runner
+        shell: powershell
+        run: |
+          $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator)
+          if (-not $isAdmin) { throw 'windows-cp-button-e2e requires an administrator token.' }
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install SQL Express for SCM E2E
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\licensing\scripts\install-sql-express-for-e2e.ps1
+
+      - name: Run real Control Plane button update
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+          .\licensing\scripts\real-cp-button-update-e2e.ps1 `
+            -DatabaseServer 'localhost\SQLEXPRESS' `
+            -EvidencePath "$env:GITHUB_WORKSPACE\evidence\cp-button-update-evidence.json"
+
+      - name: Upload Control Plane button evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cp-button-update-evidence
+          path: evidence/cp-button-update-evidence.json
+          if-no-files-found: warn
+
+  windows-scm:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run real Windows SCM gate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+          $result = 'FAIL'
+          try {
+            .\licensing\scripts\test-windows-service-create.ps1
+            if ($LASTEXITCODE -ne 0) { throw "SCM gate exited $LASTEXITCODE" }
+            $result = 'PASS'
+          }
+          finally {
+            [ordered]@{
+              gate = 'windows_scm'
+              result = $result
+              runner = $env:RUNNER_NAME
+              finished_at = [datetime]::UtcNow.ToString('o')
+            } | ConvertTo-Json | Set-Content evidence\windows-scm-evidence.json -Encoding UTF8
+          }
+
+      - name: Upload Windows SCM evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-scm-evidence
+          path: evidence/windows-scm-evidence.json
+          if-no-files-found: error
+
+  ubuntu-node-operator-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+
+      - name: Run real node operator E2E
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NYXVEIL_DISPOSABLE_HOST_ALLOW: '1'
+          NYXVEIL_FROM_SERVER_VERSION: '1.1.15'
+          NYXVEIL_TARGET_SERVER_VERSION: '1.1.17'
+          NYXVEIL_ENABLE_PEBBLE: '1'
+          NYXVEIL_NODE_COMMAND_DELIVERY_TTL_SECONDS: '15'
+          NYXVEIL_UPDATE_ARTIFICIAL_DELAY_SECONDS: '25'
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+          sudo -E bash server/scripts/real-operator-node-e2e.sh \
+            --evidence-dir "$GITHUB_WORKSPACE/evidence"
+
+      - name: Upload node operator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-operator-evidence
+          path: evidence/*
+          if-no-files-found: warn
+
+  aggregate:
+    if: always()
+    needs:
+      - windows-cp-button-e2e
+      - windows-scm
+      - ubuntu-node-operator-e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download production evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          path: evidence
+          pattern: '*-evidence'
+          merge-multiple: true
+
+      - name: Aggregate and assert mandatory production gates
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+          .\licensing\scripts\aggregate-production-gates.ps1 `
+            -EvidenceDirectory evidence `
+            -OutputPath production-gates-evidence.json
+
+      - name: Upload aggregate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-gates-evidence
+          path: production-gates-evidence.json
+          if-no-files-found: warn

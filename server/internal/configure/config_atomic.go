@@ -50,6 +50,9 @@ func Merge(base localconfig.File, opts Options) (localconfig.File, error) {
 		if e := strings.TrimSpace(opts.TLSEmail); e != "" {
 			out.ACMEEmail = e
 		}
+		if dir := strings.TrimSpace(opts.ACMEDirectory); dir != "" {
+			out.ACMEDirectory = dir
+		}
 	}
 	if opts.TLSCert != "" && opts.TLSKey != "" {
 		out.ACMEDomain = ""

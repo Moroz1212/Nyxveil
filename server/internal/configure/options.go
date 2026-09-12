@@ -17,11 +17,12 @@ type Options struct {
 	DNSServers      string // comma-separated IPv4
 	ControlPlaneURL string // https://cp.example:18443 — existing-node URL cutover
 
-	TLSDomain  string
-	TLSEmail   string
-	TLSCert    string // operator cert path
-	TLSKey     string // operator key path
-	TLSReplace bool
+	TLSDomain     string
+	TLSEmail      string
+	ACMEDirectory string // optional; empty = Let's Encrypt production
+	TLSCert       string // operator cert path
+	TLSKey        string // operator key path
+	TLSReplace    bool
 
 	DryRun  bool // --check / --dry-run: validate only
 	SkipCP  bool // tests: skip Control Plane register

@@ -139,6 +139,15 @@ if ($failedGate) {
     Write-Output "diagnostic_bundle=$bundle"
     exit 1
 }
-if ($report -match '=SKIP ') { Write-Output 'RESULT=PARTIAL'; if ($GateMode -eq 'production') { exit 1 }; exit 0 }
+# production-gate.ps1 local mode may emit RESULT=PARTIAL for SKIP checks without InstallDir.
+# That local architecture probe is non-mandatory for Control Plane CI packaging.
+# Mandatory production-release evidence is enforced exclusively by
+# licensing/scripts/assert-production-gates.ps1 (PARTIAL/SKIP/NOT_EXECUTED/MISSING => exit 1).
+if ($report -match '=SKIP ') {
+    Write-Output 'RESULT=PARTIAL'
+    if ($GateMode -eq 'production') { exit 1 }
+    # local mode: PARTIAL is informational for package/docs probes without an installed instance.
+    exit 0
+}
 Write-Output 'RESULT=PASS'
 exit 0

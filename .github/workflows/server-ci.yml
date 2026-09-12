@@ -41,8 +41,18 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test -timeout 120s ./...
-      - name: Full operator server E2E contracts
-        run: bash scripts/full-operator-server-e2e.sh
+      - name: Server contract gates
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          trap 'rm -f "${log}"' EXIT
+          bash scripts/full-operator-server-e2e.sh | tee "${log}"
+          if grep -Eq '^SERVER_CONTRACT_GATES=(PARTIAL|FAIL)' "${log}"; then
+            echo 'Server contract gates were not complete.'
+            exit 1
+          fi
+          grep -qx 'SERVER_CONTRACT_GATES=PASS' "${log}"
+          # Contract coverage is not full production operator E2E evidence.
       - name: Installer structure checks
         run: bash scripts/test-install.sh
       - name: Lifecycle-aware updater gate regression

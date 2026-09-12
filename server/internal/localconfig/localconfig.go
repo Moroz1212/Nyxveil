@@ -15,25 +15,28 @@ import (
 // (location, capacity, transport/ECH policy, config_version, …) live in
 // /var/lib/nyxveil/applied-config.json.
 type File struct {
-	ControlPlaneURL     string   `json:"control_plane_url"`
-	NodeID              string   `json:"node_id"`
-	LocationID          string   `json:"location_id"` // bootstrap only; applied-config overrides at runtime
-	DisplayName         string   `json:"display_name"`
-	ConfigVersion       int64    `json:"config_version,omitempty"` // bootstrap/legacy; authoritative value is applied-config
-	ServerName          string   `json:"server_name,omitempty"`
-	PublicHost          string   `json:"public_host,omitempty"`
-	TLSListen           string   `json:"tls_listen,omitempty"`
-	QUICListen          string   `json:"quic_listen,omitempty"`
-	VPNSubnetCIDR       string   `json:"vpn_subnet_cidr,omitempty"`
-	DNSServers          []string `json:"dns_servers,omitempty"` // operator IPv4 resolvers for TypeConfig; required for production VPN
-	HeartbeatSec        int      `json:"heartbeat_seconds,omitempty"`
-	TLSCertFile         string   `json:"tls_cert_file,omitempty"`
-	TLSKeyFile          string   `json:"tls_key_file,omitempty"`
-	ACMEDomain          string   `json:"acme_domain,omitempty"` // Let's Encrypt FQDN (HTTP-01 on :80)
-	ACMEEmail           string   `json:"acme_email,omitempty"`
-	PinnedCAFile        string   `json:"pinned_ca_file,omitempty"`
-	ControlPlaneSPKIPin string   `json:"control_plane_spki_pin,omitempty"` // hex SHA-256 of peer SPKI
-	UpdateURL           string   `json:"update_url,omitempty"`
+	ControlPlaneURL string   `json:"control_plane_url"`
+	NodeID          string   `json:"node_id"`
+	LocationID      string   `json:"location_id"` // bootstrap only; applied-config overrides at runtime
+	DisplayName     string   `json:"display_name"`
+	ConfigVersion   int64    `json:"config_version,omitempty"` // bootstrap/legacy; authoritative value is applied-config
+	ServerName      string   `json:"server_name,omitempty"`
+	PublicHost      string   `json:"public_host,omitempty"`
+	TLSListen       string   `json:"tls_listen,omitempty"`
+	QUICListen      string   `json:"quic_listen,omitempty"`
+	VPNSubnetCIDR   string   `json:"vpn_subnet_cidr,omitempty"`
+	DNSServers      []string `json:"dns_servers,omitempty"` // operator IPv4 resolvers for TypeConfig; required for production VPN
+	HeartbeatSec    int      `json:"heartbeat_seconds,omitempty"`
+	TLSCertFile     string   `json:"tls_cert_file,omitempty"`
+	TLSKeyFile      string   `json:"tls_key_file,omitempty"`
+	ACMEDomain      string   `json:"acme_domain,omitempty"` // Let's Encrypt FQDN (HTTP-01 on :80)
+	ACMEEmail       string   `json:"acme_email,omitempty"`
+	// ACMEDirectory selects an ACME CA directory URL. Empty = Let's Encrypt production.
+	// Lab/Pebble: e.g. https://127.0.0.1:14000/dir — never use production LE in CI.
+	ACMEDirectory       string `json:"acme_directory,omitempty"`
+	PinnedCAFile        string `json:"pinned_ca_file,omitempty"`
+	ControlPlaneSPKIPin string `json:"control_plane_spki_pin,omitempty"` // hex SHA-256 of peer SPKI
+	UpdateURL           string `json:"update_url,omitempty"`
 }
 
 func Default() File {

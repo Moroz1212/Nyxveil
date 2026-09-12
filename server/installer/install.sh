@@ -107,6 +107,7 @@ TLS_KEY_SRC=""
 TLS_DOMAIN=""
 TLS_REPLACE=0
 ACME_EMAIL=""
+ACME_DIRECTORY=""
 NONINTERACTIVE=0
 TEST_SELF_SIGNED=0
 CONTROL_PLANE_CA_FILE=""
@@ -137,6 +138,7 @@ Usage: install.sh [options]
   --tls-cert PATH              Operator-provided fullchain PEM (copied; not overwritten on repair)
   --tls-key PATH               Operator-provided private key PEM (0600)
   --tls-domain FQDN            ACME (Let's Encrypt HTTP-01 :80); reuses stable key for SPKI stability
+  --acme-directory URL         Optional ACME directory (empty = Let's Encrypt; lab/Pebble URL allowed)
   --tls-email EMAIL            Optional ACME contact email
   --tls-replace                Replace existing tls.crt/tls.key when installing operator/ACME material
   --control-plane-ca-file PATH Pin Control Plane CA (written as pinned_ca_file)
@@ -311,6 +313,7 @@ parse_args() {
       --tls-key) TLS_KEY_SRC="${2:-}"; shift 2 ;;
       --tls-domain) TLS_DOMAIN="${2:-}"; shift 2 ;;
       --tls-email) ACME_EMAIL="${2:-}"; shift 2 ;;
+      --acme-directory) ACME_DIRECTORY="${2:-}"; shift 2 ;;
       --tls-replace) TLS_REPLACE=1; shift ;;
       --control-plane-ca-file) CONTROL_PLANE_CA_FILE="${2:-}"; shift 2 ;;
       --control-plane-spki-pin) CONTROL_PLANE_SPKI_PIN="${2:-}"; shift 2 ;;
@@ -1467,6 +1470,9 @@ write_server_json() {
       printf ',\n  "acme_domain": %s' "$(json_str "${TLS_DOMAIN}")"
       if [[ -n "${ACME_EMAIL}" ]]; then
         printf ',\n  "acme_email": %s' "$(json_str "${ACME_EMAIL}")"
+      fi
+      if [[ -n "${ACME_DIRECTORY}" ]]; then
+        printf ',\n  "acme_directory": %s' "$(json_str "${ACME_DIRECTORY}")"
       fi
     fi
     if [[ -n "${PINNED_CA_DEST}" ]]; then
