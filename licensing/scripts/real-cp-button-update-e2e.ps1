@@ -385,9 +385,10 @@ if ($browserExit -ne 0) {
     if ($ExpectBootstrapLimitation) {
         Write-Host 'CP_1_3_8_BOOTSTRAP_LIMITATION=CONFIRMED'
         $evidence = [ordered]@{
-            gate = 'cp_button_update'
-            result = 'FAIL'
+            gate = 'cp_bootstrap_limitation'
+            result = 'PASS'
             bootstrap_limitation = 'CONFIRMED'
+            button_from_immutable_source = 'FAIL'
             cp_no_overlay = 'PASS'
             cp_artifact_purity = 'PASS'
             source_version = $SourceVersion
@@ -442,9 +443,10 @@ if ($after -ne $TargetVersion) {
         [ordered]@{ gate = 'cp_artifact_purity'; result = 'PASS'; scope = 'source_install'; finished_at = [datetime]::UtcNow.ToString('o') } |
             ConvertTo-Json -Compress | Set-Content (Join-Path $evDir 'cp_artifact_purity-evidence.json') -Encoding utf8
         $evidence = [ordered]@{
-            gate = 'cp_button_update'
-            result = 'FAIL'
+            gate = 'cp_bootstrap_limitation'
+            result = 'PASS'
             bootstrap_limitation = 'CONFIRMED'
+            button_from_immutable_source = 'FAIL'
             before_version = $before
             after_version = $after
             source_version = $SourceVersion
@@ -470,6 +472,20 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host 'CP_BUTTON_HEALTH_READY=PASS'
 
+# TARGET ARTIFACT PURITY: installed product must match published target publish/.
+$extractTgt = Join-Path $work ("extract-{0}" -f $TargetVersion)
+if (-not (Test-Path -LiteralPath $extractTgt)) {
+    Expand-Archive -LiteralPath $zipTgt -DestinationPath $extractTgt -Force
+}
+$publishTgt = Join-Path $extractTgt 'publish'
+try {
+    $targetHashes = Assert-InstalledMatchesPublish -InstallRoot $InstallDir -PublishRoot $publishTgt -RelPaths $purityRels
+    Write-Host 'CP_TARGET_ARTIFACT_PURITY=PASS'
+}
+catch {
+    Fail "target artifact purity failed: $($_.Exception.Message)"
+}
+
 # Capture restart evidence: service running after binary replacement.
 $mainStatus = (Get-Service NyxveilControlPlane).Status.ToString()
 $updStatus = (Get-Service NyxveilControlPlaneUpdater).Status.ToString()
@@ -484,6 +500,7 @@ $evidence = [ordered]@{
     sha256_source_zip = $gotSrc
     sha256_target_zip = $gotTgt
     source_install_hashes = $sourceHashes
+    target_install_hashes = $targetHashes
     cp_no_overlay = 'PASS'
     cp_artifact_purity = 'PASS'
     install_dir = $InstallDir

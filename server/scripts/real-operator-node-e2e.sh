@@ -51,8 +51,8 @@ Usage: real-operator-node-e2e.sh --evidence-dir DIR [--work-dir DIR]
 
 Env:
   NYXVEIL_FROM_SERVER_VERSION      default 1.1.15 (published install tag)
-  NYXVEIL_TARGET_SERVER_VERSION    default 1.1.17
-  NYXVEIL_CANDIDATE_SERVER_VERSION default 1.1.18 (local go build after durable PASS)
+  NYXVEIL_TARGET_SERVER_VERSION    default 1.1.18 (published target; ACME/cert/TLS/QUIC on same binary)
+  (local candidate binary replacement is forbidden in artifact-pure mode)
   NYXVEIL_DISPOSABLE_HOST_ALLOW=1  OR touch /root/NYXVEIL_DISPOSABLE_TEST_HOST
   NYXVEIL_ENABLE_PEBBLE=1          start Pebble + run ACME/cert/TLS/QUIC/rollback after durable PASS
   GH_TOKEN                         used by gh release download when set
@@ -533,6 +533,21 @@ NODE_ID="$(jq -r '.node_id // empty' /etc/nyxveil/server.json)"
 [[ -n "${NODE_ID}" ]] || die "node_id missing from /etc/nyxveil/server.json"
 log "installed node_id=${NODE_ID} version=${VERSION_BEFORE}"
 
+# SOURCE ARTIFACT PURITY: installed binaries must match published FROM release.
+FROM_SERVER_EXPECTED="$(awk '/nyxveil-server-linux-amd64$/ {print tolower($1); exit}' "${ASSET_DIR}/SHA256SUMS" 2>/dev/null || true)"
+FROM_CTL_EXPECTED="$(awk '/nyxveilctl-linux-amd64$/ {print tolower($1); exit}' "${ASSET_DIR}/SHA256SUMS" 2>/dev/null || true)"
+FROM_SERVER_LIVE="$(sha256sum /usr/local/sbin/nyxveil-server | awk '{print tolower($1)}')"
+FROM_CTL_LIVE="$(sha256sum /usr/local/sbin/nyxveilctl | awk '{print tolower($1)}')"
+[[ -n "${FROM_SERVER_EXPECTED}" && "${FROM_SERVER_LIVE}" == "${FROM_SERVER_EXPECTED}" ]] || \
+  die "SOURCE ARTIFACT_PURITY fail server live=${FROM_SERVER_LIVE} expected=${FROM_SERVER_EXPECTED}"
+[[ -n "${FROM_CTL_EXPECTED}" && "${FROM_CTL_LIVE}" == "${FROM_CTL_EXPECTED}" ]] || \
+  die "SOURCE ARTIFACT_PURITY fail ctl live=${FROM_CTL_LIVE} expected=${FROM_CTL_EXPECTED}"
+log "SOURCE_RELEASE_HASHES_MATCH=PASS server=${FROM_SERVER_LIVE} ctl=${FROM_CTL_LIVE}"
+write_json "${EVIDENCE_DIR}/server_source_artifact_purity-evidence.json" \
+  gate=server_source_artifact_purity result=PASS \
+  from_version="${FROM_VERSION}" server_sha="${FROM_SERVER_LIVE}" ctl_sha="${FROM_CTL_LIVE}" \
+  finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 # Progress-lease long-run: DeliveryTtl is short on lab CP; delay update past that window.
 mkdir -p /etc/systemd/system/nyxveil-update.service.d
 cat >/etc/systemd/system/nyxveil-update.service.d/lab-delay.conf <<EOF
@@ -645,7 +660,7 @@ if [[ -f /var/lib/nyxveil/management/update-command.json ]]; then
 fi
 
 # =============================================================================
-# Post-durable ACME / cert / TLS / QUIC / rollback against local 1.1.18 candidate
+# Post-durable ACME / cert / TLS / QUIC / rollback on published TARGET (no rebuild)
 # =============================================================================
 run_playwright_cert_renew() {
   local marker="$1"

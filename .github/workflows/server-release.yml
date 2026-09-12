@@ -2,6 +2,11 @@ name: Server Release
 
 # Publishes EXACT bytes from a successful Server CI artifact for this commit.
 # NEVER rebuilds binaries here (CI build A must equal published A).
+#
+# Order (artifact purity):
+# 1) publish-candidate prerelease from CI bytes (needed so button E2E can download target)
+# 2) production-release-e2e against published candidate
+# 3) finalize: clear prerelease flag only after E2E PASS
 
 on:
   workflow_dispatch:
@@ -23,16 +28,13 @@ permissions:
   actions: read
 
 jobs:
-  production-release-e2e:
-    name: Production Release E2E (mandatory)
-    uses: ./.github/workflows/production-release-e2e.yml
-    permissions:
-      contents: read
-
-  release:
-    needs: production-release-e2e
+  publish-candidate:
+    name: Publish candidate (prerelease) from Server CI
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    outputs:
+      release_tag: ${{ steps.publish.outputs.release_tag }}
+      ci_run_id: ${{ steps.publish.outputs.ci_run_id }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -44,6 +46,7 @@ jobs:
         run: bash scripts/assert-frozen-core.sh
 
       - name: Download canonical CI artifact (no rebuild)
+        id: publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_RUN_ID: ${{ inputs.ci_run_id }}
@@ -88,12 +91,13 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > /tmp/server-ci-artifact.zip
           printf '%s  %s\n' "${DIGEST#sha256:}" /tmp/server-ci-artifact.zip | sha256sum -c -
           unzip -q /tmp/server-ci-artifact.zip -d dist/release
-          # Actions ZIP transport normalizes permissions; restore script mode only.
           chmod 0755 dist/release/{production-gate,install,bootstrap-cli-update,live-final-update}.sh
           printf 'Source: %s\nCI run: %s\nArtifact ID: %s\nArchive SHA256: %s\n' \
             "${SHA}" "${RUN_ID}" "${ARTIFACT_ID}" "${DIGEST#sha256:}" >> "${GITHUB_STEP_SUMMARY}"
           echo "CI_RUN_ID=${RUN_ID}" >> "${GITHUB_ENV}"
           echo "RELEASE_TAG=${TAG}" >> "${GITHUB_ENV}"
+          echo "release_tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "ci_run_id=${RUN_ID}" >> "${GITHUB_OUTPUT}"
 
       - name: Verify release bytes identity (CI artifact)
         run: |
@@ -103,7 +107,7 @@ jobs:
           bash scripts/assert-release-bytes-identity.sh
           echo "RELEASE_BYTES_IDENTITY=PASS"
 
-      - name: Create GitHub Release and upload CI bytes
+      - name: Create/verify GitHub prerelease candidate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -124,7 +128,6 @@ jobs:
           for a in "${ASSETS[@]}"; do
             [[ -f "${a}" ]] || { echo "missing ${a}"; exit 1; }
           done
-          # Existing releases are immutable; matching bytes make reruns a no-op.
           if gh release view "${TAG}" >/dev/null 2>&1; then
             echo "Release ${TAG} already exists — verifying asset identity"
             bash scripts/assert-existing-release-matches-dist.sh "${TAG}" || {
@@ -137,6 +140,32 @@ jobs:
             gh release create "${TAG}" "${ASSETS[@]}" \
               --title "Nyxveil Server ${TAG}" \
               ${NOTES:+--notes-file "${NOTES}"} \
+              --prerelease \
               --verify-tag
           fi
-          echo "Published ${TAG} from Server CI run ${CI_RUN_ID} (no rebuild)"
+          echo "Candidate published ${TAG} from Server CI run ${CI_RUN_ID} (prerelease until E2E PASS)"
+
+  production-release-e2e:
+    name: Production Release E2E (mandatory)
+    needs: publish-candidate
+    uses: ./.github/workflows/production-release-e2e.yml
+    permissions:
+      contents: read
+
+  finalize-release:
+    name: Finalize release after artifact-pure E2E
+    needs:
+      - publish-candidate
+      - production-release-e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Clear prerelease flag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.publish-candidate.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ -n "${TAG}" ]] || { echo "missing release tag"; exit 1; }
+          gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --prerelease=false
+          echo "FINALIZED ${TAG} after production-release-e2e PASS"

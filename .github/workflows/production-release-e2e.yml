@@ -16,6 +16,64 @@ permissions:
   contents: read
 
 jobs:
+  windows-cp-bootstrap-probe:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify administrator runner
+        shell: powershell
+        run: |
+          $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator)
+          if (-not $isAdmin) { throw 'administrator required' }
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install SQL Express for SCM E2E
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = @(& .\licensing\scripts\install-sql-express-for-e2e.ps1 2>&1)
+          $out | ForEach-Object { Write-Host $_ }
+          $connLine = $out | Where-Object { $_ -match '^SQL_EXPRESS_CONNECTION=' } | Select-Object -Last 1
+          if (-not $connLine) { throw 'SQL_EXPRESS_CONNECTION missing' }
+          $conn = ($connLine -split '=',2)[1].Trim()
+          "SQL_CONNECTION=$conn" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Probe byte-exact 1.3.8 -> 1.3.10 button (expect bootstrap limitation)
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+          $db = if ($env:SQL_CONNECTION) { $env:SQL_CONNECTION } else { 'localhost\SQLEXPRESS' }
+          .\licensing\scripts\real-cp-button-update-e2e.ps1 `
+            -DatabaseServer $db `
+            -SourceVersion 1.3.8 `
+            -TargetVersion 1.3.10 `
+            -ExpectBootstrapLimitation `
+            -EvidencePath "$env:GITHUB_WORKSPACE\evidence\cp-bootstrap-limitation-evidence.json"
+          if ($LASTEXITCODE -eq 2) {
+            Write-Host 'BOOTSTRAP_LIMITATION_PROBE=CONFIRMED'
+            exit 0
+          }
+          if ($LASTEXITCODE -eq 0) {
+            throw 'Unexpected PASS for immutable 1.3.8 button update; investigate purity/assumption.'
+          }
+          exit $LASTEXITCODE
+      - name: Upload bootstrap probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cp-bootstrap-probe-evidence
+          path: evidence/*
+          if-no-files-found: warn
+
   windows-cp-button-e2e:
     runs-on: windows-latest
     timeout-minutes: 90
@@ -51,7 +109,7 @@ jobs:
           $conn = ($connLine -split '=',2)[1].Trim()
           "SQL_CONNECTION=$conn" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Run real Control Plane button update
+      - name: Run artifact-pure Control Plane button update 1.3.10 -> 1.3.11
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
@@ -60,6 +118,10 @@ jobs:
           $db = if ($env:SQL_CONNECTION) { $env:SQL_CONNECTION } else { 'localhost\SQLEXPRESS' }
           .\licensing\scripts\real-cp-button-update-e2e.ps1 `
             -DatabaseServer $db `
+            -SourceVersion 1.3.10 `
+            -TargetVersion 1.3.11 `
+            -ExpectedSourceZipSha256 '099507D8E9D76F273B314A70BEFB962B5152016FD42D3C77858249D159EF4AD3' `
+            -ExpectedTargetZipSha256 'BBB2EC621480133A435E588667E6E4DBD7ADF0A6E2555369C917BF198464A309' `
             -EvidencePath "$env:GITHUB_WORKSPACE\evidence\cp-button-update-evidence.json"
 
       - name: Upload Control Plane button evidence
@@ -67,7 +129,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cp-button-update-evidence
-          path: evidence/cp-button-update-evidence.json
+          path: evidence/*
           if-no-files-found: warn
 
   windows-scm:
@@ -160,6 +222,7 @@ jobs:
   aggregate:
     if: always()
     needs:
+      - windows-cp-bootstrap-probe
       - windows-cp-button-e2e
       - windows-scm
       - ubuntu-node-operator-e2e

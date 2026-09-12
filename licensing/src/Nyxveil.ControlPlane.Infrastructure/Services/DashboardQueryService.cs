@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Nyxveil.ControlPlane.Application.Abstractions;
@@ -121,23 +121,23 @@ public sealed class DashboardQueryService : IDashboardQueryService
         TryPopulateControlPlaneCertificate(summary, now);
 
         if (summary.CertificatesExpired > 0)
-            summary.Warnings.Add($"РСЃС‚С‘РєС€РёС… СЃРµСЂС‚РёС„РёРєР°С‚РѕРІ СЃРµСЂРІРµСЂРѕРІ: {summary.CertificatesExpired}");
+            summary.Warnings.Add($"Истёкших сертификатов серверов: {summary.CertificatesExpired}");
         if (summary.CertificatesExpiring > 0)
-            summary.Warnings.Add($"РЎРµСЂС‚РёС„РёРєР°С‚С‹ СЃРµСЂРІРµСЂРѕРІ РёСЃС‚РµРєР°СЋС‚: {summary.CertificatesExpiring}");
+            summary.Warnings.Add($"Сертификаты серверов истекают: {summary.CertificatesExpiring}");
         if (summary.StaleHeartbeatNodes > 0)
-            summary.Warnings.Add($"РќРµС‚ СЃРІСЏР·Рё СЃ СЃРµСЂРІРµСЂР°РјРё: {summary.StaleHeartbeatNodes}");
+            summary.Warnings.Add($"Нет связи с серверами: {summary.StaleHeartbeatNodes}");
         if (unsupported > 0)
             summary.Warnings.Add(unsupported == 1
-                ? "1 СЃРµСЂРІРµСЂ РёСЃРїРѕР»СЊР·СѓРµС‚ РЅРµРїРѕРґРґРµСЂР¶РёРІР°РµРјСѓСЋ РІРµСЂСЃРёСЋ"
-                : $"Р”Р»СЏ {unsupported} СЃРµСЂРІРµСЂРѕРІ С‚СЂРµР±СѓРµС‚СЃСЏ РѕР±РЅРѕРІР»РµРЅРёРµ (РЅРµРїРѕРґРґРµСЂР¶РёРІР°РµРјР°СЏ РІРµСЂСЃРёСЏ)");
+                ? "1 сервер использует неподдерживаемую версию"
+                : $"Для {unsupported} серверов требуется обновление (неподдерживаемая версия)");
         else if (updateAvailable > 0)
             summary.Warnings.Add(updateAvailable == 1
-                ? "Р”Р»СЏ 1 СЃРµСЂРІРµСЂР° РґРѕСЃС‚СѓРїРЅРѕ РѕР±РЅРѕРІР»РµРЅРёРµ"
-                : $"Р”Р»СЏ {updateAvailable} СЃРµСЂРІРµСЂРѕРІ РґРѕСЃС‚СѓРїРЅРѕ РѕР±РЅРѕРІР»РµРЅРёРµ");
+                ? "Для 1 сервера доступно обновление"
+                : $"Для {updateAvailable} серверов доступно обновление");
         if (summary.CertificateHealth is "Expired" or "Critical" or "Invalid")
-            summary.Warnings.Add($"РЎРµСЂС‚РёС„РёРєР°С‚ Control Plane: {summary.CertificateHealth}");
+            summary.Warnings.Add($"Сертификат Control Plane: {summary.CertificateHealth}");
         else if (summary.CertificateHealth == "ExpiringSoon")
-            summary.Warnings.Add("РЎРµСЂС‚РёС„РёРєР°С‚ Control Plane СЃРєРѕСЂРѕ РёСЃС‚РµС‡С‘С‚");
+            summary.Warnings.Add("Сертификат Control Plane скоро истечёт");
         return summary;
     }
 
@@ -228,7 +228,7 @@ public sealed class DashboardQueryService : IDashboardQueryService
                 {
                     Severity = AttentionSeverity.Warning,
                     Title = AttentionCopy.Degraded,
-                    Detail = "РЎС‚Р°С‚СѓСЃ Degraded.",
+                    Detail = "Статус Degraded.",
                     NodeId = n.NodeId,
                     NodeName = Name(n),
                     LocationId = n.LocationId,
@@ -268,8 +268,8 @@ public sealed class DashboardQueryService : IDashboardQueryService
                 items.Add(new AttentionItem
                 {
                     Severity = AttentionSeverity.Warning,
-                    Title = "РЎРµСЂС‚РёС„РёРєР°С‚ СЃРєРѕСЂРѕ РёСЃС‚РµС‡С‘С‚",
-                    Detail = $"РћСЃС‚Р°Р»РѕСЃСЊ РґРЅРµР№: {CertificateExpiry.DaysRemaining(n.CertNotAfter, now)?.ToString() ?? "вЂ”"}",
+                    Title = "Сертификат скоро истечёт",
+                    Detail = $"Осталось дней: {CertificateExpiry.DaysRemaining(n.CertNotAfter, now)?.ToString() ?? "—"}",
                     NodeId = n.NodeId,
                     NodeName = Name(n),
                     LocationId = n.LocationId,
@@ -286,8 +286,8 @@ public sealed class DashboardQueryService : IDashboardQueryService
                 items.Add(new AttentionItem
                 {
                     Severity = AttentionSeverity.Critical,
-                    Title = "РќРµРїРѕРґРґРµСЂР¶РёРІР°РµРјР°СЏ РІРµСЂСЃРёСЏ",
-                    Detail = $"РЈСЃС‚Р°РЅРѕРІР»РµРЅРѕ: {installed ?? "вЂ”"}",
+                    Title = "Неподдерживаемая версия",
+                    Detail = $"Установлено: {installed ?? "—"}",
                     NodeId = n.NodeId,
                     NodeName = Name(n),
                     LocationId = n.LocationId,
@@ -301,8 +301,8 @@ public sealed class DashboardQueryService : IDashboardQueryService
                 items.Add(new AttentionItem
                 {
                     Severity = AttentionSeverity.Info,
-                    Title = "Р”РѕСЃС‚СѓРїРЅРѕ РѕР±РЅРѕРІР»РµРЅРёРµ",
-                    Detail = $"{installed} в†’ {latest}",
+                    Title = "Доступно обновление",
+                    Detail = $"{installed} → {latest}",
                     NodeId = n.NodeId,
                     NodeName = Name(n),
                     LocationId = n.LocationId,
@@ -317,8 +317,8 @@ public sealed class DashboardQueryService : IDashboardQueryService
                 items.Add(new AttentionItem
                 {
                     Severity = AttentionSeverity.Info,
-                    Title = "Р—Р°РІРµСЂС€РµРЅРёРµ СЃРµР°РЅСЃРѕРІ (Drain)",
-                    Detail = "РЎРµСЂРІРµСЂ РЅРµ РїСЂРёРЅРёРјР°РµС‚ РЅРѕРІС‹Рµ РїРѕРґРєР»СЋС‡РµРЅРёСЏ.",
+                    Title = "Завершение сеансов (Drain)",
+                    Detail = "Сервер не принимает новые подключения.",
                     NodeId = n.NodeId,
                     NodeName = Name(n),
                     LocationId = n.LocationId,
@@ -364,7 +364,7 @@ public sealed class DashboardQueryService : IDashboardQueryService
     {
         Severity = severity,
         Title = title,
-        Detail = "РџРѕ РґР°РЅРЅС‹Рј РїРѕСЃР»РµРґРЅРµРіРѕ health-РѕС‚С‡С‘С‚Р°.",
+        Detail = "По данным последнего health-отчёта.",
         NodeId = n.NodeId,
         NodeName = name,
         LocationId = n.LocationId,
@@ -392,7 +392,7 @@ public sealed class DashboardQueryService : IDashboardQueryService
         {
         }
 
-        return "1.3.10";
+        return "1.3.11";
     }
 
     private void TryPopulateControlPlaneCertificate(DashboardSummary summary, DateTime now)

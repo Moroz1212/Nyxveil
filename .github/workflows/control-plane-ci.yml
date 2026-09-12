@@ -90,7 +90,10 @@ jobs:
           # Contract coverage is not FULL_OPERATOR_E2E production evidence.
 
       - name: Publish
-        run: dotnet publish src/Nyxveil.ControlPlane.Web/Nyxveil.ControlPlane.Web.csproj -c Release -o artifacts/web
+        run: |
+          dotnet publish src/Nyxveil.ControlPlane.Web/Nyxveil.ControlPlane.Web.csproj -c Release -o artifacts/web
+          dotnet publish src/Nyxveil.ControlPlane.Updater/Nyxveil.ControlPlane.Updater.csproj -c Release -o artifacts/web/updater
+          Copy-Item VERSION artifacts/web/VERSION -Force
 
       - name: Production gate (local)
         shell: pwsh
@@ -123,6 +126,8 @@ jobs:
             'database\migrations\validate_schema_v5.sql',
             'docs\RELEASE-1.3.8.md',
             'docs\RELEASE-1.3.9.md',
+            'docs\RELEASE-1.3.10.md',
+            'docs\RELEASE-1.3.11.md',
             'release-manifest.json'
           )
           foreach ($rel in $required) {
