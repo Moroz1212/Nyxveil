@@ -123,7 +123,7 @@ else
         {
             <AuthorizeView Policy="@AuthPolicies.OperatorOrAbove">
                 <div class="actions" style="margin-top:.75rem">
-                    <button class="btn" disabled="@(_busy || !NodeCommandCapabilities.Supports(_node, NodeCommandType.RenewCertificate))" @onclick="() => EnqueueAsync(NodeCommandType.RenewCertificate)">Обновить сертификат сейчас</button>
+                    <button class="btn" data-testid="node-certificate-renew" disabled="@(_busy || !NodeCommandCapabilities.Supports(_node, NodeCommandType.RenewCertificate))" @onclick="() => EnqueueAsync(NodeCommandType.RenewCertificate)">Обновить сертификат сейчас</button>
                 </div>
             </AuthorizeView>
         }
@@ -146,7 +146,7 @@ else
                 var st = NodeVersionEvaluator.Evaluate(installed, _latestVersion, _minSupported);
                 @if (st is NodeVersionStatus.UpdateAvailable or NodeVersionStatus.Unsupported)
                 {
-                    <button class="btn" disabled="@_busy" @onclick="PrepareUpdateAsync">Обновить до @(_latestVersion ?? "latest")</button>
+                    <button class="btn" data-testid="node-update" disabled="@_busy" @onclick="PrepareUpdateAsync">Обновить до @(_latestVersion ?? "latest")</button>
                 }
                 else if (st == NodeVersionStatus.Current)
                 {

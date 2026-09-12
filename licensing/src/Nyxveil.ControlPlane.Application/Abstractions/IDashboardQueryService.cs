@@ -9,7 +9,7 @@ public interface IDashboardQueryService
 
 public sealed class DashboardSummary
 {
-    public string ControlPlaneVersion { get; set; } = "1.3.8";
+    public string ControlPlaneVersion { get; set; } = "1.3.9";
     public string Hostname { get; set; } = string.Empty;
     public string PublicUrl { get; set; } = string.Empty;
     public int LocalPort { get; set; } = 8443;

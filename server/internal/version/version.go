@@ -9,8 +9,8 @@ const (
 // ServerVersion / CLIVersion are vars so process-level self-update tests can
 // build an old ctl via -ldflags -X without forking the tree.
 var (
-	ServerVersion = "1.1.16"
-	CLIVersion    = "1.1.16"
+	ServerVersion = "1.1.17"
+	CLIVersion    = "1.1.17"
 )
 
 // Build metadata injected via -ldflags when available.

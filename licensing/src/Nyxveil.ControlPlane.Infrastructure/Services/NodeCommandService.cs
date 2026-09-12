@@ -14,10 +14,28 @@ namespace Nyxveil.ControlPlane.Infrastructure.Services;
 
 public sealed class NodeCommandService : INodeCommandService
 {
+    /// <summary>
+    /// Delivery / claim deadline while the command is still waiting to be handed to the node
+    /// (Pending, before drain/claim). LIVE 1.1.15→1.1.16 failed because drain wait left the
+    /// command Pending under this window without refreshing a separate execution lease.
+    /// </summary>
     public static readonly TimeSpan PendingTtl = TimeSpan.FromMinutes(15);
+    /// <summary>Alias for <see cref="PendingTtl"/> — delivery semantics.</summary>
+    public static readonly TimeSpan DeliveryTtl = PendingTtl;
     public static readonly TimeSpan RunningTtl = TimeSpan.FromMinutes(30);
     public static readonly TimeSpan RebootRunningTtl = TimeSpan.FromMinutes(45);
+    /// <summary>
+    /// Progress lease window after drain/claim/start. Refreshed by progress reports and by
+    /// ClaimNext drain-wait polls. Must not alone expire a healthy in-flight update.
+    /// </summary>
     public static readonly TimeSpan UpdateRunningTtl = TimeSpan.FromMinutes(60);
+    /// <summary>How far a progress/drain-wait touch extends <see cref="NodeCommand.ExpiresAt"/>.</summary>
+    public static readonly TimeSpan ProgressLease = TimeSpan.FromMinutes(20);
+    /// <summary>
+    /// Absolute maximum wall-clock for UpdateNodeLatest from drain entry (or claim if no drain).
+    /// Progress lease refreshes cannot exceed this deadline.
+    /// </summary>
+    public static readonly TimeSpan UpdateExecutionTimeout = TimeSpan.FromMinutes(90);
     public static readonly TimeSpan HeartbeatFreshness = TimeSpan.FromMinutes(5);
     /// <summary>
     /// Bounded wait for CurrentSessions==0 after setting Draining=true before update proceeds.
@@ -26,6 +44,9 @@ public sealed class NodeCommandService : INodeCommandService
     /// </summary>
     public static readonly TimeSpan UpdateDrainWait = TimeSpan.FromSeconds(120);
     public static readonly TimeSpan UpdateDrainPoll = TimeSpan.FromSeconds(2);
+
+    private const string PayloadExecutionDeadline = "execution_deadline";
+    private const string PayloadDeliveryDeadline = "delivery_deadline";
 
     /// <summary>
     /// Result codes that indicate a safe no-mutation / healthy rollback path where admin
@@ -284,10 +305,20 @@ public sealed class NodeCommandService : INodeCommandService
                 var drainingNode = await _db.Nodes.AsNoTracking().SingleAsync(n => n.NodeId == nodeId, cancellationToken);
                 // Durable wait across short polls: Node's HTTP timeout is 30 seconds.
                 // Require a heartbeat received after drain was published before dispatch.
+                // CRITICAL: refresh execution progress lease while waiting — do NOT leave the
+                // command on DeliveryTtl (PendingTtl). LIVE expired at ~15m during this window.
                 if (drainingNode.LastSeenAt <= command.ProgressUpdatedAt || drainingNode.LastSeenAt is null)
+                {
+                    TouchProgressLease(command, _clock.UtcNow);
+                    await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                     return null;
+                }
                 if (drainingNode.CurrentSessions > 0 && _clock.UtcNow < command.ProgressUpdatedAt + UpdateDrainWait)
+                {
+                    TouchProgressLease(command, _clock.UtcNow);
+                    await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                     return null;
+                }
                 if (drainingNode.CurrentSessions > 0)
                 {
                     var payload = JsonNode.Parse(command.PayloadJson!)!.AsObject();
@@ -299,13 +330,7 @@ public sealed class NodeCommandService : INodeCommandService
             command.Status = NodeCommandStatus.Claimed;
             command.ClaimedAt = now;
             command.AttemptCount += 1;
-            var runningTtl = command.Type switch
-            {
-                NodeCommandType.RebootHost => RebootRunningTtl,
-                NodeCommandType.UpdateNodeLatest => UpdateRunningTtl,
-                _ => RunningTtl
-            };
-            command.ExpiresAt = now.Add(runningTtl);
+            ApplyRunningLease(command, now);
 
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             return command;
@@ -343,15 +368,48 @@ public sealed class NodeCommandService : INodeCommandService
 
             command.Status = NodeCommandStatus.Running;
             command.StartedAt = now;
-            var runningTtl = command.Type switch
-            {
-                NodeCommandType.RebootHost => RebootRunningTtl,
-                NodeCommandType.UpdateNodeLatest => UpdateRunningTtl,
-                _ => RunningTtl
-            };
-            command.ExpiresAt = now.Add(runningTtl);
+            ApplyRunningLease(command, now);
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Node progress heartbeat for an in-flight command. Refreshes the progress lease
+    /// without widening past the absolute execution deadline.
+    /// </summary>
+    public async Task ReportProgressAsync(
+        Guid id,
+        string nodeId,
+        string? phase,
+        string? message,
+        CancellationToken cancellationToken = default)
+        => await WithLocationLockAsync(nodeId, async () =>
+        {
+            await ReportProgressLockedAsync(id, nodeId, phase, message, cancellationToken);
+            return true;
+        }, cancellationToken);
+
+    private async Task ReportProgressLockedAsync(
+        Guid id,
+        string nodeId,
+        string? phase,
+        string? message,
+        CancellationToken cancellationToken)
+    {
+        var command = await GetOwnedCommandAsync(id, nodeId, cancellationToken).ConfigureAwait(false);
+        if (command.Status is NodeCommandStatus.Succeeded or NodeCommandStatus.Failed
+            or NodeCommandStatus.Expired or NodeCommandStatus.Cancelled or NodeCommandStatus.NodeReturned)
+            return;
+
+        var now = _clock.UtcNow;
+        if (!string.IsNullOrWhiteSpace(phase))
+            command.ProgressPhase = Truncate(phase.Trim(), 64);
+        if (!string.IsNullOrWhiteSpace(message))
+            command.ProgressMessage = Truncate(message.Trim(), 512);
+        command.ProgressUpdatedAt = now;
+        TouchProgressLease(command, now);
+        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await _realtime.NotifyCommandAsync(command.Id, nodeId, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task CompleteAsync(
@@ -381,9 +439,10 @@ public sealed class NodeCommandService : INodeCommandService
         if (command.Status == NodeCommandStatus.Pending)
             throw new ConflictException("unclaimed command cannot be completed");
 
-        // A verified late result can resolve an interrupted update after the CP TTL.
+        // A verified late result can resolve an interrupted update after the CP TTL/lease.
+        // LIVE left Status=Expired ResultCode=expired while the node later finished the update.
         var resolvesUnknown = command.Type == NodeCommandType.UpdateNodeLatest
-            && command.ResultCode is "expired_outcome_unknown" or "outcome_unknown"
+            && IsResolvableUnknownUpdateResult(command.ResultCode)
             && (success && resultCode == "updated_healthy" || resultCode == "rolled_back_healthy");
         if (!resolvesUnknown && command.Status is (NodeCommandStatus.Succeeded or NodeCommandStatus.Failed
             or NodeCommandStatus.Expired or NodeCommandStatus.Cancelled or NodeCommandStatus.NodeReturned))
@@ -394,9 +453,16 @@ public sealed class NodeCommandService : INodeCommandService
             throw new ConflictException("command already completed with a different result");
         }
 
+        var priorResultCode = command.ResultCode;
+        var lateReconcile = resolvesUnknown
+            && command.Status is NodeCommandStatus.Failed or NodeCommandStatus.Expired;
         var now = _clock.UtcNow;
         command.ResultCode = Truncate(resultCode, 64);
-        command.ResultMessage = Truncate(resultMessage, 1024);
+        command.ResultMessage = Truncate(
+            lateReconcile
+                ? PrependLateReconcileNote(resultMessage, priorResultCode)
+                : resultMessage,
+            1024);
         command.ProgressPhase = success ? "Completed" : "Failed";
         command.ProgressUpdatedAt = now;
 
@@ -521,7 +587,9 @@ public sealed class NodeCommandService : INodeCommandService
                 c.CompletedAt ??= now;
                 c.ResultCode = "expired_outcome_unknown";
                 c.ResultMessage ??=
-                    "command TTL exceeded after drain entered; node left drained (outcome unknown)";
+                    TryReadExecutionDeadline(c.PayloadJson, out var dl) && now >= dl
+                        ? "execution timeout exceeded after drain entered; node left drained (outcome unknown)"
+                        : "command TTL exceeded after drain entered; node left drained (outcome unknown)";
                 continue;
             }
 
@@ -591,11 +659,15 @@ public sealed class NodeCommandService : INodeCommandService
         MergePayloadAdminSnapshot(
             command, beforeEnabled, beforeDraining, beforeMaintenance,
             drainTimedOut: false, drainEntered: true);
+        var now = _clock.UtcNow;
+        EnsureExecutionDeadline(command, now);
+        TouchProgressLease(command, now);
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         command.ProgressPhase = "Draining";
         command.ProgressUpdatedAt = _clock.UtcNow;
         command.ProgressMessage = "Waiting for a fresh heartbeat and session drain";
+        TouchProgressLease(command, command.ProgressUpdatedAt.Value);
         await _db.SaveChangesAsync(cancellationToken);
 
         await _audit.WriteAsync(new AuditWriteRequest
@@ -693,6 +765,114 @@ public sealed class NodeCommandService : INodeCommandService
         {
             return false;
         }
+    }
+
+    public static bool TryReadExecutionDeadline(string? payloadJson, out DateTime deadlineUtc)
+    {
+        deadlineUtc = default;
+        if (string.IsNullOrWhiteSpace(payloadJson))
+            return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(payloadJson);
+            if (!doc.RootElement.TryGetProperty(PayloadExecutionDeadline, out var d)
+                || d.ValueKind != JsonValueKind.String)
+                return false;
+            if (!DateTime.TryParse(d.GetString(), null,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
+                return false;
+            deadlineUtc = parsed.Kind == DateTimeKind.Unspecified
+                ? DateTime.SpecifyKind(parsed, DateTimeKind.Utc)
+                : parsed.ToUniversalTime();
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    public static bool IsResolvableUnknownUpdateResult(string? resultCode)
+    {
+        if (string.IsNullOrWhiteSpace(resultCode))
+            return false;
+        return resultCode.Trim() is "expired_outcome_unknown" or "outcome_unknown"
+            or "expired" or "expired_no_mutation" or "execution_timeout";
+    }
+
+    private static string? PrependLateReconcileNote(string? resultMessage, string? priorResultCode)
+    {
+        var note = $"late_result_reconciled prior={priorResultCode ?? "none"}";
+        if (string.IsNullOrWhiteSpace(resultMessage))
+            return note;
+        return note + "; " + resultMessage.Trim();
+    }
+
+    private void ApplyRunningLease(NodeCommand command, DateTime nowUtc)
+    {
+        if (command.Type == NodeCommandType.UpdateNodeLatest)
+        {
+            EnsureExecutionDeadline(command, nowUtc);
+            TouchProgressLease(command, nowUtc);
+            return;
+        }
+
+        var runningTtl = command.Type switch
+        {
+            NodeCommandType.RebootHost => RebootRunningTtl,
+            _ => RunningTtl
+        };
+        command.ExpiresAt = nowUtc.Add(runningTtl);
+    }
+
+    private static void EnsureExecutionDeadline(NodeCommand command, DateTime nowUtc)
+    {
+        if (command.Type != NodeCommandType.UpdateNodeLatest)
+            return;
+        if (TryReadExecutionDeadline(command.PayloadJson, out _))
+            return;
+
+        JsonObject root;
+        try
+        {
+            root = string.IsNullOrWhiteSpace(command.PayloadJson)
+                ? new JsonObject()
+                : JsonNode.Parse(command.PayloadJson)?.AsObject() ?? new JsonObject();
+        }
+        catch (JsonException)
+        {
+            root = new JsonObject();
+        }
+
+        if (root[PayloadDeliveryDeadline] is null)
+            root[PayloadDeliveryDeadline] = command.ExpiresAt.ToUniversalTime().ToString("O");
+        root[PayloadExecutionDeadline] = nowUtc.Add(UpdateExecutionTimeout).ToUniversalTime().ToString("O");
+        command.PayloadJson = root.ToJsonString();
+    }
+
+    private static void TouchProgressLease(NodeCommand command, DateTime nowUtc)
+    {
+        DateTime leaseEnd = nowUtc.Add(
+            command.Type == NodeCommandType.UpdateNodeLatest ? ProgressLease : RunningTtl);
+        if (command.Type == NodeCommandType.UpdateNodeLatest
+            && TryReadExecutionDeadline(command.PayloadJson, out var absolute)
+            && leaseEnd > absolute)
+        {
+            leaseEnd = absolute;
+        }
+
+        // Also allow the legacy UpdateRunningTtl window from touch when absolute is far out.
+        if (command.Type == NodeCommandType.UpdateNodeLatest)
+        {
+            var runningCap = nowUtc.Add(UpdateRunningTtl);
+            if (TryReadExecutionDeadline(command.PayloadJson, out absolute) && runningCap > absolute)
+                runningCap = absolute;
+            if (leaseEnd < runningCap)
+                leaseEnd = runningCap;
+        }
+
+        if (leaseEnd > command.ExpiresAt)
+            command.ExpiresAt = leaseEnd;
     }
 
     public static bool TryReadAdminSnapshot(

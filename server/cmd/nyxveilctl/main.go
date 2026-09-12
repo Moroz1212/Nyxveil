@@ -316,6 +316,7 @@ func runUpdate(args []string) error {
 		preBaseline.TUNReady, preBaseline.CPConnected, preBaseline.Healthy, preBaseline.IdentityPresent,
 		preBaseline.VersionBlocked, preBaseline.DataplaneOK)
 
+	reportUpdateCommandProgress("", "downloading", "Downloading release manifest and assets")
 	fmt.Printf("fetching update manifest %s\n", manifestURL)
 	localDir := strings.TrimSpace(os.Getenv("NYXVEIL_UPDATE_LOCAL_DIR"))
 	var b []byte
@@ -360,6 +361,7 @@ func runUpdate(args []string) error {
 			return err
 		}
 	}
+	reportUpdateCommandProgress("", "verifying", "Verifying signed release manifest")
 	m, err := updater.ParseManifest(b)
 	if err != nil {
 		return err
@@ -386,6 +388,7 @@ func runUpdate(args []string) error {
 	u.LocalDir = localDir
 	u.StateDir = paths.StateDir
 	u.EnforceOwnership = filemeta.MigrateACMEState
+	reportUpdateCommandProgress("", "installing", "Installing verified release assets")
 
 	health := func() bool {
 		tx := &updateTransaction{

@@ -173,6 +173,29 @@ public sealed class DashboardQueryService : IDashboardQueryService
             .Take(50)
             .ToList();
 
+        // Supersede: if a newer UpdateNodeLatest succeeded for the same node, drop older
+        // unknown/failed update attention items (history remains in operations).
+        var successfulUpdates = await db.NodeCommands.AsNoTracking()
+            .Where(c => c.Type == NodeCommandType.UpdateNodeLatest
+                        && c.Status == NodeCommandStatus.Succeeded
+                        && c.CompletedAt != null
+                        && c.CompletedAt > now.AddDays(-7))
+            .Select(c => new { c.NodeId, c.CompletedAt })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var latestSuccessByNode = successfulUpdates
+            .GroupBy(x => x.NodeId, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Max(x => x.CompletedAt!.Value), StringComparer.Ordinal);
+        problemCommands = problemCommands
+            .Where(c =>
+            {
+                if (c.Type != NodeCommandType.UpdateNodeLatest)
+                    return true;
+                if (!latestSuccessByNode.TryGetValue(c.NodeId, out var okAt))
+                    return true;
+                return c.CompletedAt is null || c.CompletedAt >= okAt;
+            })
+            .ToList();
+
         var items = new List<AttentionItem>();
         string Name(Node n) => string.IsNullOrWhiteSpace(n.DisplayName) ? n.NodeId : n.DisplayName;
 
@@ -369,7 +392,7 @@ public sealed class DashboardQueryService : IDashboardQueryService
         {
         }
 
-        return "1.3.8";
+        return "1.3.9";
     }
 
     private void TryPopulateControlPlaneCertificate(DashboardSummary summary, DateTime now)

@@ -174,6 +174,12 @@ type NodeCommandResultRequest struct {
 	BootID        string `json:"boot_id,omitempty"`
 }
 
+// NodeCommandProgressRequest is POST /api/v1/node/commands/{id}/progress body.
+type NodeCommandProgressRequest struct {
+	Phase   string `json:"phase,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
 // ErrNoCommand indicates GET /commands/next returned 204 No Content.
 var ErrNoCommand = errors.New("controlplane: no command available")
 
@@ -333,6 +339,12 @@ func (c *Client) ClaimNextCommand(ctx context.Context) (*NodeCommand, error) {
 func (c *Client) MarkCommandStarted(ctx context.Context, commandID string) error {
 	path := "/api/v1/node/commands/" + url.PathEscape(commandID) + "/started"
 	return c.doJSON(ctx, http.MethodPost, path, nil, true, nil)
+}
+
+// ReportCommandProgress refreshes the execution lease for an in-progress command.
+func (c *Client) ReportCommandProgress(ctx context.Context, commandID string, req NodeCommandProgressRequest) error {
+	path := "/api/v1/node/commands/" + url.PathEscape(commandID) + "/progress"
+	return c.doJSON(ctx, http.MethodPost, path, req, true, nil)
 }
 
 // ReportCommandResult posts the final (or intermediate reboot-accepted) outcome.

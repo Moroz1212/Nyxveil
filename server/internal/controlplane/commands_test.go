@@ -98,17 +98,22 @@ func TestClaimNextCommandNoContent(t *testing.T) {
 	}
 }
 
-func TestMarkCommandStartedAndReportResultSigned(t *testing.T) {
+func TestMarkCommandStartedProgressAndReportResultSigned(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var startedSigned, resultSigned bool
-	var resultBody string
+	var startedSigned, progressSigned, resultSigned bool
+	var progressBody, resultBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/started"):
 			startedSigned = r.Header.Get("X-Node-Signature") != ""
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/progress"):
+			progressSigned = r.Header.Get("X-Node-Signature") != ""
+			body, _ := io.ReadAll(r.Body)
+			progressBody = string(body)
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/result"):
 			resultSigned = r.Header.Get("X-Node-Signature") != ""
@@ -129,6 +134,12 @@ func TestMarkCommandStartedAndReportResultSigned(t *testing.T) {
 	if err := c.MarkCommandStarted(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
+	if err := c.ReportCommandProgress(context.Background(), id, NodeCommandProgressRequest{
+		Phase:   "verifying",
+		Message: "Verifying signed release assets",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.ReportCommandResult(context.Background(), id, NodeCommandResultRequest{
 		Success:       true,
 		ResultCode:    "renewed",
@@ -137,8 +148,12 @@ func TestMarkCommandStartedAndReportResultSigned(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !startedSigned || !resultSigned {
-		t.Fatalf("started=%v result=%v", startedSigned, resultSigned)
+	if !startedSigned || !progressSigned || !resultSigned {
+		t.Fatalf("started=%v progress=%v result=%v", startedSigned, progressSigned, resultSigned)
+	}
+	if !strings.Contains(progressBody, `"phase":"verifying"`) ||
+		!strings.Contains(progressBody, `"message":"Verifying signed release assets"`) {
+		t.Fatalf("progress body=%s", progressBody)
 	}
 	if !strings.Contains(resultBody, `"success":true`) || !strings.Contains(resultBody, `"boot_id":"boot-1"`) {
 		t.Fatalf("body=%s", resultBody)
