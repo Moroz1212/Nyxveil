@@ -50,6 +50,14 @@ if ($svc) {
     Start-Sleep -Seconds 2
 }
 
+$updaterSvc = 'NyxveilControlPlaneUpdater'
+Write-Host "Stopping/removing updater service $updaterSvc ..."
+$us = Get-Service -Name $updaterSvc -ErrorAction SilentlyContinue
+if ($us) {
+    Stop-Service -Name $updaterSvc -Force -ErrorAction SilentlyContinue
+    & sc.exe delete $updaterSvc | Out-Null
+}
+
 if ($fw) {
     try {
         Remove-NyxveilFirewallRule -RuleName $fw

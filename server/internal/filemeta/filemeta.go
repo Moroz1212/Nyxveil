@@ -76,6 +76,11 @@ func lookupServiceIDs() (serviceIDs, error) {
 	return serviceIDs{UID: uid, GID: gid}, nil
 }
 
+// IsSymlink reports whether fi describes a symbolic link (from Lstat).
+func IsSymlink(fi os.FileInfo) bool {
+	return fi != nil && fi.Mode()&os.ModeSymlink != 0
+}
+
 // CaptureMeta reads ownership/mode/symlink state without reading file contents.
 func CaptureMeta(path string) (Meta, error) {
 	m := Meta{Path: path, UID: -1, GID: -1}
@@ -310,6 +315,8 @@ func EnforceRuntimeTLS(stateDir string) error {
 
 // EnforceRuntimeACME ensures the ACME state directory (and account key, if present)
 // is owned by the nyxveil service identity with restrictive modes.
+// Prefer MigrateACMEState from a privileged update/install path; this helper is
+// the shared ownership contract used by both.
 func EnforceRuntimeACME(acmeDir string, uid, gid int) error {
 	if strings.TrimSpace(acmeDir) == "" {
 		return nil
@@ -334,6 +341,135 @@ func EnforceRuntimeACME(acmeDir string, uid, gid int) error {
 		_ = os.Chmod(account, RuntimeTLSKeyMode)
 	}
 	return first
+}
+
+// MigrateACMEState is the privileged, fail-closed ACME ownership migration used
+// during rootful install/update. It refuses to follow symlinks that escape or
+// replace the ACME directory.
+func MigrateACMEState(stateDir string) error {
+	if strings.TrimSpace(stateDir) == "" {
+		return fmt.Errorf("filemeta: MigrateACMEState: empty stateDir")
+	}
+	uid, gid, err := LookupServiceIDs()
+	if err != nil {
+		uid, gid = -1, -1
+	}
+	if st, err := Lstat(stateDir); err == nil {
+		if IsSymlink(st) {
+			return fmt.Errorf("filemeta: MigrateACMEState: stateDir is a symlink: %s", stateDir)
+		}
+		if !st.IsDir() {
+			return fmt.Errorf("filemeta: MigrateACMEState: stateDir is not a directory: %s", stateDir)
+		}
+		_ = ApplyOwnerMode(stateDir, uid, gid, RuntimeStateDirMode)
+	} else if os.IsNotExist(err) {
+		if err := os.MkdirAll(stateDir, RuntimeStateDirMode); err != nil {
+			return fmt.Errorf("filemeta: mkdir stateDir: %w", err)
+		}
+		_ = ApplyOwnerMode(stateDir, uid, gid, RuntimeStateDirMode)
+	} else {
+		return fmt.Errorf("filemeta: lstat stateDir: %w", err)
+	}
+
+	acmeDir := filepath.Join(stateDir, "acme")
+	if st, err := Lstat(acmeDir); err == nil {
+		if IsSymlink(st) {
+			return fmt.Errorf("filemeta: MigrateACMEState: refusing ACME symlink: %s", acmeDir)
+		}
+		if !st.IsDir() {
+			return fmt.Errorf("filemeta: MigrateACMEState: ACME path is not a directory: %s", acmeDir)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("filemeta: lstat ACME: %w", err)
+	}
+
+	if err := EnforceRuntimeACME(acmeDir, uid, gid); err != nil {
+		return fmt.Errorf("filemeta: MigrateACMEState: %w", err)
+	}
+
+	// Also apply leaf TLS ownership (same contract as EnforceRuntimeTLS).
+	cert := filepath.Join(stateDir, "tls.crt")
+	key := filepath.Join(stateDir, "tls.key")
+	if _, err := os.Stat(cert); err == nil {
+		if st, lerr := Lstat(cert); lerr == nil && IsSymlink(st) {
+			return fmt.Errorf("filemeta: MigrateACMEState: refusing TLS cert symlink: %s", cert)
+		}
+		if err := ApplyOwnerMode(cert, uid, gid, RuntimeTLSCertMode); err != nil {
+			return fmt.Errorf("filemeta: own tls.crt: %w", err)
+		}
+	}
+	if _, err := os.Stat(key); err == nil {
+		if st, lerr := Lstat(key); lerr == nil && IsSymlink(st) {
+			return fmt.Errorf("filemeta: MigrateACMEState: refusing TLS key symlink: %s", key)
+		}
+		if err := ApplyOwnerMode(key, uid, gid, RuntimeTLSKeyMode); err != nil {
+			return fmt.Errorf("filemeta: own tls.key: %w", err)
+		}
+		_ = os.Chmod(key, RuntimeTLSKeyMode)
+	}
+
+	// Pointedly own only regular files directly under acme/ (no recursive -R).
+	entries, err := os.ReadDir(acmeDir)
+	if err != nil {
+		return fmt.Errorf("filemeta: readdir ACME: %w", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		full := filepath.Join(acmeDir, name)
+		info, lerr := Lstat(full)
+		if lerr != nil {
+			return fmt.Errorf("filemeta: lstat %s: %w", full, lerr)
+		}
+		if IsSymlink(info) {
+			return fmt.Errorf("filemeta: MigrateACMEState: refusing symlink under ACME: %s", full)
+		}
+		if info.IsDir() {
+			// Nested dirs are unexpected for current ACME layout; leave alone.
+			continue
+		}
+		mode := os.FileMode(0o644)
+		if strings.Contains(strings.ToLower(name), "key") || strings.HasSuffix(strings.ToLower(name), ".pem") {
+			mode = RuntimeTLSKeyMode
+		}
+		if err := ApplyOwnerMode(full, uid, gid, mode); err != nil {
+			return fmt.Errorf("filemeta: own %s: %w", full, err)
+		}
+	}
+	return nil
+}
+
+// ValidateRuntimeACME checks that the ACME directory is writable by the current
+// process without attempting privileged chown/chmod. Used by the non-root daemon.
+// If ACME is missing but the service user can create it under stateDir, mkdir is
+// allowed (clean install / fresh state). Legacy root-owned ACME fails the write probe.
+func ValidateRuntimeACME(stateDir string) error {
+	acmeDir := filepath.Join(stateDir, "acme")
+	st, err := Lstat(acmeDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if mkErr := os.MkdirAll(acmeDir, RuntimeStateDirMode); mkErr != nil {
+				return fmt.Errorf("filemeta: ACME state missing and not creatable (privileged migration required): %w", mkErr)
+			}
+		} else {
+			return fmt.Errorf("filemeta: lstat ACME: %w", err)
+		}
+		st, err = Lstat(acmeDir)
+		if err != nil {
+			return fmt.Errorf("filemeta: lstat ACME after mkdir: %w", err)
+		}
+	}
+	if IsSymlink(st) {
+		return fmt.Errorf("filemeta: ACME path is a symlink: %s", acmeDir)
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("filemeta: ACME path is not a directory: %s", acmeDir)
+	}
+	probe := filepath.Join(acmeDir, ".nyxveil-write-probe")
+	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
+		return fmt.Errorf("filemeta: ACME state not writable by service user: %w", err)
+	}
+	_ = os.Remove(probe)
+	return nil
 }
 
 // TLSOwnershipSnapshot is ownership/mode for state dir + leaf TLS files (no key material).

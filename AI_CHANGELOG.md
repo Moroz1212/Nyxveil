@@ -959,3 +959,53 @@ Server `safeRenewalError` generic fallback; explicit renew path did not log unde
 
 - PRODUCTION READY blocked on LIVE verification
 
+
+---
+
+## 2026-09-12 — Server 1.1.16 + Control Plane 1.3.7 production patches
+
+- repository: `Moroz1212/Nyxveil`
+- branch: `patch-1.1.16-1.3.7`
+- baseline HEAD: `da1e09c1b279ff8e53616cb8a8913da8e9ca0e69`
+
+### Goal
+
+Fix LIVE Server ACME root-owned state via privileged update migration; fix CP self-update privilege boundary, true rollback, stuck transaction reconcile, config nesting, MFA UX. No manual production FS/ACL repairs.
+
+### Server 1.1.16
+
+- `filemeta.MigrateACMEState` (fail-closed, symlink-safe) in privileged update path before health
+- `ValidateRuntimeACME` for non-root daemon (create if writable; no chown)
+- install.sh creates `${STATE_DIR}/acme` as nyxveil:0700
+- VERSION 1.1.16; docs `SERVER-1.1.16.md`
+
+### Control Plane 1.3.7
+
+- Privileged service `NyxveilControlPlaneUpdater` (LocalSystem) polls `request.json`
+- Web writes handoff/request only (no Process.Start under RX)
+- True rollback + primaryFailure fields in apply script
+- Result.json ingest in GetStatus/ReconcileOnStartup
+- update-windows config restore nesting fix; Backup-DirectoryContents refuses dest-in-src
+- MFA step-up stays in UpdatePreflightDialog
+- Exclude appsettings.Development.json from publish
+- VERSION 1.3.7; docs `RELEASE-1.3.7.md`; schema 5 unchanged
+- Includes all 1.3.6 encoding/Attention fixes
+
+### Tests actually run
+
+- CP Unit **475 PASS**; Integration **130 PASS**
+- Server filemeta/runtime/updater/configure/releasecontract PASS
+- `assert-frozen-core.sh` OK
+- Local publish: updater present; no Development json
+
+### Tests not run / BLOCKED
+
+- Authoritative GitHub Server CI / Control Plane CI (pending push)
+- LIVE CP 1.3.5→1.3.7 production-deploy
+- LIVE Server 1.1.15→1.1.16 + RenewCertificate
+- Future LIVE CP self-update (pending next CP version after privileged bootstrap)
+
+### Preserved dirty
+
+- `licensing/tests/CoreInterop/verify-signed/go.mod` (not committed)
+

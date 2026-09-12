@@ -822,16 +822,17 @@ ensure_user() {
 
 ensure_dirs() {
   if [[ "${MOCK}" -eq 1 ]]; then
-    mkdir -p "${ETC_DIR}" "${STATE_DIR}" "${RUN_DIR}" "$(dirname "${NFT_FILE}")" \
+    mkdir -p "${ETC_DIR}" "${STATE_DIR}" "${STATE_DIR}/acme" "${RUN_DIR}" "$(dirname "${NFT_FILE}")" \
       "${BIN_DIR}" "$(dirname "${SERVICE_UNIT}")" "$(dirname "${SYSCTL_FILE}")" \
       "${SCRIPTS_DIR}" "${SHARE_DIR}" \
       "$(dirname "${ETC_DIR}")/polkit-1/rules.d"
     chmod 0755 "${ETC_DIR}" "${RUN_DIR}" "${BIN_DIR}" 2>/dev/null || true
-    chmod 0700 "${STATE_DIR}" 2>/dev/null || true
+    chmod 0700 "${STATE_DIR}" "${STATE_DIR}/acme" 2>/dev/null || true
     return 0
   fi
   install -d -m 0755 -o root -g root "${ETC_DIR}"
   install -d -m 0700 -o nyxveil -g nyxveil "${STATE_DIR}"
+  install -d -m 0700 -o nyxveil -g nyxveil "${STATE_DIR}/acme"
   install -d -m 0755 -o nyxveil -g nyxveil "${RUN_DIR}"
   install -d -m 0755 -o root -g root "$(dirname "${NFT_FILE}")"
   install -d -m 0755 -o root -g root "${BIN_DIR}"

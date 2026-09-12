@@ -26,6 +26,33 @@ public sealed class MigrationDeployHardeningTests
     }
 
     [Fact]
+    public void TestProductionDeployInstallsPrivilegedUpdaterService()
+    {
+        var deploy = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-deploy.ps1"));
+        Assert.Contains("Install-NyxveilControlPlaneUpdaterService", deploy, StringComparison.Ordinal);
+        Assert.Contains("NyxveilControlPlaneUpdater", File.ReadAllText(
+            Path.Combine(LicensingRoot, "scripts", "Nyxveil.ControlPlane.Deploy.psm1")), StringComparison.Ordinal);
+
+        var apply = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "self-update-apply.ps1"));
+        Assert.Contains("rollbackAttempted", apply, StringComparison.Ordinal);
+        Assert.Contains("primaryFailure", apply, StringComparison.Ordinal);
+        Assert.Contains("rolled_back_healthy", apply, StringComparison.Ordinal);
+        Assert.DoesNotContain("Process.Start", apply, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TestUpdateWindowsConfigRestoreAvoidsNesting()
+    {
+        var update = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "update-windows.ps1"));
+        Assert.Contains("avoid config\\config nesting", update, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Copy-Item -LiteralPath $cfgBak -Destination $InstallDir", update, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Copy-Item $cfgBak -Destination (Join-Path $InstallDir 'config')",
+            update,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TestBrokenFixtureStillContainsSameBatchLifecycleReference()
     {
         var broken = File.ReadAllText(Path.Combine(
@@ -90,7 +117,7 @@ public sealed class MigrationDeployHardeningTests
     public void TestProductionDeployRequiresMigrationRehearsalBeforeStop()
     {
         var deploy = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-deploy.ps1"));
-        Assert.Contains("1.3.6", deploy, StringComparison.Ordinal);
+        Assert.Contains("1.3.7", deploy, StringComparison.Ordinal);
         Assert.Contains("migration_rehearsal", deploy, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("publish_payload_sha256", deploy, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("rollback_complete", deploy, StringComparison.OrdinalIgnoreCase);

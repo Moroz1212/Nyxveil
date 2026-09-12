@@ -385,7 +385,7 @@ func runUpdate(args []string) error {
 	u.ExtraPrev = extraPrev
 	u.LocalDir = localDir
 	u.StateDir = paths.StateDir
-	u.EnforceOwnership = filemeta.EnforceRuntimeTLS
+	u.EnforceOwnership = filemeta.MigrateACMEState
 
 	health := func() bool {
 		tx := &updateTransaction{

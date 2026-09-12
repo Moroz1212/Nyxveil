@@ -60,4 +60,8 @@
     <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Content Update="appsettings.Development.json" CopyToPublishDirectory="Never" Condition="Exists('appsettings.Development.json')" />
+  </ItemGroup>
+
 </Project>

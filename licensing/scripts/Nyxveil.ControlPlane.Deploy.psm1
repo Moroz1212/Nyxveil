@@ -1847,35 +1847,45 @@ function New-NyxveilWindowsService {
         [Parameter(Mandatory = $true)][string]$ServiceName,
         [Parameter(Mandatory = $true)][string]$ExePath,
         [Parameter(Mandatory = $true)][string]$ServiceAccount,
-        [switch]$DependOnLocalSql
+        [string]$DisplayName = 'Nyxveil Control Plane',
+        [string]$BinPathArguments = '',
+        [switch]$DependOnLocalSql,
+        [ValidateSet('delayed-auto', 'auto', 'demand')]
+        [string]$StartType = 'delayed-auto'
     )
     if (-not (Test-Path $ExePath)) {
         throw "Service binary not found: $ExePath"
     }
 
     $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    $binPath = "`"$ExePath`""
+    $binPath = if ([string]::IsNullOrWhiteSpace($BinPathArguments)) {
+        "`"$ExePath`""
+    }
+    else {
+        "`"$ExePath`" $BinPathArguments"
+    }
 
     if ($existing) {
         Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
         Invoke-NativeChecked -Name "sc.exe config binPath $ServiceName" -Script {
             & sc.exe config $ServiceName binPath= $binPath | Out-Null
         }
+        Invoke-NativeChecked -Name "sc.exe config DisplayName $ServiceName" -Script {
+            & sc.exe config $ServiceName DisplayName= $DisplayName | Out-Null
+        }
     }
     else {
-        # Virtual account: obj= "NT SERVICE\ServiceName"
-        # Created STOPPED (start= delayed-auto does not start now).
         Invoke-NativeChecked -Name "sc.exe create $ServiceName" -Script {
             & sc.exe create $ServiceName `
                 binPath= $binPath `
-                DisplayName= 'Nyxveil Control Plane' `
-                start= delayed-auto `
+                DisplayName= $DisplayName `
+                start= $StartType `
                 obj= $ServiceAccount | Out-Null
         }
     }
 
     Invoke-NativeChecked -Name "sc.exe config start $ServiceName" -Script {
-        & sc.exe config $ServiceName start= delayed-auto | Out-Null
+        & sc.exe config $ServiceName start= $StartType | Out-Null
     }
     Invoke-NativeChecked -Name "sc.exe failure $ServiceName" -Script {
         & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/30000/restart/60000 | Out-Null
@@ -1890,14 +1900,54 @@ function New-NyxveilWindowsService {
         }
         Write-Host 'Service dependency set: MSSQLSERVER (local SQL detected).'
     }
-    else {
+    elseif ($ServiceName -eq $script:DefaultServiceName) {
         Invoke-NativeChecked -Name "sc.exe config depend clear" -Script {
             & sc.exe config $ServiceName depend= '' | Out-Null
         }
     }
 
-    # Leave stopped — caller starts after SID/ACL/SQL grants.
+    # Leave stopped — caller starts after SID/ACL/SQL grants (or immediately for updater).
     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+}
+
+function Install-NyxveilControlPlaneUpdaterService {
+    <#
+    .SYNOPSIS
+      Installs/updates the privileged LocalSystem self-update helper service.
+      Does not grant the Web service write access to Program Files.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir
+    )
+    $updaterName = 'NyxveilControlPlaneUpdater'
+    $candidates = @(
+        (Join-Path $InstallDir 'updater\Nyxveil.ControlPlane.Updater.exe'),
+        (Join-Path $InstallDir 'Nyxveil.ControlPlane.Updater.exe')
+    )
+    $exe = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $exe) {
+        throw "Privileged updater binary missing under $InstallDir (expected updater\Nyxveil.ControlPlane.Updater.exe)"
+    }
+
+    Write-Host "Installing privileged updater service $updaterName (LocalSystem)..."
+    New-NyxveilWindowsService -ServiceName $updaterName -ExePath $exe `
+        -ServiceAccount 'LocalSystem' `
+        -DisplayName 'Nyxveil Control Plane Updater' `
+        -BinPathArguments '--service' `
+        -StartType auto
+
+    # Ensure ProgramData self-update directory exists for handoff/request/result.
+    $su = Join-Path (Get-ProgramDataRoot) 'self-update'
+    if (-not (Test-Path -LiteralPath $su)) {
+        New-Item -ItemType Directory -Force -Path $su | Out-Null
+    }
+    Invoke-NativeChecked -Name "icacls self-update SYSTEM" -Script {
+        & icacls $su /grant '*S-1-5-18:(OI)(CI)F' /T /C | Out-Null
+    }
+
+    Start-Service -Name $updaterName -ErrorAction Stop
+    Write-Host "Updater service $updaterName is Running."
 }
 
 function Ensure-NyxveilServiceSid {
@@ -2186,6 +2236,11 @@ function Backup-DirectoryContents {
         [Parameter(Mandatory = $true)][string]$SourceDir,
         [Parameter(Mandatory = $true)][string]$DestinationDir
     )
+    $srcFull = [IO.Path]::GetFullPath($SourceDir).TrimEnd('\', '/')
+    $dstFull = [IO.Path]::GetFullPath($DestinationDir).TrimEnd('\', '/')
+    if (($dstFull + '\').StartsWith($srcFull + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Backup-DirectoryContents refuses destination inside source (would recurse): $DestinationDir"
+    }
     if (-not (Test-Path $DestinationDir)) {
         New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
     }
@@ -2373,6 +2428,7 @@ Export-ModuleMember -Function @(
     'Set-NyxveilDirectoryAcls',
     'Test-LocalSqlServerService',
     'New-NyxveilWindowsService',
+    'Install-NyxveilControlPlaneUpdaterService',
     'Ensure-NyxveilServiceSid',
     'Set-NyxveilServiceEnvironment',
     'Grant-SqlLoginForServiceAccount',

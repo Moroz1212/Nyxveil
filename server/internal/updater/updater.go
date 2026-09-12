@@ -372,6 +372,21 @@ func (u *Updater) Apply(m *Manifest, health HealthCheck) error {
 		}
 	}
 
+	// Privileged ACME/TLS ownership migration MUST run before health()/handoff
+	// restarts the non-root daemon. Successful handoff os.Exit(0) skips any
+	// post-health enforce, which left legacy root:root /var/lib/nyxveil/acme broken.
+	if err := u.enforceOwnership(stateDir); err != nil {
+		binErr := u.rollbackJobs(replaced)
+		tlsErr := restoreTLS()
+		if binErr != nil {
+			return fmt.Errorf("updater: ownership migrate failed: %w; rollback failed: %v (tls restore err: %v)", err, binErr, tlsErr)
+		}
+		if tlsErr != nil {
+			return fmt.Errorf("updater: ownership migrate failed: %w; binaries rolled back but TLS restore failed: %v", err, tlsErr)
+		}
+		return fmt.Errorf("updater: ownership migrate failed: %w; rolled back", err)
+	}
+
 	if health != nil && !health() {
 		binErr := u.rollbackJobs(replaced)
 		tlsErr := restoreTLS()
@@ -382,20 +397,6 @@ func (u *Updater) Apply(m *Manifest, health HealthCheck) error {
 			return fmt.Errorf("updater: health check failed; binaries rolled back but TLS metadata restore failed: %w", tlsErr)
 		}
 		return fmt.Errorf("updater: health check failed; rolled back")
-	}
-	// Successful path: ensure runtime TLS is readable by service user even if a
-	// prior root-owned rewrite left bad ownership on disk. Fail closed — a node
-	// that cannot read TLS after update will not recover by itself.
-	if err := u.enforceOwnership(stateDir); err != nil {
-		binErr := u.rollbackJobs(replaced)
-		tlsErr := restoreTLS()
-		if binErr != nil {
-			return fmt.Errorf("updater: ownership enforce failed: %w; rollback failed: %v (tls restore err: %v)", err, binErr, tlsErr)
-		}
-		if tlsErr != nil {
-			return fmt.Errorf("updater: ownership enforce failed: %w; binaries rolled back but TLS restore failed: %v", err, tlsErr)
-		}
-		return fmt.Errorf("updater: ownership enforce failed: %w; rolled back", err)
 	}
 	if u.MarkerPath != "" {
 		if err := os.Remove(u.MarkerPath); err != nil && !os.IsNotExist(err) {
@@ -408,7 +409,16 @@ func (u *Updater) Apply(m *Manifest, health HealthCheck) error {
 func (u *Updater) enforceOwnership(stateDir string) error {
 	fn := u.EnforceOwnership
 	if fn == nil {
-		fn = filemeta.EnforceRuntimeTLS
+		// Default migrate only when the state root already exists. Unit tests often
+		// leave StateDir unset (paths.StateDir = /var/lib/nyxveil) without that tree;
+		// production update always sets EnforceOwnership=MigrateACMEState explicitly.
+		if _, err := os.Stat(stateDir); err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		fn = filemeta.MigrateACMEState
 	}
 	return fn(stateDir)
 }

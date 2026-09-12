@@ -1,80 +1,88 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Nyxveil.ControlPlane.Application.SelfUpdate;
 
 namespace Nyxveil.ControlPlane.Updater;
 
 /// <summary>
-/// External updater: must not run inside the Web process address space while overwriting binaries.
-/// Invoked as: Nyxveil.ControlPlane.Updater.exe --handoff &lt;path&gt;
-/// Preferentially launches scripts/self-update-apply.ps1 which reuses Deploy.psm1.
+/// Privileged updater host. Production: Windows service LocalSystem polling request.json.
+/// Lab: --handoff &lt;path&gt; for a one-shot apply.
 /// </summary>
 public static class Program
 {
-    public static int Main(string[] args)
+    public const string ServiceName = PrivilegedUpdaterContract.UpdaterServiceName;
+
+    public static async Task<int> Main(string[] args)
     {
+        if (args.Any(a => string.Equals(a, "--service", StringComparison.OrdinalIgnoreCase)))
+        {
+            var builder = Host.CreateApplicationBuilder(args);
+            builder.Services.AddWindowsService(o => o.ServiceName = ServiceName);
+            builder.Services.AddHostedService<UpdaterWorker>();
+            await builder.Build().RunAsync().ConfigureAwait(false);
+            return 0;
+        }
+
         try
         {
             var handoff = ParseHandoff(args);
             if (string.IsNullOrWhiteSpace(handoff) || !File.Exists(handoff))
             {
-                Console.Error.WriteLine("usage: Nyxveil.ControlPlane.Updater --handoff <handoff.json>");
+                Console.Error.WriteLine("usage: Nyxveil.ControlPlane.Updater --service | --handoff <handoff.json>");
                 return 2;
             }
 
-            using var doc = JsonDocument.Parse(File.ReadAllText(handoff));
-            var root = doc.RootElement;
-            var staging = root.GetProperty("stagingPath").GetString() ?? "";
-            var installDir = root.GetProperty("installDir").GetString() ?? "";
-            var serviceName = root.GetProperty("serviceName").GetString() ?? "NyxveilControlPlane";
-            var backupPath = root.TryGetProperty("backupPath", out var b) ? b.GetString() ?? "" : "";
-            var targetVersion = root.GetProperty("targetVersion").GetString() ?? "";
-            var currentVersion = root.GetProperty("currentVersion").GetString() ?? "";
-            var txId = root.GetProperty("transactionId").GetString() ?? "";
-
-            if (string.IsNullOrWhiteSpace(staging) || string.IsNullOrWhiteSpace(installDir))
-            {
-                Console.Error.WriteLine("invalid handoff: stagingPath/installDir required");
-                return 3;
-            }
-
-            // Idempotent lock file
-            var lockPath = Path.Combine(Path.GetDirectoryName(handoff)!, "updater.lock");
-            if (File.Exists(lockPath))
-            {
-                var existing = File.ReadAllText(lockPath).Trim();
-                if (string.Equals(existing, txId, StringComparison.OrdinalIgnoreCase))
-                {
-                    Console.WriteLine("idempotent: updater already owns this transaction");
-                    return 0;
-                }
-
-                Console.Error.WriteLine("another updater lock is active");
-                return 4;
-            }
-
-            File.WriteAllText(lockPath, txId);
-            try
-            {
-                var script = FindApplyScript(installDir);
-                if (script is not null)
-                {
-                    var code = RunPowerShell(script, handoff);
-                    return code;
-                }
-
-                // Minimal built-in path when scripts are unavailable (lab/dev).
-                return RunBuiltin(staging, installDir, serviceName, backupPath, currentVersion, targetVersion, handoff);
-            }
-            finally
-            {
-                try { if (File.Exists(lockPath)) File.Delete(lockPath); } catch { /* ignore */ }
-            }
+            return ApplyOnce(handoff);
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine(ex.Message);
             return 1;
+        }
+    }
+
+    internal static int ApplyOnce(string handoffPath)
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllText(handoffPath));
+        var root = doc.RootElement;
+        var staging = root.GetProperty("stagingPath").GetString() ?? "";
+        var installDir = root.GetProperty("installDir").GetString() ?? "";
+        var serviceName = root.GetProperty("serviceName").GetString() ?? PrivilegedUpdaterContract.ControlPlaneServiceName;
+        var backupPath = root.TryGetProperty("backupPath", out var b) ? b.GetString() ?? "" : "";
+        var targetVersion = root.GetProperty("targetVersion").GetString() ?? "";
+        var currentVersion = root.GetProperty("currentVersion").GetString() ?? "";
+        var txId = root.GetProperty("transactionId").GetString() ?? "";
+
+        PrivilegedUpdaterContract.AssertCanonicalHandoff(installDir, staging, backupPath, serviceName);
+
+        var lockPath = Path.Combine(Path.GetDirectoryName(handoffPath)!, "updater.lock");
+        if (File.Exists(lockPath))
+        {
+            var existing = File.ReadAllText(lockPath).Trim();
+            if (string.Equals(existing, txId, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("idempotent: updater already owns this transaction");
+                return 0;
+            }
+
+            Console.Error.WriteLine("another updater lock is active");
+            return 4;
+        }
+
+        File.WriteAllText(lockPath, txId);
+        try
+        {
+            var script = FindApplyScript(installDir);
+            if (script is not null)
+                return RunPowerShell(script, handoffPath);
+
+            return RunBuiltin(staging, installDir, serviceName, backupPath, currentVersion, targetVersion, handoffPath, txId);
+        }
+        finally
+        {
+            try { if (File.Exists(lockPath)) File.Delete(lockPath); } catch { /* ignore */ }
         }
     }
 
@@ -120,51 +128,113 @@ public static class Program
         string backupPath,
         string currentVersion,
         string targetVersion,
-        string handoffPath)
+        string handoffPath,
+        string txId)
     {
         Directory.CreateDirectory(backupPath);
-        // Preserve production config files.
         var preserve = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "appsettings.Production.json",
             "appsettings.Production.json.bak"
         };
 
-        StopService(serviceName);
-        BackupDirectory(installDir, Path.Combine(backupPath, "install"), preserve);
-        CopyPublish(staging, installDir, preserve);
-
-        // Ensure VERSION matches target after copy if present in staging root parent.
-        var versionSrc = Path.Combine(Directory.GetParent(staging)?.FullName ?? staging, "VERSION");
-        if (!File.Exists(versionSrc))
-            versionSrc = Path.Combine(staging, "VERSION");
-        if (File.Exists(versionSrc))
-            File.Copy(versionSrc, Path.Combine(installDir, "VERSION"), overwrite: true);
-
-        StartService(serviceName);
-        Thread.Sleep(TimeSpan.FromSeconds(5));
-
-        var installed = File.Exists(Path.Combine(installDir, "VERSION"))
-            ? File.ReadAllText(Path.Combine(installDir, "VERSION")).Trim()
-            : "";
-        if (!string.Equals(installed, targetVersion, StringComparison.Ordinal))
+        var installBackup = Path.Combine(backupPath, "install");
+        string? primaryFailure = null;
+        var mutable = false;
+        try
         {
-            Console.Error.WriteLine("target version mismatch; rolling back");
-            RestoreDirectory(Path.Combine(backupPath, "install"), installDir);
-            StartService(serviceName);
-            WriteResult(handoffPath, SelfUpdateResultCodes.RolledBackHealthy, currentVersion);
-            return 10;
-        }
+            BackupDirectory(installDir, installBackup);
+            mutable = true;
+            StopService(serviceName);
+            CopyPublish(staging, installDir, preserve);
 
-        WriteResult(handoffPath, SelfUpdateResultCodes.UpdatedHealthy, targetVersion);
-        return 0;
+            var versionSrc = Path.Combine(Directory.GetParent(staging)?.FullName ?? staging, "VERSION");
+            if (!File.Exists(versionSrc))
+                versionSrc = Path.Combine(staging, "VERSION");
+            if (File.Exists(versionSrc))
+                File.Copy(versionSrc, Path.Combine(installDir, "VERSION"), overwrite: true);
+
+            StartService(serviceName);
+            Thread.Sleep(TimeSpan.FromSeconds(5));
+
+            var installed = File.Exists(Path.Combine(installDir, "VERSION"))
+                ? File.ReadAllText(Path.Combine(installDir, "VERSION")).Trim()
+                : "";
+            if (!string.Equals(installed, targetVersion, StringComparison.Ordinal))
+            {
+                primaryFailure = $"version mismatch installed={installed} target={targetVersion}";
+                return Rollback(installBackup, installDir, serviceName, handoffPath, currentVersion, primaryFailure, txId);
+            }
+
+            WriteResult(handoffPath, SelfUpdateResultCodes.UpdatedHealthy, targetVersion, txId);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            primaryFailure = ex.Message;
+            if (!mutable)
+            {
+                WriteResult(handoffPath, SelfUpdateResultCodes.RollbackFailed, currentVersion, txId,
+                    primaryFailure, rollbackAttempted: false, rollbackSucceeded: false,
+                    rollbackFailure: "mutable phase not started");
+                return 1;
+            }
+
+            return Rollback(installBackup, installDir, serviceName, handoffPath, currentVersion, primaryFailure, txId);
+        }
     }
 
-    private static void WriteResult(string handoffPath, string code, string version)
+    private static int Rollback(
+        string installBackup,
+        string installDir,
+        string serviceName,
+        string handoffPath,
+        string currentVersion,
+        string primaryFailure,
+        string txId)
+    {
+        try
+        {
+            StopService(serviceName);
+            if (Directory.Exists(installBackup))
+                RestoreDirectory(installBackup, installDir);
+            StartService(serviceName);
+            WriteResult(handoffPath, SelfUpdateResultCodes.RolledBackHealthy, currentVersion, txId,
+                primaryFailure, rollbackAttempted: true, rollbackSucceeded: true);
+            return 11;
+        }
+        catch (Exception ex)
+        {
+            WriteResult(handoffPath, SelfUpdateResultCodes.RollbackFailed, currentVersion, txId,
+                primaryFailure, rollbackAttempted: true, rollbackSucceeded: false, rollbackFailure: ex.Message);
+            return 12;
+        }
+    }
+
+    private static void WriteResult(
+        string handoffPath,
+        string code,
+        string version,
+        string txId,
+        string? primaryFailure = null,
+        bool rollbackAttempted = false,
+        bool? rollbackSucceeded = null,
+        string? rollbackFailure = null)
     {
         var dir = Path.GetDirectoryName(handoffPath)!;
-        File.WriteAllText(Path.Combine(dir, "result.json"),
-            $"{{\"resultCode\":\"{code}\",\"version\":\"{version}\",\"at\":\"{DateTime.UtcNow:O}\"}}");
+        var payload = new Dictionary<string, object?>
+        {
+            ["resultCode"] = code,
+            ["version"] = version,
+            ["transactionId"] = txId,
+            ["at"] = DateTime.UtcNow.ToString("O"),
+            ["primaryFailure"] = primaryFailure,
+            ["rollbackAttempted"] = rollbackAttempted,
+            ["rollbackSucceeded"] = rollbackSucceeded,
+            ["rollbackFailure"] = rollbackFailure
+        };
+        File.WriteAllText(Path.Combine(dir, PrivilegedUpdaterContract.ResultFileName),
+            JsonSerializer.Serialize(payload));
     }
 
     private static void StopService(string name)
@@ -192,17 +262,26 @@ public static class Program
         p?.WaitForExit(120_000);
     }
 
-    private static void BackupDirectory(string source, string dest, HashSet<string> preserveNames)
+    private static void BackupDirectory(string source, string dest)
     {
-        _ = preserveNames;
         if (Directory.Exists(dest)) Directory.Delete(dest, recursive: true);
-        CopyRecursive(source, dest, skip: null);
+        CopyRecursive(source, dest);
     }
 
     private static void RestoreDirectory(string backup, string installDir)
     {
         if (!Directory.Exists(backup)) return;
-        CopyRecursive(backup, installDir, skip: null);
+        foreach (var child in Directory.GetFileSystemEntries(installDir))
+        {
+            try
+            {
+                if (Directory.Exists(child)) Directory.Delete(child, true);
+                else File.Delete(child);
+            }
+            catch { /* best effort */ }
+        }
+
+        CopyRecursive(backup, installDir);
     }
 
     private static void CopyPublish(string staging, string installDir, HashSet<string> preserve)
@@ -211,9 +290,10 @@ public static class Program
         {
             var rel = Path.GetRelativePath(staging, file);
             var name = Path.GetFileName(file);
+            if (string.Equals(name, "appsettings.Development.json", StringComparison.OrdinalIgnoreCase))
+                continue;
             if (preserve.Contains(name) && File.Exists(Path.Combine(installDir, rel)))
                 continue;
-            // Never overwrite config/ from package over production config.
             if (rel.StartsWith("config" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
                 || rel.StartsWith("config/", StringComparison.OrdinalIgnoreCase))
                 continue;
@@ -223,7 +303,7 @@ public static class Program
         }
     }
 
-    private static void CopyRecursive(string source, string dest, HashSet<string>? skip)
+    private static void CopyRecursive(string source, string dest)
     {
         Directory.CreateDirectory(dest);
         foreach (var dir in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
@@ -234,8 +314,6 @@ public static class Program
 
         foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
         {
-            var name = Path.GetFileName(file);
-            if (skip is not null && skip.Contains(name)) continue;
             var rel = Path.GetRelativePath(source, file);
             var target = Path.Combine(dest, rel);
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);

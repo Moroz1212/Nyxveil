@@ -50,6 +50,7 @@ public sealed class ControlPlaneSelfUpdateService : IControlPlaneSelfUpdateServi
 
     public async Task<ControlPlaneUpdateStatusDto> GetStatusAsync(CancellationToken cancellationToken = default)
     {
+        TryIngestResultFile();
         var installed = ReadInstalledVersion();
         var release = await _releases.GetLatestAsync(cancellationToken).ConfigureAwait(false);
         var availability = ControlPlaneReleasePolicy.Compare(installed, release.LatestVersion);
@@ -127,6 +128,16 @@ public sealed class ControlPlaneSelfUpdateService : IControlPlaneSelfUpdateServi
         if (!dbOk) blockers.Add("база данных недоступна");
 
         var installDir = ResolveInstallDir();
+        if (string.IsNullOrWhiteSpace(installDir) ||
+            !string.Equals(
+                Path.GetFullPath(installDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                Path.GetFullPath(PrivilegedUpdaterContract.DefaultInstallDir)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            blockers.Add("установка не в каноническом Program Files пути (self-update только для production install)");
+        }
+
         var drive = string.IsNullOrWhiteSpace(installDir) ? Path.GetPathRoot(Environment.SystemDirectory)! : Path.GetPathRoot(installDir)!;
         long free = 0;
         try
@@ -312,6 +323,7 @@ public sealed class ControlPlaneSelfUpdateService : IControlPlaneSelfUpdateServi
     public Task ReconcileOnStartupAsync(CancellationToken cancellationToken = default)
     {
         _ = cancellationToken;
+        TryIngestResultFile();
         var active = _store.GetActive();
         if (active is null || active.Status != SelfUpdateStatus.InProgress)
             return Task.CompletedTask;
@@ -348,73 +360,156 @@ public sealed class ControlPlaneSelfUpdateService : IControlPlaneSelfUpdateServi
             string.Equals(installed, active.CurrentVersion, StringComparison.Ordinal))
         {
             // Still on old version after handoff attempt — mark failed, operator can retry.
-            active.Phase = SelfUpdatePhase.Failed;
-            active.Status = SelfUpdateStatus.Failed;
-            active.ResultCode = SelfUpdateResultCodes.HealthFailed;
-            active.ResultMessage = "Updater handoff did not complete; installed version unchanged.";
-            active.CompletedAt = _clock.UtcNow;
-            Mark(active, SelfUpdatePhase.Failed, active.ResultMessage, ok: false);
-            _store.AppendHistory(active);
+            // Prefer explicit result.json when present (handled by TryIngestResultFile above).
+            if (_store.GetActive()?.Status == SelfUpdateStatus.InProgress)
+            {
+                active.Phase = SelfUpdatePhase.Failed;
+                active.Status = SelfUpdateStatus.Failed;
+                active.ResultCode = SelfUpdateResultCodes.HealthFailed;
+                active.ResultMessage = "Updater handoff did not complete; installed version unchanged.";
+                active.CompletedAt = _clock.UtcNow;
+                Mark(active, SelfUpdatePhase.Failed, active.ResultMessage, ok: false);
+                _store.AppendHistory(active);
+            }
         }
 
         return Task.CompletedTask;
     }
 
-    private void LaunchUpdater(SelfUpdateTransaction tx)
+    /// <summary>
+    /// Ingest terminal result.json written by the privileged updater even when the Web
+    /// process never restarted (LIVE defect: ReadyForHandoff stuck while service Running).
+    /// </summary>
+    private void TryIngestResultFile()
     {
-        var installDir = ResolveInstallDir();
-        var handoffPath = Path.Combine(ServiceCollectionExtensions.GetProgramDataRoot(), "self-update", "handoff.json");
-        Directory.CreateDirectory(Path.GetDirectoryName(handoffPath)!);
-        File.WriteAllText(handoffPath, ControlPlaneReleasePolicy.BuildHandoffJson(tx, installDir ?? "", ServiceName));
+        var active = _store.GetActive();
+        if (active is null || active.Status != SelfUpdateStatus.InProgress)
+            return;
 
-        var updater = FindUpdaterBinary();
-        if (updater is null)
+        var resultPath = Path.Combine(ServiceCollectionExtensions.GetProgramDataRoot(), "self-update",
+            PrivilegedUpdaterContract.ResultFileName);
+        if (!File.Exists(resultPath))
+            return;
+
+        string json;
+        try { json = File.ReadAllText(resultPath); }
+        catch { return; }
+
+        if (!PrivilegedUpdaterContract.TryParseResult(json, out var result))
+            return;
+
+        if (!string.IsNullOrWhiteSpace(result.TransactionId) &&
+            !string.Equals(result.TransactionId, active.TransactionId.ToString("N"), StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(result.TransactionId, active.TransactionId.ToString("D"), StringComparison.OrdinalIgnoreCase))
         {
-            // Fallback: invoke PowerShell apply script if present next to install / content root.
-            var script = FindApplyScript();
-            if (script is null)
-                throw new InvalidOperationException("Nyxveil.ControlPlane.Updater.exe and self-update-apply.ps1 not found");
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\" -HandoffPath \"{handoffPath}\"",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            Process.Start(psi);
             return;
         }
 
-        Process.Start(new ProcessStartInfo
+        active.PrimaryFailure = result.PrimaryFailure;
+        active.RollbackAttempted = result.RollbackAttempted;
+        active.RollbackSucceeded = result.RollbackSucceeded;
+        active.RollbackFailure = result.RollbackFailure;
+        active.ResultCode = result.ResultCode;
+        active.ResultMessage = Truncate(string.IsNullOrWhiteSpace(result.Message) ? result.PrimaryFailure ?? result.ResultCode : result.Message, 400);
+        active.CompletedAt = _clock.UtcNow;
+
+        if (string.Equals(result.ResultCode, SelfUpdateResultCodes.UpdatedHealthy, StringComparison.Ordinal))
         {
-            FileName = updater,
-            Arguments = $"--handoff \"{handoffPath}\"",
-            UseShellExecute = false,
-            CreateNoWindow = true
-        });
+            active.Phase = SelfUpdatePhase.Completed;
+            active.Status = SelfUpdateStatus.Completed;
+            Mark(active, SelfUpdatePhase.Completed, active.ResultMessage ?? "updated", ok: true);
+        }
+        else if (string.Equals(result.ResultCode, SelfUpdateResultCodes.RolledBackHealthy, StringComparison.Ordinal))
+        {
+            active.Phase = SelfUpdatePhase.RolledBackHealthy;
+            active.Status = SelfUpdateStatus.RolledBack;
+            Mark(active, SelfUpdatePhase.RolledBackHealthy, active.ResultMessage ?? "rolled back", ok: true);
+        }
+        else
+        {
+            active.Phase = SelfUpdatePhase.Failed;
+            active.Status = SelfUpdateStatus.Failed;
+            Mark(active, SelfUpdatePhase.Failed, active.ResultMessage ?? result.ResultCode, ok: false);
+        }
+
+        _store.AppendHistory(active);
     }
 
-    private static string? FindUpdaterBinary()
+    private void LaunchUpdater(SelfUpdateTransaction tx)
     {
-        var candidates = new[]
+        var installDir = PrivilegedUpdaterContract.DefaultInstallDir;
+        var resolved = ResolveInstallDir();
+        if (!string.IsNullOrWhiteSpace(resolved))
         {
-            Path.Combine(AppContext.BaseDirectory, "Nyxveil.ControlPlane.Updater.exe"),
-            Path.Combine(AppContext.BaseDirectory, "updater", "Nyxveil.ControlPlane.Updater.exe"),
-            Path.Combine(AppContext.BaseDirectory, "Nyxveil.ControlPlane.Updater.dll")
-        };
-        return candidates.FirstOrDefault(File.Exists);
+            var a = Path.GetFullPath(resolved).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var b = Path.GetFullPath(installDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (!string.Equals(a, b, StringComparison.OrdinalIgnoreCase))
+                throw new ValidationException(SelfUpdateResultCodes.PreflightFailed +
+                    ": Control Plane is not running from the canonical Program Files install path");
+        }
+
+        var root = Path.Combine(ServiceCollectionExtensions.GetProgramDataRoot(), "self-update");
+        Directory.CreateDirectory(root);
+        var handoffPath = Path.Combine(root, PrivilegedUpdaterContract.HandoffFileName);
+        var requestPath = Path.Combine(root, PrivilegedUpdaterContract.RequestFileName);
+
+        // Drop any stale result so UI does not reconcile the previous transaction.
+        var resultPath = Path.Combine(root, PrivilegedUpdaterContract.ResultFileName);
+        try { if (File.Exists(resultPath)) File.Delete(resultPath); } catch { /* ignore */ }
+
+        File.WriteAllText(handoffPath, ControlPlaneReleasePolicy.BuildHandoffJson(tx, installDir, ServiceName));
+
+        try
+        {
+            PrivilegedUpdaterContract.AssertCanonicalHandoff(
+                installDir,
+                tx.StagingPath ?? "",
+                tx.BackupPath ?? "",
+                ServiceName,
+                ServiceCollectionExtensions.GetProgramDataRoot());
+        }
+        catch (Exception ex)
+        {
+            throw new ValidationException(SelfUpdateResultCodes.PreflightFailed + ": " + ex.Message);
+        }
+
+        // Signal privileged updater service (LocalSystem). Do NOT Process.Start under Web RX ACL.
+        File.WriteAllText(requestPath, PrivilegedUpdaterContract.BuildRequestJson(tx.TransactionId));
+
+        if (!IsUpdaterServicePresent())
+        {
+            _log.LogWarning(
+                "Privileged updater service {Service} is not installed; handoff written but apply will not run until elevated production-deploy installs it.",
+                PrivilegedUpdaterContract.UpdaterServiceName);
+        }
     }
 
-    private static string? FindApplyScript()
+    private static bool IsUpdaterServicePresent()
     {
-        var candidates = new[]
+        if (!OperatingSystem.IsWindows()) return false;
+        try
         {
-            Path.Combine(AppContext.BaseDirectory, "scripts", "self-update-apply.ps1"),
-            Path.Combine(AppContext.BaseDirectory, "..", "scripts", "self-update-apply.ps1"),
-            Path.Combine(ServiceCollectionExtensions.GetProgramDataRoot(), "scripts", "self-update-apply.ps1")
-        };
-        return candidates.Select(Path.GetFullPath).FirstOrDefault(File.Exists);
+            var psi = new ProcessStartInfo
+            {
+                FileName = "sc.exe",
+                Arguments = $"query {PrivilegedUpdaterContract.UpdaterServiceName}",
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var p = Process.Start(psi);
+            if (p is null) return false;
+            var output = p.StandardOutput.ReadToEnd();
+            p.WaitForExit(5000);
+            return !output.Contains("FAILED", StringComparison.OrdinalIgnoreCase)
+                   && (output.Contains("RUNNING", StringComparison.OrdinalIgnoreCase)
+                       || output.Contains("STOPPED", StringComparison.OrdinalIgnoreCase)
+                       || output.Contains("START_PENDING", StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private string ReadInstalledVersion()
