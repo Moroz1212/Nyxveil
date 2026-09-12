@@ -83,7 +83,7 @@ jobs:
             'scripts\self-update-apply.ps1',
             'database\migrations\005_certificate_operation_states.sql',
             'database\migrations\validate_schema_v5.sql',
-            'docs\RELEASE-1.3.6.md',
+            'docs\RELEASE-1.3.7.md',
             'release-manifest.json'
           )
           foreach ($rel in $required) {

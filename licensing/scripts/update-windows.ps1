@@ -151,7 +151,12 @@ try {
     }
     $cfgBak = Join-Path $binBackup 'config'
     if (Test-Path $cfgBak) {
-        Copy-Item $cfgBak -Destination (Join-Path $InstallDir 'config') -Recurse -Force
+        # Copy into InstallDir parent (not into existing config\) to avoid config\config nesting.
+        $cfgTarget = Join-Path $InstallDir 'config'
+        if (Test-Path -LiteralPath $cfgTarget) {
+            Remove-Item -LiteralPath $cfgTarget -Recurse -Force
+        }
+        Copy-Item -LiteralPath $cfgBak -Destination $InstallDir -Recurse -Force
     }
     $deployed = $true
 

@@ -21,9 +21,18 @@
             {
                 <div class="alert alert-error">@Result.BlockReason</div>
             }
+            @if (StepUpRequired)
+            {
+                <div class="alert alert-error">
+                    Для запуска требуется подтверждение MFA (step-up).
+                    <div class="actions" style="margin-top:.5rem">
+                        <a class="btn" href="@StepUpUrl">Подтвердить MFA</a>
+                    </div>
+                </div>
+            }
             <div class="actions">
                 <button type="button" class="btn btn-ghost" @onclick="Cancel">Отмена</button>
-                <button type="button" class="btn" disabled="@(!Result.CanEnqueue || Busy)" @onclick="Confirm">
+                <button type="button" class="btn" disabled="@(!Result.CanEnqueue || Busy || StepUpRequired)" @onclick="Confirm">
                     Запустить обновление
                 </button>
             </div>
@@ -36,14 +45,16 @@
     [Parameter] public EventCallback<bool> VisibleChanged { get; set; }
     [Parameter] public UpdatePreflightResult? Result { get; set; }
     [Parameter] public bool Busy { get; set; }
+    [Parameter] public bool StepUpRequired { get; set; }
+    [Parameter] public string StepUpUrl { get; set; } = "/account/mfa/step-up";
     [Parameter] public EventCallback OnConfirm { get; set; }
     [Parameter] public EventCallback OnCancel { get; set; }
 
     private async Task Confirm()
     {
-        if (Result is null || !Result.CanEnqueue) return;
+        if (Result is null || !Result.CanEnqueue || StepUpRequired) return;
         await OnConfirm.InvokeAsync();
-        await VisibleChanged.InvokeAsync(false);
+        // Parent closes only after a successful enqueue; keep modal open on MFA/errors.
     }
 
     private async Task Cancel()

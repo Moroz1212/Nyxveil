@@ -341,6 +341,11 @@ func performPostUpdateVerification(tx *updateTransaction) bool {
 		return true
 	}
 	prePID := unitMainPID("nyxveil-server")
+	if err := filemeta.MigrateACMEState(runtimeStateDir()); err != nil {
+		tx.FailureReason = "ACME/TLS ownership migration: " + err.Error()
+		fmt.Printf("update-resume ownership migrate failed: %v\n", err)
+		return false
+	}
 	if err := verifyUpdateTLS(); err != nil {
 		tx.FailureReason = "TLS validation: " + err.Error()
 		return false

@@ -507,6 +507,9 @@ Use -InstallMode Fresh only on a clean secrets dir, or restore via scripts\resto
         -SecretsDir $SecretsDir -ServiceAccount $ServiceAccount -KeysDir $KeysDir `
         -DataProtectionDir $DataProtectionDir
 
+    # Privileged self-update helper (LocalSystem). Web service stays RX on InstallDir.
+    Install-NyxveilControlPlaneUpdaterService -InstallDir $InstallDir
+
     # -------------------------------------------------------------------------
     # 8) Grant-CertificatePrivateKeyAccess RSA+ECDSA (FAIL on error)
     # -------------------------------------------------------------------------

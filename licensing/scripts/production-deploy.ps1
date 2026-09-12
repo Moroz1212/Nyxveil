@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Hardened emergency production deployment for Nyxveil Control Plane 1.3.6.
+  Hardened emergency production deployment for Nyxveil Control Plane 1.3.7.
 
 .DESCRIPTION
   Backs up and verifies production, rehearses schema v5 against a disposable
@@ -353,7 +353,7 @@ function New-SanitizedDiagnosticBundle {
     $bundle = Join-Path ([IO.Path]::GetTempPath()) ("nyxveil-production-deploy-{0:yyyyMMdd-HHmmss}-{1}" -f (Get-Date), [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $bundle -Force | Out-Null
     @(
-        'release_version=1.3.6'
+        'release_version=1.3.7'
         "powershell_version=$($PSVersionTable.PSVersion)"
         "os_version=$([Environment]::OSVersion.VersionString)"
         "expected_schema_version=$script:ExpectedSchemaVersion"
@@ -385,11 +385,11 @@ try {
         throw "This deploy may only operate on service '$requiredServiceName'."
     }
     if ($ExpectedSchemaVersion -cne '5') {
-        throw "Control Plane 1.3.6 requires ExpectedSchemaVersion=5."
+        throw "Control Plane 1.3.7 requires ExpectedSchemaVersion=5."
     }
     $releaseVersion = (Get-Content -LiteralPath (Join-Path $licensingRoot 'VERSION') -Raw).Trim()
-    if ($releaseVersion -cne '1.3.6') {
-        throw "This wrapper requires licensing VERSION 1.3.6; found '$releaseVersion'."
+    if ($releaseVersion -cne '1.3.7') {
+        throw "This wrapper requires licensing VERSION 1.3.7; found '$releaseVersion'."
     }
 
     $PublishDir = (Resolve-Path -LiteralPath $PublishDir -ErrorAction Stop).Path
@@ -484,8 +484,8 @@ try {
     }
     else {
         $zipCandidates = @(
-            (Join-Path $licensingRoot 'Nyxveil-ControlPlane-v1.3.6-release.zip'),
-            (Join-Path (Split-Path -Parent $licensingRoot) 'Nyxveil-ControlPlane-v1.3.6-release.zip')
+            (Join-Path $licensingRoot 'Nyxveil-ControlPlane-v1.3.7-release.zip'),
+            (Join-Path (Split-Path -Parent $licensingRoot) 'Nyxveil-ControlPlane-v1.3.7-release.zip')
         )
         $ReleaseZip = $zipCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
     }
@@ -581,6 +581,16 @@ try {
             Copy-Item -LiteralPath $saved -Destination $InstallDir -Recurse -Force
         }
     }
+
+    # Remove non-production appsettings if publish included them.
+    $devSettings = Join-Path $InstallDir 'appsettings.Development.json'
+    if (Test-Path -LiteralPath $devSettings) {
+        Remove-Item -LiteralPath $devSettings -Force
+    }
+
+    # Install/refresh privileged updater service before starting Web.
+    $stage = 'install_updater_service'
+    Install-NyxveilControlPlaneUpdaterService -InstallDir $InstallDir
 
     # 10. RECORD EXPECTED SCHEMA VERSION.
     $stage = 'write_operational_config'

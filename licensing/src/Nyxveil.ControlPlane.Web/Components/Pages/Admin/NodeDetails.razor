@@ -349,6 +349,8 @@ else
 <UpdatePreflightDialog @bind-Visible="_confirmUpdate"
                        Result="_preflight"
                        Busy="_busy"
+                       StepUpRequired="@StepUpGuard.RequiresStepUp(HttpContextAccessor.HttpContext)"
+                       StepUpUrl="@StepUpUrl"
                        OnConfirm="ConfirmUpdateAsync" />
 
 @if (_reconcileVisible && _reconcilePreview is not null)
@@ -582,11 +584,18 @@ else
         await EnqueueAsync(NodeCommandType.RebootHost);
     }
 
-    private Task ConfirmUpdateAsync()
+    private async Task ConfirmUpdateAsync()
     {
-        if (!EnsureStepUp()) return Task.CompletedTask;
+        // Keep preflight open when step-up expired; modal shows MFA CTA (do not silently close).
+        if (StepUpGuard.RequiresStepUp(HttpContextAccessor.HttpContext))
+        {
+            _stepUpNeeded = true;
+            _error = null;
+            return;
+        }
+
         _confirmUpdate = false;
-        return EnqueueAsync(NodeCommandType.UpdateNodeLatest);
+        await EnqueueAsync(NodeCommandType.UpdateNodeLatest);
     }
 
     private async Task PrepareReconcileAsync(Guid commandId)

@@ -73,8 +73,10 @@ public sealed class SelfUpdateTransaction
     public DateTime? CompletedAt { get; set; }
     public string? ResultCode { get; set; }
     public string? ResultMessage { get; set; }
+    public string? PrimaryFailure { get; set; }
     public bool RollbackAttempted { get; set; }
     public bool? RollbackSucceeded { get; set; }
+    public string? RollbackFailure { get; set; }
     public List<SelfUpdateTimelineEntry> Timeline { get; set; } = new();
 }
 

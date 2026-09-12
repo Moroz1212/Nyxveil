@@ -1304,11 +1304,11 @@ func (n *Node) issueACMEWithOptions(ctx context.Context, cfg localconfig.File, f
 		n.recordRenewalResult(err)
 	}()
 
-	// Ensure ACME state dir/account key are writable by the service user before
-	// opening an ACME order (fixes root-owned legacy layouts after upgrades).
+	// Non-root daemon: validate writability only. Privileged migration belongs
+	// to nyxveilctl update/update-resume (User=root), not CAP_CHOWN on the server.
 	stateRoot := filepath.Dir(keyFile)
-	if enforceErr := filemeta.EnforceRuntimeTLS(stateRoot); enforceErr != nil {
-		log.Printf("runtime: ACME/TLS ownership enforce: %v", enforceErr)
+	if err := filemeta.ValidateRuntimeACME(stateRoot); err != nil {
+		return tls.Certificate{}, nil, nil, false, fmt.Errorf("runtime: ACME state not ready for service user: %w", err)
 	}
 
 	stageCert, stageKey := configure.StagingTLSPaths(filepath.Dir(keyFile))
@@ -1677,7 +1677,8 @@ func classifyRenewalFailure(err error) (code, message string) {
 	case errors.Is(err, context.DeadlineExceeded):
 		return "renew_failed", "ACME renewal timed out"
 	case strings.Contains(msg, "permission") || strings.Contains(msg, "read-only") ||
-		strings.Contains(msg, "access is denied") || strings.Contains(msg, "operation not permitted"):
+		strings.Contains(msg, "access is denied") || strings.Contains(msg, "operation not permitted") ||
+		strings.Contains(msg, "not writable") || strings.Contains(msg, "privileged migration"):
 		return "renew_permission_denied", joinRenewDetail("ACME renewal failed: TLS/ACME state permissions", safeDetail)
 	case strings.Contains(msg, "dns"):
 		return "renew_failed", joinRenewDetail("ACME renewal failed DNS validation", safeDetail)
