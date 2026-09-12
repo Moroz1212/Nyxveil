@@ -83,11 +83,24 @@ async function expectEnabled(locator, label) {
   try {
     await page.goto(base + '/account/login', { waitUntil: 'domcontentloaded' });
     await page.locator('input[name=email]').waitFor({ state: 'visible', timeout: 60000 });
+    await page.fill('input[name=email]', '');
+    await page.fill('input[name=password]', '');
     await page.fill('input[name=email]', email);
     await page.fill('input[name=password]', password);
     // Form POST navigates into Blazor MFA pages; do not wait for full load on click.
     await page.locator('button[type=submit]').click({ noWaitAfter: true });
 
+    // Login failure stays on /account/login?error=1 — fail fast with diagnostics.
+    for (let i = 0; i < 30; i++) {
+      const u = page.url();
+      if (u.includes('error=1')) {
+        await dumpDiag(page, 'login_error');
+        throw new Error('login rejected (error=1) — password/email mismatch with install');
+      }
+      if ((await page.locator('input[name=code]').count()) > 0) break;
+      if (u.includes('/account/mfa') || u.includes('/account/login-2fa') || u.includes('/admin')) break;
+      await page.waitForTimeout(1000);
+    }
     // MFA enrollment (first SuperAdmin) or login-2fa.
     const codeInput = page.locator('input[name=code]');
     await codeInput.first().waitFor({ state: 'visible', timeout: 120000 });

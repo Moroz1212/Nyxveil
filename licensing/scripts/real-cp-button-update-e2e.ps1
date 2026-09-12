@@ -96,9 +96,12 @@ if (Get-Service -Name 'NyxveilControlPlane' -ErrorAction SilentlyContinue) {
     Fail 'NyxveilControlPlane already exists; require a disposable clean host.'
 }
 if ([string]::IsNullOrWhiteSpace($AdminPasswordPlain)) {
-    $AdminPasswordPlain = 'Nyxveil-E2E-' + [guid]::NewGuid().ToString('N').Substring(0, 12) + '!'
+    # Avoid shell/history metacharacters (! etc.) in the lab password.
+    $AdminPasswordPlain = 'NyxveilLabE2E9ChangeMe'
 }
 $securePass = ConvertTo-SecureString $AdminPasswordPlain -AsPlainText -Force
+Write-Host "CP_BUTTON_ADMIN_USER=$AdminUser"
+Write-Host "CP_BUTTON_ADMIN_PASSWORD_LEN=$($AdminPasswordPlain.Length)"
 
 Write-Host 'CP_BUTTON_STEP=download_1.3.8'
 $zip138 = Join-Path $work 'Nyxveil-ControlPlane-v1.3.8-release.zip'
@@ -237,6 +240,27 @@ $baseUrl = "https://127.0.0.1:$Port"
 # Trust self-signed for probes
 [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
 Wait-HttpOk "$baseUrl/health/live" 180
+
+# Prove admin credentials via real HTTP POST before Playwright (fail fast on install/auth mismatch).
+Write-Host 'CP_BUTTON_STEP=verify_login_http'
+$loginProbe = Join-Path $work 'login-probe.txt'
+$curlArgs = @(
+    '-sk', '-o', $loginProbe, '-D', '-',
+    '-X', 'POST', "$baseUrl/account/login",
+    '-H', 'Content-Type: application/x-www-form-urlencoded',
+    '--data-urlencode', "email=$AdminUser",
+    '--data-urlencode', "password=$AdminPasswordPlain",
+    '--data-urlencode', 'returnUrl=/'
+)
+$headers = & curl.exe @curlArgs 2>&1 | Out-String
+Write-Host "CP_BUTTON_LOGIN_PROBE_HEADERS<<EOF`n$headers`nEOF"
+if ($headers -match '(?im)^Location:\s*.*error=1') {
+    Fail "HTTP login probe returned error=1 (credentials rejected). headers=$headers"
+}
+if ($headers -notmatch '(?im)^HTTP/\S+\s+302') {
+    Fail "HTTP login probe expected 302 redirect. headers=$headers"
+}
+Write-Host 'CP_BUTTON_LOGIN_HTTP=PASS'
 
 Write-Host 'CP_BUTTON_STEP=browser_click_update'
 $clickSrc = Join-Path $scriptRoot 'real-cp-button-browser.cjs'
