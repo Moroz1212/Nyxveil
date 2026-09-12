@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Hardened emergency production deployment for Nyxveil Control Plane 1.3.7.
+  Hardened emergency production deployment for Nyxveil Control Plane 1.3.8.
 
 .DESCRIPTION
   Backs up and verifies production, rehearses schema v5 against a disposable
@@ -45,6 +45,10 @@ $productionMigrationAttempted = $false
 $databasePassword = $null
 $op = $null
 $originalOperationalJson = ''
+$updaterServiceName = 'NyxveilControlPlaneUpdater'
+$updaterExistedBefore = $false
+$updaterSnapshotBefore = $null
+$updaterTouched = $false
 $events = [Collections.Generic.List[string]]::new()
 
 function Add-DeployEvent {
@@ -353,7 +357,7 @@ function New-SanitizedDiagnosticBundle {
     $bundle = Join-Path ([IO.Path]::GetTempPath()) ("nyxveil-production-deploy-{0:yyyyMMdd-HHmmss}-{1}" -f (Get-Date), [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $bundle -Force | Out-Null
     @(
-        'release_version=1.3.7'
+        'release_version=1.3.8'
         "powershell_version=$($PSVersionTable.PSVersion)"
         "os_version=$([Environment]::OSVersion.VersionString)"
         "expected_schema_version=$script:ExpectedSchemaVersion"
@@ -385,11 +389,11 @@ try {
         throw "This deploy may only operate on service '$requiredServiceName'."
     }
     if ($ExpectedSchemaVersion -cne '5') {
-        throw "Control Plane 1.3.7 requires ExpectedSchemaVersion=5."
+        throw "Control Plane 1.3.8 requires ExpectedSchemaVersion=5."
     }
     $releaseVersion = (Get-Content -LiteralPath (Join-Path $licensingRoot 'VERSION') -Raw).Trim()
-    if ($releaseVersion -cne '1.3.7') {
-        throw "This wrapper requires licensing VERSION 1.3.7; found '$releaseVersion'."
+    if ($releaseVersion -cne '1.3.8') {
+        throw "This wrapper requires licensing VERSION 1.3.8; found '$releaseVersion'."
     }
 
     $PublishDir = (Resolve-Path -LiteralPath $PublishDir -ErrorAction Stop).Path
@@ -484,8 +488,8 @@ try {
     }
     else {
         $zipCandidates = @(
-            (Join-Path $licensingRoot 'Nyxveil-ControlPlane-v1.3.7-release.zip'),
-            (Join-Path (Split-Path -Parent $licensingRoot) 'Nyxveil-ControlPlane-v1.3.7-release.zip')
+            (Join-Path $licensingRoot 'Nyxveil-ControlPlane-v1.3.8-release.zip'),
+            (Join-Path (Split-Path -Parent $licensingRoot) 'Nyxveil-ControlPlane-v1.3.8-release.zip')
         )
         $ReleaseZip = $zipCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
     }
@@ -542,6 +546,9 @@ try {
     }
 
     $deployStarted = $true
+    $updaterSnapshotBefore = Get-NyxveilWindowsServiceSnapshot -ServiceName $updaterServiceName
+    $updaterExistedBefore = [bool]$updaterSnapshotBefore.Exists
+    Add-DeployEvent ("Updater service before deploy exists=$updaterExistedBefore")
 
     # 6. STOP ONLY THE CONTROL PLANE SERVICE.
     $stage = 'stop_service'
@@ -590,7 +597,9 @@ try {
 
     # Install/refresh privileged updater service before starting Web.
     $stage = 'install_updater_service'
+    $updaterTouched = $true
     Install-NyxveilControlPlaneUpdaterService -InstallDir $InstallDir
+    Add-DeployEvent 'Privileged updater service installed/verified.'
 
     # 10. RECORD EXPECTED SCHEMA VERSION.
     $stage = 'write_operational_config'
@@ -643,6 +652,7 @@ catch {
         $rollbackDatabase = (-not $productionMigrationAttempted)
         $rollbackService = $false
         $rollbackHealth = $false
+        $rollbackUpdater = $false
 
         if ($productionMigrationAttempted) {
             try {
@@ -677,6 +687,41 @@ catch {
         }
         catch {
             $rollbackErrors.Add("binary_restore: $($_.Exception.Message)")
+        }
+
+        # Updater service is a separate SCM object — roll it back before restarting Web.
+        try {
+            if (-not $updaterTouched) {
+                $rollbackUpdater = $true
+            }
+            else {
+                if (-not $updaterExistedBefore) {
+                    Remove-NyxveilWindowsService -ServiceName $updaterServiceName
+                    Add-DeployEvent "Removed updater service created by failed deploy ($updaterServiceName)."
+                }
+                elseif ($updaterSnapshotBefore -and $updaterSnapshotBefore.Exists -and $updaterSnapshotBefore.PathName) {
+                    Ensure-NyxveilServiceNative
+                    $demand = ($updaterSnapshotBefore.StartMode -eq 'Manual')
+                    $account = if ($updaterSnapshotBefore.StartName) { [string]$updaterSnapshotBefore.StartName } else { 'LocalSystem' }
+                    $display = if ($updaterSnapshotBefore.DisplayName) { [string]$updaterSnapshotBefore.DisplayName } else { 'Nyxveil Control Plane Updater' }
+                    [Nyxveil.ServiceNative.Advapi]::EnsureCreatedOrUpdated(
+                        $updaterServiceName,
+                        $display,
+                        [string]$updaterSnapshotBefore.PathName,
+                        $account,
+                        $false,
+                        $demand)
+                    Add-DeployEvent "Restored pre-deploy updater service configuration for $updaterServiceName."
+                }
+                else {
+                    Remove-NyxveilWindowsService -ServiceName $updaterServiceName
+                    Add-DeployEvent "Removed updater service (no reliable pre-deploy snapshot)."
+                }
+                $rollbackUpdater = $true
+            }
+        }
+        catch {
+            $rollbackErrors.Add("updater_service_rollback: $($_.Exception.Message)")
         }
 
         try {
@@ -719,13 +764,14 @@ catch {
         }
 
         $rollbackComplete = $rollbackBinaries -and $rollbackConfig -and $rollbackDatabase -and
-            $rollbackService -and $rollbackHealth
+            $rollbackService -and $rollbackHealth -and $rollbackUpdater
         Write-Output 'rollback:'
         Write-Output "  binaries=$($rollbackBinaries.ToString().ToLowerInvariant())"
         Write-Output "  config=$($rollbackConfig.ToString().ToLowerInvariant())"
         Write-Output "  database=$($rollbackDatabase.ToString().ToLowerInvariant())"
         Write-Output "  service=$($rollbackService.ToString().ToLowerInvariant())"
         Write-Output "  health=$($rollbackHealth.ToString().ToLowerInvariant())"
+        Write-Output "  updater=$($rollbackUpdater.ToString().ToLowerInvariant())"
         Write-Output "rollback_complete=$($rollbackComplete.ToString().ToLowerInvariant())"
     }
 

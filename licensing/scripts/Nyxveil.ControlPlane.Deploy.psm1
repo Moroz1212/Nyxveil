@@ -118,17 +118,471 @@ function Invoke-NativeChecked {
     <#
     .SYNOPSIS
       Runs a scriptblock and fails if a native command left a non-zero LASTEXITCODE.
+      Captures stdout/stderr into the exception (no secrets expected in native service tooling).
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][scriptblock]$Script,
-        [Parameter(Mandatory = $true)][string]$Name
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string]$ServiceName = '',
+        [string]$SanitizedArgSummary = ''
     )
     $global:LASTEXITCODE = 0
-    & $Script
-    if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
-        throw "$Name failed exit=$LASTEXITCODE"
+    $output = @()
+    try {
+        $output = & $Script 2>&1
     }
+    catch {
+        throw "$Name failed: $($_.Exception.Message)"
+    }
+    if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+        $detail = ($output | ForEach-Object { "$_" }) -join ' | '
+        $detail = ConvertTo-NyxveilSanitizedText -Text $detail
+        $parts = @(
+            "operation=$Name",
+            "exit=$LASTEXITCODE"
+        )
+        if ($ServiceName) { $parts += "service=$ServiceName" }
+        if ($SanitizedArgSummary) { $parts += "args=$SanitizedArgSummary" }
+        if ($detail) { $parts += "output=$detail" }
+        throw ($parts -join '; ')
+    }
+    return $output
+}
+
+function ConvertTo-NyxveilSanitizedText {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][string]$Text)
+    if ($null -eq $Text) { return '' }
+    $s = [string]$Text
+    $s = [regex]::Replace($s, '(?i)(password|token|secret|cookie|authorization)=([^;\s]+)', '$1=<redacted>')
+    $s = [regex]::Replace($s, '(?i)(Bearer\s+)[A-Za-z0-9\-._~+/]+=*', '$1<redacted>')
+    return $s
+}
+
+function Get-NyxveilServiceBinaryPathName {
+    <#
+    .SYNOPSIS
+      Builds a Win32 BinaryPathName: quoted executable (when needed) + optional arguments.
+      Does not go through sc.exe command-line quoting.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)][string]$ExePath,
+        [string]$BinPathArguments = ''
+    )
+    $full = [IO.Path]::GetFullPath($ExePath)
+    if ($full.Contains('"')) {
+        throw "ExePath must not contain embedded quotes: $full"
+    }
+    $exeToken = if ($full -match '\s') { '"' + $full + '"' } else { $full }
+    if ([string]::IsNullOrWhiteSpace($BinPathArguments)) {
+        return $exeToken
+    }
+    $argsTrim = $BinPathArguments.Trim()
+    if ($argsTrim.Contains('"')) {
+        throw "BinPathArguments must not contain embedded quotes"
+    }
+    return "$exeToken $argsTrim"
+}
+
+function Ensure-NyxveilServiceNative {
+    if (-not ('Nyxveil.ServiceNative.Advapi' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.ComponentModel;
+using System.Text;
+
+namespace Nyxveil.ServiceNative {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct SERVICE_DELAYED_AUTO_START_INFO {
+    public bool fDelayedAutostart;
+  }
+
+  public static class Advapi {
+    public const uint SC_MANAGER_ALL_ACCESS = 0xF003F;
+    public const uint SERVICE_ALL_ACCESS = 0xF01FF;
+    public const uint SERVICE_QUERY_CONFIG = 0x0001;
+    public const uint SERVICE_CHANGE_CONFIG = 0x0002;
+    public const uint SERVICE_START = 0x0010;
+    public const uint SERVICE_STOP = 0x0020;
+    public const uint SERVICE_WIN32_OWN_PROCESS = 0x00000010;
+    public const uint SERVICE_AUTO_START = 0x00000002;
+    public const uint SERVICE_DEMAND_START = 0x00000003;
+    public const uint SERVICE_ERROR_NORMAL = 0x00000001;
+    public const uint SERVICE_CONFIG_DELAYED_AUTO_START_INFO = 3;
+    public const uint SERVICE_NO_CHANGE = 0xFFFFFFFF;
+    public const int ERROR_SERVICE_EXISTS = 1073;
+    public const int ERROR_SERVICE_DOES_NOT_EXIST = 1060;
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern IntPtr OpenSCManager(string machineName, string databaseName, uint desiredAccess);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern IntPtr OpenService(IntPtr hSCManager, string lpServiceName, uint dwDesiredAccess);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern IntPtr CreateService(
+      IntPtr hSCManager,
+      string lpServiceName,
+      string lpDisplayName,
+      uint dwDesiredAccess,
+      uint dwServiceType,
+      uint dwStartType,
+      uint dwErrorControl,
+      string lpBinaryPathName,
+      string lpLoadOrderGroup,
+      IntPtr lpdwTagId,
+      string lpDependencies,
+      string lpServiceStartName,
+      string lpPassword);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool ChangeServiceConfig(
+      IntPtr hService,
+      uint dwServiceType,
+      uint dwStartType,
+      uint dwErrorControl,
+      string lpBinaryPathName,
+      string lpLoadOrderGroup,
+      IntPtr lpdwTagId,
+      string lpDependencies,
+      string lpServiceStartName,
+      string lpPassword,
+      string lpDisplayName);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool ChangeServiceConfig2(
+      IntPtr hService,
+      uint dwInfoLevel,
+      ref SERVICE_DELAYED_AUTO_START_INFO lpInfo);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool CloseServiceHandle(IntPtr hSCObject);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool DeleteService(IntPtr hService);
+
+    public static void EnsureCreatedOrUpdated(
+      string serviceName,
+      string displayName,
+      string binaryPathName,
+      string account,
+      bool delayedAuto,
+      bool demandStart)
+    {
+      IntPtr scm = OpenSCManager(null, null, SC_MANAGER_ALL_ACCESS);
+      if (scm == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "OpenSCManager");
+
+      try {
+        uint startType = demandStart ? SERVICE_DEMAND_START : SERVICE_AUTO_START;
+        string startName = string.IsNullOrWhiteSpace(account) ? null : account;
+        // LocalSystem: pass null for account (CreateService default). Virtual accounts need explicit name + empty password.
+        bool isLocalSystem = string.Equals(account, "LocalSystem", StringComparison.OrdinalIgnoreCase)
+          || string.Equals(account, "NT AUTHORITY\\SYSTEM", StringComparison.OrdinalIgnoreCase)
+          || string.IsNullOrWhiteSpace(account);
+        string createAccount = isLocalSystem ? null : account;
+        string createPassword = isLocalSystem ? null : "";
+
+        IntPtr svc = OpenService(scm, serviceName, SERVICE_ALL_ACCESS);
+        if (svc == IntPtr.Zero) {
+          int err = Marshal.GetLastWin32Error();
+          if (err != ERROR_SERVICE_DOES_NOT_EXIST)
+            throw new Win32Exception(err, "OpenService");
+
+          svc = CreateService(
+            scm,
+            serviceName,
+            displayName,
+            SERVICE_ALL_ACCESS,
+            SERVICE_WIN32_OWN_PROCESS,
+            startType,
+            SERVICE_ERROR_NORMAL,
+            binaryPathName,
+            null,
+            IntPtr.Zero,
+            null,
+            createAccount,
+            createPassword);
+          if (svc == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateService");
+        }
+        else {
+          if (!ChangeServiceConfig(
+                svc,
+                SERVICE_NO_CHANGE,
+                startType,
+                SERVICE_NO_CHANGE,
+                binaryPathName,
+                null,
+                IntPtr.Zero,
+                null,
+                createAccount,
+                createPassword,
+                displayName))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "ChangeServiceConfig");
+        }
+
+        try {
+          var delayed = new SERVICE_DELAYED_AUTO_START_INFO { fDelayedAutostart = delayedAuto && !demandStart };
+          if (!ChangeServiceConfig2(svc, SERVICE_CONFIG_DELAYED_AUTO_START_INFO, ref delayed))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "ChangeServiceConfig2(DELAYED_AUTO_START)");
+        }
+        finally {
+          CloseServiceHandle(svc);
+        }
+      }
+      finally {
+        CloseServiceHandle(scm);
+      }
+    }
+
+    public static void DeleteIfExists(string serviceName) {
+      IntPtr scm = OpenSCManager(null, null, SC_MANAGER_ALL_ACCESS);
+      if (scm == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "OpenSCManager");
+      try {
+        IntPtr svc = OpenService(scm, serviceName, SERVICE_ALL_ACCESS);
+        if (svc == IntPtr.Zero) {
+          int err = Marshal.GetLastWin32Error();
+          if (err == ERROR_SERVICE_DOES_NOT_EXIST) return;
+          throw new Win32Exception(err, "OpenService");
+        }
+        try {
+          if (!DeleteService(svc))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "DeleteService");
+        }
+        finally { CloseServiceHandle(svc); }
+      }
+      finally { CloseServiceHandle(scm); }
+    }
+  }
+}
+'@ -ErrorAction Stop
+    }
+}
+
+function Get-NyxveilWindowsServiceSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceName
+    )
+    $cim = Get-CimInstance -ClassName Win32_Service -Filter ("Name='{0}'" -f ($ServiceName -replace "'", "''")) -ErrorAction SilentlyContinue
+    if (-not $cim) {
+        return [pscustomobject]@{
+            Exists     = $false
+            Name       = $ServiceName
+            DisplayName = $null
+            PathName   = $null
+            StartName  = $null
+            StartMode  = $null
+            State      = $null
+        }
+    }
+    return [pscustomobject]@{
+        Exists      = $true
+        Name        = [string]$cim.Name
+        DisplayName = [string]$cim.DisplayName
+        PathName    = [string]$cim.PathName
+        StartName   = [string]$cim.StartName
+        StartMode   = [string]$cim.StartMode
+        State       = [string]$cim.State
+    }
+}
+
+function Assert-NyxveilWindowsServiceConfig {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [Parameter(Mandatory = $true)][string]$ExpectedBinaryPathName,
+        [Parameter(Mandatory = $true)][string]$ExpectedDisplayName,
+        [Parameter(Mandatory = $true)][string]$ExpectedStartName,
+        [ValidateSet('Auto', 'Manual', 'Disabled')]
+        [string]$ExpectedStartMode = 'Auto',
+        [switch]$RequireRunning
+    )
+    $snap = Get-NyxveilWindowsServiceSnapshot -ServiceName $ServiceName
+    if (-not $snap.Exists) {
+        throw "service missing after install: $ServiceName"
+    }
+    if ($snap.Name -cne $ServiceName) {
+        throw "service name mismatch: have=$($snap.Name) want=$ServiceName"
+    }
+    if ($snap.DisplayName -ne $ExpectedDisplayName) {
+        throw "service DisplayName mismatch: have=$($snap.DisplayName) want=$ExpectedDisplayName"
+    }
+    # Win32_Service PathName should match BinaryPathName we set (quotes preserved for spaced paths).
+    $havePath = ([string]$snap.PathName).Trim()
+    $wantPath = $ExpectedBinaryPathName.Trim()
+    if (-not $havePath.Equals($wantPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "service PathName mismatch: have=$havePath want=$wantPath"
+    }
+    $start = ([string]$snap.StartName).Trim()
+    $wantStart = $ExpectedStartName.Trim()
+    if ($wantStart -eq 'LocalSystem') {
+        if ($start -notin @('LocalSystem', 'localSystem', 'NT AUTHORITY\SYSTEM')) {
+            throw "service StartName mismatch: have=$start want=LocalSystem"
+        }
+    }
+    elseif (-not $start.Equals($wantStart, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "service StartName mismatch: have=$start want=$wantStart"
+    }
+    if ($snap.StartMode -ne $ExpectedStartMode) {
+        throw "service StartMode mismatch: have=$($snap.StartMode) want=$ExpectedStartMode"
+    }
+    if ($RequireRunning -and $snap.State -ne 'Running') {
+        throw "service State mismatch: have=$($snap.State) want=Running"
+    }
+    return $snap
+}
+
+function New-NyxveilWindowsService {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [Parameter(Mandatory = $true)][string]$ExePath,
+        [Parameter(Mandatory = $true)][string]$ServiceAccount,
+        [string]$DisplayName = 'Nyxveil Control Plane',
+        [string]$BinPathArguments = '',
+        [switch]$DependOnLocalSql,
+        [ValidateSet('delayed-auto', 'auto', 'demand')]
+        [string]$StartType = 'delayed-auto'
+    )
+    if (-not (Test-Path -LiteralPath $ExePath)) {
+        throw "Service binary not found: $ExePath"
+    }
+
+    $binaryPathName = Get-NyxveilServiceBinaryPathName -ExePath $ExePath -BinPathArguments $BinPathArguments
+    $argSummary = "binPathName=<len $($binaryPathName.Length)>; account=$ServiceAccount; start=$StartType; displayLen=$($DisplayName.Length)"
+    Write-Host "Configuring Windows service $ServiceName via CreateService/ChangeServiceConfig ($argSummary)"
+
+    Ensure-NyxveilServiceNative
+    $demand = ($StartType -eq 'demand')
+    $delayed = ($StartType -eq 'delayed-auto')
+    try {
+        [Nyxveil.ServiceNative.Advapi]::EnsureCreatedOrUpdated(
+            $ServiceName,
+            $DisplayName,
+            $binaryPathName,
+            $ServiceAccount,
+            $delayed,
+            $demand)
+    }
+    catch {
+        $code = 0
+        $ex = $_.Exception
+        while ($null -ne $ex) {
+            if ($ex -is [System.ComponentModel.Win32Exception]) {
+                $code = $ex.NativeErrorCode
+                break
+            }
+            $ex = $ex.InnerException
+        }
+        throw ("operation=CreateService/ChangeServiceConfig; service={0}; win32={1}; args={2}; message={3}" -f `
+            $ServiceName, $code, $argSummary, (ConvertTo-NyxveilSanitizedText -Text $_.Exception.Message))
+    }
+
+    # Failure restart actions still use sc.exe (no spaced path values).
+    Invoke-NativeChecked -Name "sc.exe failure $ServiceName" -ServiceName $ServiceName -Script {
+        & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/30000/restart/60000
+    } | Out-Null
+    Invoke-NativeChecked -Name "sc.exe failureflag $ServiceName" -ServiceName $ServiceName -Script {
+        & sc.exe failureflag $ServiceName 1
+    } | Out-Null
+
+    if ($DependOnLocalSql -and (Test-LocalSqlServerService)) {
+        Invoke-NativeChecked -Name "sc.exe config depend MSSQLSERVER" -ServiceName $ServiceName -Script {
+            & sc.exe config $ServiceName depend= MSSQLSERVER
+        } | Out-Null
+        Write-Host 'Service dependency set: MSSQLSERVER (local SQL detected).'
+    }
+    elseif ($ServiceName -eq $script:DefaultServiceName) {
+        Invoke-NativeChecked -Name "sc.exe config depend clear" -ServiceName $ServiceName -Script {
+            & sc.exe config $ServiceName depend= '/'
+        } | Out-Null
+    }
+
+    # Leave stopped — caller starts after SID/ACL/SQL grants (or immediately for updater).
+    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+
+    $expectedMode = if ($StartType -eq 'demand') { 'Manual' } else { 'Auto' }
+    Assert-NyxveilWindowsServiceConfig -ServiceName $ServiceName `
+        -ExpectedBinaryPathName $binaryPathName `
+        -ExpectedDisplayName $DisplayName `
+        -ExpectedStartName $ServiceAccount `
+        -ExpectedStartMode $expectedMode | Out-Null
+}
+
+function Install-NyxveilControlPlaneUpdaterService {
+    <#
+    .SYNOPSIS
+      Installs/updates the privileged LocalSystem self-update helper service.
+      Does not grant the Web service write access to Program Files.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir
+    )
+    $updaterName = 'NyxveilControlPlaneUpdater'
+    $displayName = 'Nyxveil Control Plane Updater'
+    $candidates = @(
+        (Join-Path $InstallDir 'updater\Nyxveil.ControlPlane.Updater.exe'),
+        (Join-Path $InstallDir 'Nyxveil.ControlPlane.Updater.exe')
+    )
+    $exe = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $exe) {
+        throw "Privileged updater binary missing under $InstallDir (expected updater\Nyxveil.ControlPlane.Updater.exe)"
+    }
+
+    $binaryPathName = Get-NyxveilServiceBinaryPathName -ExePath $exe -BinPathArguments '--service'
+    Write-Host "Installing privileged updater service $updaterName (LocalSystem)..."
+    New-NyxveilWindowsService -ServiceName $updaterName -ExePath $exe `
+        -ServiceAccount 'LocalSystem' `
+        -DisplayName $displayName `
+        -BinPathArguments '--service' `
+        -StartType auto
+
+    # Ensure ProgramData self-update directory exists for handoff/request/result.
+    $su = Join-Path (Get-ProgramDataRoot) 'self-update'
+    if (-not (Test-Path -LiteralPath $su)) {
+        New-Item -ItemType Directory -Force -Path $su | Out-Null
+    }
+    Invoke-NativeChecked -Name "icacls self-update SYSTEM" -Script {
+        & icacls $su /grant '*S-1-5-18:(OI)(CI)F' /T /C
+    } | Out-Null
+
+    Start-Service -Name $updaterName -ErrorAction Stop
+    $snap = Assert-NyxveilWindowsServiceConfig -ServiceName $updaterName `
+        -ExpectedBinaryPathName $binaryPathName `
+        -ExpectedDisplayName $displayName `
+        -ExpectedStartName 'LocalSystem' `
+        -ExpectedStartMode Auto `
+        -RequireRunning
+    if ($snap.PathName -notmatch '(?i)--service') {
+        throw "updater PathName missing --service: $($snap.PathName)"
+    }
+    Write-Host "Updater service $updaterName verified Running (LocalSystem, Auto, --service)."
+}
+
+function Remove-NyxveilWindowsService {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceName
+    )
+    $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $existing) { return }
+    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+    Ensure-NyxveilServiceNative
+    [Nyxveil.ServiceNative.Advapi]::DeleteIfExists($ServiceName)
+    # Wait until gone from SCM
+    for ($i = 0; $i -lt 20; $i++) {
+        if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) { return }
+        Start-Sleep -Milliseconds 250
+    }
+    throw "service still present after delete: $ServiceName"
 }
 
 function Read-OperationalConfig {
@@ -1841,115 +2295,6 @@ function Test-LocalSqlServerService {
     return [bool]$svc
 }
 
-function New-NyxveilWindowsService {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)][string]$ServiceName,
-        [Parameter(Mandatory = $true)][string]$ExePath,
-        [Parameter(Mandatory = $true)][string]$ServiceAccount,
-        [string]$DisplayName = 'Nyxveil Control Plane',
-        [string]$BinPathArguments = '',
-        [switch]$DependOnLocalSql,
-        [ValidateSet('delayed-auto', 'auto', 'demand')]
-        [string]$StartType = 'delayed-auto'
-    )
-    if (-not (Test-Path $ExePath)) {
-        throw "Service binary not found: $ExePath"
-    }
-
-    $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    $binPath = if ([string]::IsNullOrWhiteSpace($BinPathArguments)) {
-        "`"$ExePath`""
-    }
-    else {
-        "`"$ExePath`" $BinPathArguments"
-    }
-
-    if ($existing) {
-        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-        Invoke-NativeChecked -Name "sc.exe config binPath $ServiceName" -Script {
-            & sc.exe config $ServiceName binPath= $binPath | Out-Null
-        }
-        Invoke-NativeChecked -Name "sc.exe config DisplayName $ServiceName" -Script {
-            & sc.exe config $ServiceName DisplayName= $DisplayName | Out-Null
-        }
-    }
-    else {
-        Invoke-NativeChecked -Name "sc.exe create $ServiceName" -Script {
-            & sc.exe create $ServiceName `
-                binPath= $binPath `
-                DisplayName= $DisplayName `
-                start= $StartType `
-                obj= $ServiceAccount | Out-Null
-        }
-    }
-
-    Invoke-NativeChecked -Name "sc.exe config start $ServiceName" -Script {
-        & sc.exe config $ServiceName start= $StartType | Out-Null
-    }
-    Invoke-NativeChecked -Name "sc.exe failure $ServiceName" -Script {
-        & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/30000/restart/60000 | Out-Null
-    }
-    Invoke-NativeChecked -Name "sc.exe failureflag $ServiceName" -Script {
-        & sc.exe failureflag $ServiceName 1 | Out-Null
-    }
-
-    if ($DependOnLocalSql -and (Test-LocalSqlServerService)) {
-        Invoke-NativeChecked -Name "sc.exe config depend MSSQLSERVER" -Script {
-            & sc.exe config $ServiceName depend= MSSQLSERVER | Out-Null
-        }
-        Write-Host 'Service dependency set: MSSQLSERVER (local SQL detected).'
-    }
-    elseif ($ServiceName -eq $script:DefaultServiceName) {
-        Invoke-NativeChecked -Name "sc.exe config depend clear" -Script {
-            & sc.exe config $ServiceName depend= '' | Out-Null
-        }
-    }
-
-    # Leave stopped — caller starts after SID/ACL/SQL grants (or immediately for updater).
-    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-}
-
-function Install-NyxveilControlPlaneUpdaterService {
-    <#
-    .SYNOPSIS
-      Installs/updates the privileged LocalSystem self-update helper service.
-      Does not grant the Web service write access to Program Files.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)][string]$InstallDir
-    )
-    $updaterName = 'NyxveilControlPlaneUpdater'
-    $candidates = @(
-        (Join-Path $InstallDir 'updater\Nyxveil.ControlPlane.Updater.exe'),
-        (Join-Path $InstallDir 'Nyxveil.ControlPlane.Updater.exe')
-    )
-    $exe = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    if (-not $exe) {
-        throw "Privileged updater binary missing under $InstallDir (expected updater\Nyxveil.ControlPlane.Updater.exe)"
-    }
-
-    Write-Host "Installing privileged updater service $updaterName (LocalSystem)..."
-    New-NyxveilWindowsService -ServiceName $updaterName -ExePath $exe `
-        -ServiceAccount 'LocalSystem' `
-        -DisplayName 'Nyxveil Control Plane Updater' `
-        -BinPathArguments '--service' `
-        -StartType auto
-
-    # Ensure ProgramData self-update directory exists for handoff/request/result.
-    $su = Join-Path (Get-ProgramDataRoot) 'self-update'
-    if (-not (Test-Path -LiteralPath $su)) {
-        New-Item -ItemType Directory -Force -Path $su | Out-Null
-    }
-    Invoke-NativeChecked -Name "icacls self-update SYSTEM" -Script {
-        & icacls $su /grant '*S-1-5-18:(OI)(CI)F' /T /C | Out-Null
-    }
-
-    Start-Service -Name $updaterName -ErrorAction Stop
-    Write-Host "Updater service $updaterName is Running."
-}
-
 function Ensure-NyxveilServiceSid {
     <#
     .SYNOPSIS
@@ -2429,6 +2774,12 @@ Export-ModuleMember -Function @(
     'Test-LocalSqlServerService',
     'New-NyxveilWindowsService',
     'Install-NyxveilControlPlaneUpdaterService',
+    'Remove-NyxveilWindowsService',
+    'Get-NyxveilServiceBinaryPathName',
+    'Get-NyxveilWindowsServiceSnapshot',
+    'Assert-NyxveilWindowsServiceConfig',
+    'Ensure-NyxveilServiceNative',
+    'ConvertTo-NyxveilSanitizedText',
     'Ensure-NyxveilServiceSid',
     'Set-NyxveilServiceEnvironment',
     'Grant-SqlLoginForServiceAccount',

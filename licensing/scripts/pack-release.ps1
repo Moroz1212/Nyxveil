@@ -65,7 +65,7 @@ $manifestObj = [ordered]@{
     schema                    = 5
     package                   = ("Nyxveil-ControlPlane-v{0}-release.zip" -f $ver)
     updater_version           = $ver
-    minimum_supported_version = '1.3.5'
+    minimum_supported_version = '1.3.6'
     note                      = 'Authoritative package digest is the .sha256 sidecar published with the release.'
 }
 ($manifestObj | ConvertTo-Json -Depth 5) + "`n" | Set-Content -LiteralPath $manifestPath -Encoding utf8
