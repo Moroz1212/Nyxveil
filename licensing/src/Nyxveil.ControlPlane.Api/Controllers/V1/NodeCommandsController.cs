@@ -49,6 +49,28 @@ public sealed class NodeCommandsController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>POST /api/v1/node/commands/{id}/progress — refresh execution lease / phase.</summary>
+    [HttpPost("{id:guid}/progress")]
+    [NodeAuth]
+    [RateLimit]
+    public async Task<IActionResult> ReportProgress(
+        Guid id,
+        [FromBody] NodeCommandProgressRequest request,
+        CancellationToken cancellationToken)
+    {
+        var nodeId = AuthTokenExtractor.GetNodeId(HttpContext)
+                     ?? throw new InvalidOperationException("node id missing after NodeAuth");
+
+        await _commands.ReportProgressAsync(
+                id,
+                nodeId,
+                request.Phase,
+                request.Message,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return NoContent();
+    }
+
     /// <summary>POST /api/v1/node/commands/{id}/result</summary>
     [HttpPost("{id:guid}/result")]
     [NodeAuth]

@@ -27,6 +27,16 @@ public interface INodeCommandService
 
     Task MarkStartedAsync(Guid id, string nodeId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Node-authenticated progress heartbeat. Refreshes the execution progress lease.
+    /// </summary>
+    Task ReportProgressAsync(
+        Guid id,
+        string nodeId,
+        string? phase,
+        string? message,
+        CancellationToken cancellationToken = default);
+
     Task CompleteAsync(
         Guid id,
         string nodeId,

@@ -245,7 +245,7 @@ public sealed class RevocationListResponse
 public sealed class VersionResponse
 {
     [JsonPropertyName("control_plane_version")]
-    public string ControlPlaneVersion { get; set; } = "1.3.8";
+    public string ControlPlaneVersion { get; set; } = "1.3.9";
 
     [JsonPropertyName("min_protocol_version")]
     public ushort MinProtocolVersion { get; set; } = 1;
@@ -306,5 +306,14 @@ public sealed class NodeCommandResultRequest
 
     [JsonPropertyName("boot_id")]
     public string? BootId { get; set; }
+}
+
+public sealed class NodeCommandProgressRequest
+{
+    [JsonPropertyName("phase")]
+    public string? Phase { get; set; }
+
+    [JsonPropertyName("message")]
+    public string? Message { get; set; }
 }
 

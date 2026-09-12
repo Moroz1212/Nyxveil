@@ -1,45 +1,33 @@
 # AI_STATE.md — Nyxveil current project state
 
-> Updated 2026-09-12 after **control-plane-v1.3.8** release.  
-> Schema **5**. Frozen Core unchanged. Server **1.1.16** unchanged.  
-> LIVE CP 1.3.6→1.3.8: **BLOCKED** (no production access this session).  
+> Updated 2026-09-12 — production hardening **CP 1.3.9** + **Server 1.1.17** in progress on branch `production-hardening-1.3.9-1.1.17`.  
+> Schema **5**. Frozen Core unchanged.  
 > Preserved dirty: `licensing/tests/CoreInterop/verify-signed/go.mod`.
 
-## Session / release
+## Repository
 
 | Fact | Value |
 |---|---|
-| Initial HEAD | `3f63029f90c137adbbb3deaaaefb1d9d0981035b` |
-| Product / main HEAD | `a6b776b16d5ce2ed8ffd6166f5e475a4f8a8e232` |
-| Tag | `control-plane-v1.3.8` |
-| Release | https://github.com/Moroz1212/Nyxveil/releases/tag/control-plane-v1.3.8 |
-| Control Plane CI | https://github.com/Moroz1212/Nyxveil/actions/runs/34686627398 |
-| Unit | **476 PASS** |
-| Integration | **130 PASS** |
-| Windows SCM test | **WINDOWS_SERVICE_CREATE_TEST=PASS** |
-| ZIP SHA256 | `FEF6C6D3F40F3BBA7A721E84ECB54F64DC20569CCDAC1FA93D5397225D70018A` (download-back matched) |
-| Schema | **5** |
-| Frozen Core SHA256 | `7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b` |
+| Initial HEAD | `773f91275472cfe17d8cd64714f84ad853065e1b` |
+| Branch | `production-hardening-1.3.9-1.1.17` |
+| Production CP base | **1.3.8** (LIVE 1.3.6→1.3.8 confirmed by user) |
+| Target CP | **1.3.9** |
+| Target Server | **1.1.17** (cumulative from 1.1.15/1.1.16) |
 
-## LIVE 1.3.7 failure (authoritative)
+## Root causes (this hardening)
 
-- Deploy 1.3.6→1.3.7 failed at `install_updater_service`
-- `sc.exe create NyxveilControlPlaneUpdater failed exit=1639`
-- Automatic rollback restored 1.3.6 healthy
-- No manual production repair
+1. **TTL / lease:** Update drain wait left command `Pending` under `DeliveryTtl` (15m). LIVE expired at ~15.5m with `expired` / `command TTL exceeded` while drain/update was in flight. Fix: execution deadline + progress lease refresh on ClaimNext drain-wait and `/progress`.
+2. **Late terminal result:** `CompleteAsync` only reconciled `expired_outcome_unknown` / `outcome_unknown`. Generic `expired` rejected late `updated_healthy`. Fix: broaden resolvable codes + late_result note.
+3. **Server progress:** Node now reports phase progress to refresh CP lease across restart/update.
 
-## Root cause
+## Automated status (session)
 
-PS 5.1 CreateProcess cmdline for `$binPath='"...Updater.exe" --service'` became:
+- CP Unit: **480 PASS** (includes NodeCommandLeaseTests)
+- Browser E2E: **1 PASS** (login+MFA+three operator buttons; cert enqueue proven)
+- Server packages controlplane/runtime/filemeta/nyxveilctl: **PASS** locally
+- FULL_OPERATOR release-mode (1.3.8→1.3.9 real SCM): requires elevated disposable Windows host
+- LIVE three production clicks: **PENDING**
 
-`binPath= ""C:\Program Files\...\Updater.exe" --service"`
+## Frozen Core
 
-sc.exe re-parses GetCommandLineW → ERROR_INVALID_COMMAND_LINE.
-
-## Fix (1.3.8)
-
-Win32 CreateService/ChangeServiceConfig + CIM verify + updater SCM rollback + real Windows SCM test.
-
-## Advisory next action
-
-Elevated `production-deploy.ps1` for **1.3.6 → 1.3.8** on LIVE (skip broken 1.3.7). No manual sc/ACL/copy.
+`7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b`

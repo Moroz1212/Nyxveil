@@ -128,10 +128,10 @@ public sealed class SelfUpdateReconcileTests
     {
         Assert.Equal(
             ControlPlaneUpdateAvailability.InstalledNewer,
-            ControlPlaneReleasePolicy.Compare("1.3.8", "1.3.7"));
+            ControlPlaneReleasePolicy.Compare("1.3.9", "1.3.8"));
         Assert.NotEqual(
             ControlPlaneUpdateAvailability.UpdateAvailable,
-            ControlPlaneReleasePolicy.Compare("1.3.8", "1.3.7"));
+            ControlPlaneReleasePolicy.Compare("1.3.9", "1.3.8"));
     }
 
     [Fact]

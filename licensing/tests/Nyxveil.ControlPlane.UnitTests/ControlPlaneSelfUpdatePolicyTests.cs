@@ -10,7 +10,7 @@ public sealed class ControlPlaneSelfUpdatePolicyTests
     [Theory]
     [InlineData("1.3.4", "1.3.5", ControlPlaneUpdateAvailability.UpdateAvailable)]
     [InlineData("1.3.5", "1.3.5", ControlPlaneUpdateAvailability.Current)]
-    [InlineData("1.3.8", "1.3.7", ControlPlaneUpdateAvailability.InstalledNewer)]
+    [InlineData("1.3.9", "1.3.8", ControlPlaneUpdateAvailability.InstalledNewer)]
     [InlineData("bad", "1.3.5", ControlPlaneUpdateAvailability.Unknown)]
     public void Compare_Versions(string installed, string latest, ControlPlaneUpdateAvailability expected)
     {

@@ -1,11 +1,11 @@
 {
     "product":  "Nyxveil.ControlPlane",
-    "version":  "1.3.8",
-    "tag":  "control-plane-v1.3.8",
+    "version":  "1.3.9",
+    "tag":  "control-plane-v1.3.9",
     "schema":  5,
-    "package":  "Nyxveil-ControlPlane-v1.3.8-release.zip",
-    "updater_version":  "1.3.8",
-    "minimum_supported_version":  "1.3.6",
+    "package":  "Nyxveil-ControlPlane-v1.3.9-release.zip",
+    "updater_version":  "1.3.9",
+    "minimum_supported_version":  "1.3.8",
     "note":  "Authoritative package digest is the .sha256 sidecar published with the release."
 }
 

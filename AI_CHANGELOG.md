@@ -1066,3 +1066,171 @@ CreateService/ChangeServiceConfig API; BinaryPathName builder; CIM verify; updat
 - Frozen Core unchanged; control-plane-v1.3.6 / v1.3.7 and server-v1.1.14..16 tags untouched
 - Dirty preserved: `licensing/tests/CoreInterop/verify-signed/go.mod`
 
+
+---
+
+## 2026-09-12 — Server 1.1.17 update progress candidate
+
+### Goal / baseline
+
+- Branch: `production-hardening-1.3.9-1.1.17`
+- Baseline HEAD: `773f91275472cfe17d8cd64714f84ad853065e1b`
+- Goal: preserve durable update recovery while refreshing the Control Plane
+  command lease through all update phases
+
+### Changes
+
+- Server source/version defaults bumped from 1.1.16 to 1.1.17
+- Added signed `POST /api/v1/node/commands/{id}/progress`
+- `nyxveilctl update` reports `downloading`, `verifying`, `installing`,
+  `restarting`, and `post_check` on phase changes
+- Runtime periodically re-reports nonterminal durable marker/journal phases
+- Progress failures are logged and do not fail the update
+- Added Control Plane client coverage and runtime phase-change regression coverage
+- Added `SERVER-1.1.17.md`
+- Durable result marker/journal recovery unchanged
+- Privileged `filemeta.MigrateACMEState` remains in updater ownership enforcement
+  and immediately before daemon restart
+
+### Verification
+
+- PASS: `go test ./internal/controlplane ./internal/runtime ./internal/filemeta ./cmd/nyxveilctl ./internal/releasecontract -count=1 -timeout 120s`
+- PASS: `go test ./internal/updater -count=1 -timeout 120s`
+- PASS: `bash scripts/assert-frozen-core.sh`
+- Full Server CI, live update/rollback, and deployment were not run
+- Frozen Core unchanged; no compatibility or protocol changes
+- Existing Control Plane work and
+  `licensing/tests/CoreInterop/verify-signed/go.mod` were preserved
+- Version metadata changed; no commit, tag, push, or release created
+
+### Suggested next action
+
+Run authoritative Server CI, then validate a disposable-host cumulative
+1.1.15 → 1.1.17 update and observe lease refreshes in the Control Plane.
+
+---
+
+## 2026-09-12 — Control Plane 1.3.9 release metadata
+
+### Goal / baseline
+
+- Branch: `production-hardening-1.3.9-1.1.17`
+- Baseline HEAD: `773f91275472cfe17d8cd64714f84ad853065e1b`
+- Bump the Control Plane candidate from 1.3.8 to 1.3.9 without changing
+  Frozen Core or Server version metadata
+
+### Changes
+
+- Updated Control Plane version, manifest, package/deploy/gate pins, API and
+  dashboard defaults, unit-test expectations, README, and CI package contents
+- Added `licensing/docs/RELEASE-1.3.9.md`
+- Release notes cover lease/TTL refresh, late-result reconciliation, signed
+  progress API, Attention supersede, and retained 1.3.8 CreateService handling
+- Schema remains 5
+- Minimum supported self-update version is 1.3.8
+- Direct production path is 1.3.8 → 1.3.9
+- Companion Server documented as 1.1.17; no Server files changed by this task
+
+### Verification
+
+- PASS: Control Plane unit tests, 480 total
+- PASS: release-manifest identity/minimum/schema field validation
+- PASS: `git diff --check`
+- PARTIAL: `scripts/production-gate.ps1 -GateMode local` (expected
+  installed-state/database skips)
+- Not run: integration tests, publish/package extraction, full Control Plane
+  CI, live update/rollback, deployment
+- Frozen Core and vendored Core paths unchanged
+- Preserved existing dirty `licensing/tests/CoreInterop/verify-signed/go.mod`
+- No commit, tag, push, release, or deployment created
+
+### Suggested next action
+
+Run the full Control Plane CI-equivalent build, LocalDB integration, publish,
+package, and extracted-package validation before release consideration.
+
+---
+
+## 2026-09-12 — Browser and full-operator E2E harnesses
+
+### Goal / baseline
+
+- Branch: `production-hardening-1.3.9-1.1.17`
+- Baseline HEAD: `773f91275472cfe17d8cd64714f84ad853065e1b`
+- Add executable Control Plane browser/operator gates and a consolidated Server
+  operator contract gate without security bypasses or Frozen Core changes
+
+### Changes
+
+- Added `.NET` Playwright project
+  `licensing/tests/Nyxveil.ControlPlane.BrowserE2E`
+- Browser fixture extends the existing SQLite integration pattern but runs a
+  real Kestrel endpoint; it creates a genuine MFA-enabled SuperAdmin and logs
+  in with password plus generated TOTP
+- Added stable selectors for Control Plane update, node update, and node
+  certificate renewal buttons
+- Browser test clicks all three handlers and verifies certificate renewal
+  reaches the real `INodeCommandService` persistence path
+- Added `licensing/scripts/full-operator-e2e.ps1`:
+  - `lab` runs targeted lease unit/integration tests, elevated SCM test when
+    available, and browser E2E
+  - `release` validates 1.3.8/1.3.9 package identities and fails closed unless
+    it can perform an elevated clean install, production update, and post-gate
+- Added `server/scripts/full-operator-server-e2e.sh` for durable update
+  recovery/rollback, ACME migration, command TTL/lease signing, and Frozen Core
+- Wired both new gates into their component CI workflows
+- Version metadata was not changed by this task; schema remains 5
+
+### Verification
+
+- PASS: Browser E2E build, zero warnings/errors
+- PASS: Playwright Chromium browser test, 1 total
+- PASS: targeted lease unit tests, 4 total
+- PASS: targeted lease integration tests, 4 total
+- PARTIAL: Control Plane lab harness only because the local process was not
+  elevated; browser and lease tests passed
+- PASS: release mode emitted `FULL_OPERATOR_E2E=FAIL` and exited 1 when
+  elevation/package prerequisites were unavailable
+- PASS: Server full-operator script emitted `SERVER_OPERATOR_E2E=PASS`
+- PASS: PowerShell parser and scoped `git diff --check`
+- PASS: Frozen Core provenance in the Server operator script
+
+### Not run / unresolved
+
+- Elevated Windows SCM create test was not run locally
+- Destructive release-mode 1.3.8 → 1.3.9 install/update was not run; it requires
+  an explicitly authorized disposable elevated Windows/LocalDB host
+- Full Control Plane and Server CI workflows were not run
+- No commit, push, tag, release, deployment, or production mutation performed
+- Existing dirty `licensing/tests/CoreInterop/verify-signed/go.mod` and all
+  pre-existing candidate changes were preserved
+
+### Suggested next action
+
+Run Control Plane CI on `windows-latest`, then execute release mode only on a
+disposable elevated Windows lab host with the published 1.3.8 and candidate
+1.3.9 ZIPs.
+
+
+---
+
+## 2026-09-12 — CP lease/TTL + late-result fix (1.3.9 core)
+
+### Root cause (LIVE node update expired)
+
+ClaimNext drain-wait returned null without refreshing ExpiresAt past DeliveryTtl (15m). LIVE expired ~15.5m with ResultCode=expired while update was in flight. Late updated_healthy was rejected for generic expired.
+
+### Fix
+
+- execution_deadline + ProgressLease; TouchProgressLease on drain-wait ClaimNext
+- POST /api/v1/node/commands/{id}/progress
+- Late reconcile for expired/expired_no_mutation/expired_outcome_unknown
+- Attention supersede after newer successful update
+- Server 1.1.17 progress reports; ACME MigrateACMEState retained
+
+### Tests run
+
+- CP Unit 480 PASS; Integration 130 PASS; Browser E2E 1 PASS
+- Server controlplane/runtime/filemeta/nyxveilctl PASS
+- Windows SCM / FULL_OPERATOR release-mode: deferred to CI / elevated lab
+

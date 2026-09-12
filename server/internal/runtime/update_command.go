@@ -155,6 +155,7 @@ func (n *Node) executeUpdateNodeLatest(ctx context.Context, cmd *controlplane.No
 	if !n.commandStore.TryMarkExecuted(commandID) {
 		return
 	}
+	n.reportUpdateProgress(ctx, commandID, updatePhaseDownloading)
 
 	if err := startUpdateUnit(); err != nil {
 		_ = n.clearUpdateMarker()
@@ -207,6 +208,7 @@ func (n *Node) completePendingUpdateFromMarker(ctx context.Context, m updateMark
 
 	// Non-terminal: never infer rolled_back_healthy from previous==current.
 	if updatePhaseIsNonTerminal(phase) {
+		n.reportUpdateProgress(ctx, m.CommandID, phase)
 		return
 	}
 
@@ -242,6 +244,34 @@ func (n *Node) completePendingUpdateFromMarker(ctx context.Context, m updateMark
 	default:
 		// Unknown terminal-ish phase: do not guess rollback from version equality.
 		return
+	}
+}
+
+func (n *Node) reportUpdateProgress(ctx context.Context, commandID, phase string) {
+	var message string
+	switch normalizeUpdatePhase(phase) {
+	case updatePhaseDownloading:
+		message = "Downloading release assets"
+	case updatePhaseVerifying:
+		message = "Verifying signed release assets"
+	case updatePhaseInstalling:
+		message = "Installing verified release assets"
+	case updatePhaseRestarting:
+		message = "Restarting Nyxveil service"
+	case updatePhasePostCheck:
+		message = "Running post-update health checks"
+	default:
+		return
+	}
+	if n.cp == nil {
+		return
+	}
+	err := n.cp.ReportCommandProgress(ctx, commandID, controlplane.NodeCommandProgressRequest{
+		Phase:   normalizeUpdatePhase(phase),
+		Message: message,
+	})
+	if err != nil {
+		log.Printf("runtime: update progress %s phase=%s: %v", commandID, phase, err)
 	}
 }
 

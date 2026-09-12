@@ -52,6 +52,8 @@ type updateTransaction struct {
 const (
 	txPhaseAssetsInstalled   = "assets_installed"
 	txPhaseResuming          = "resuming"
+	txPhaseRestarting        = "restarting"
+	txPhasePostCheck         = "post_check"
 	txPhaseCommitted         = "committed"
 	txPhaseRollingBack       = "rolling_back"
 	txPhaseRolledBackHealthy = "rolled_back_healthy"
@@ -124,7 +126,9 @@ type updateCommandMarker struct {
 	CommandID       string `json:"command_id"`
 	PreviousVersion string `json:"previous_version"`
 	TargetVersion   string `json:"target_version"`
+	Phase           string `json:"phase,omitempty"`
 	StartedAt       string `json:"started_at"`
+	LastUpdatedAt   string `json:"last_updated_at,omitempty"`
 }
 
 func updateCommandMarkerPath() string {
@@ -332,6 +336,7 @@ func runUpdateResume(args []string) error {
 func performPostUpdateVerification(tx *updateTransaction) bool {
 	// Windows and HTTP control-socket harnesses (CI/unit tests) have no systemd unit.
 	if runtime.GOOS == "windows" || strings.TrimSpace(os.Getenv("NYXVEIL_CONTROL_HTTP")) != "" {
+		setUpdateProgress(tx, txPhasePostCheck, "post_check", "Running post-update health checks")
 		if err := assertVersionsMatchTarget(tx.TargetVersion); err != nil {
 			fmt.Printf("update_success=false reason=version_mismatch detail=%v\n", err)
 			return false
@@ -350,11 +355,13 @@ func performPostUpdateVerification(tx *updateTransaction) bool {
 		tx.FailureReason = "TLS validation: " + err.Error()
 		return false
 	}
+	setUpdateProgress(tx, txPhaseRestarting, "restarting", "Restarting Nyxveil service")
 	if err := restartUnit("nyxveil-server"); err != nil {
 		tx.FailureReason = "restart failure: " + err.Error()
 		fmt.Printf("update restart failed: %v\n", err)
 		return false
 	}
+	setUpdateProgress(tx, txPhasePostCheck, "post_check", "Running post-update health checks")
 	res, ok := verifyPostUpdateHealth(tx.PreBaseline, 45)
 	if !ok {
 		tx.FailureReason = "health timeout: " + res.Reason

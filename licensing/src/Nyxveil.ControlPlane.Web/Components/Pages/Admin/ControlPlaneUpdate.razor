@@ -40,7 +40,7 @@ else
         <p class="muted">Package verification: @_status.PackageVerification · SHA256: <span class="mono">@(_status.PackageSha256 ?? "—")</span></p>
         <div class="actions">
             <button class="btn btn-ghost" @onclick="CheckAsync" disabled="@_busy">Проверить обновления</button>
-            <button class="btn" disabled="@(_busy || !_status.CanUpdate)" @onclick="PrepareUpdateAsync">
+            <button class="btn" data-testid="control-plane-update" disabled="@(_busy || !_status.CanUpdate)" @onclick="PrepareUpdateAsync">
                 @(_status.Availability == ControlPlaneUpdateAvailability.Current ? "Актуальная версия" : $"Обновить до {_status.LatestStableVersion}")
             </button>
         </div>

@@ -41,6 +41,8 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test -timeout 120s ./...
+      - name: Full operator server E2E contracts
+        run: bash scripts/full-operator-server-e2e.sh
       - name: Installer structure checks
         run: bash scripts/test-install.sh
       - name: Lifecycle-aware updater gate regression
