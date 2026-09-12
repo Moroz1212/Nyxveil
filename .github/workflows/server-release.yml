@@ -23,7 +23,14 @@ permissions:
   actions: read
 
 jobs:
+  production-release-e2e:
+    name: Production Release E2E (mandatory)
+    uses: ./.github/workflows/production-release-e2e.yml
+    permissions:
+      contents: read
+
   release:
+    needs: production-release-e2e
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
