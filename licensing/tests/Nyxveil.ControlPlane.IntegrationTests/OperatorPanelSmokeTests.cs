@@ -36,6 +36,7 @@ public sealed class OperatorPanelSmokeTests : IClassFixture<CustomWebApplication
             "/admin/metrics",
             "/admin/operations",
             "/admin/infrastructure",
+            "/admin/fleet",
             "/admin/audit",
             "/admin/settings",
             $"/admin/nodes/{nodeId}",

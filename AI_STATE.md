@@ -1,8 +1,8 @@
 # AI_STATE.md — Nyxveil current project state
 
-> Updated 2026-09-12 after Control Plane **1.3.4** security/acceptance gate (local).  
+> Updated 2026-09-12 after Control Plane **1.3.5** product gate (local).  
 > Schema remains **5**. Server/Core/NVP unchanged.  
-> Deploy of running CP: **BLOCKED** (no `NyxveilControlPlane` Windows service on this host).  
+> Live production deploy: **not executed** (self-update first install of 1.3.5 still requires existing deploy path).  
 > Preserved dirty: `licensing/tests/CoreInterop/verify-signed/go.mod` (not part of this release).
 
 ## How to use this file safely
@@ -15,8 +15,8 @@ This is a snapshot, not a desired-state manifest. Never reset the repo to match 
 |---|---:|---|
 | Protocol | `NVP/1` | Frozen |
 | Core | `1.0.0` | Frozen |
-| Server node | `1.1.14` | CI+Release PASS; LIVE BLOCKED |
-| Control Plane | `1.3.4` | Security gate + package PASS; deploy BLOCKED |
+| Server node | `1.1.14` | Unchanged this stage |
+| Control Plane | `1.3.5` | Self-update + Fleet local gate PASS; release pending/recorded below |
 | Windows client | `1.1.2` | Unchanged |
 | Android client | `1.0.0` | Unchanged |
 
@@ -24,40 +24,35 @@ This is a snapshot, not a desired-state manifest. Never reset the repo to match 
 
 - SHA256: `7b13097da410c79e4ad3292642f4a7bc03e576489edb058597cc538468e63b4b`
 
-## Control Plane 1.3.4 (this session)
+## Control Plane 1.3.5 (this session)
 
-### Step-up coverage (server-side)
+### Product
 
-| Operation | MFA (SuperAdmin) | Step-up | Server-side |
-|---|---|---|---|
-| Delete Node | yes | yes | `NodeManagementService` |
-| Reboot Host | yes | yes | `NodeCommandService.Enqueue` |
-| Update Node | yes | yes | `NodeCommandService.Enqueue` |
-| Rolling Update start | yes | yes | `LocationRolloutService.StartAsync` |
-| Reconcile unknown update | yes | yes | `NodeCommandService.Reconcile` |
-| Signing key mutate | yes | yes | `Ed25519SigningKeyStore.RotateAsync` |
-| Sensitive settings | yes | yes | Settings page + authorizer |
-| Admin security create | yes | yes | AdminUsers + authorizer |
+- **Self-update**: GitHub `control-plane-v*` discovery, SHA256 sidecar verify, ProgramData durable transaction, external `Nyxveil.ControlPlane.Updater` + `self-update-apply.ps1`, SuperAdmin+MFA+step-up (`CriticalOperation.ControlPlaneSelfUpdate`), no UI downgrade, fail-closed ambiguous restart reconciliation
+- **Fleet**: `/admin/fleet` overview (locations/nodes/health/sessions/capacity/versions/certs/ops/filters/topology), Deleted excluded, SignalR + ~15s poll
+- **MFA UX**: local QRCoder QR + regenerate secret before activation
+- Schema: **5** (self-update state outside SQL)
 
-User-bound DataProtection cookie `nyxveil_stepup`, TTL 5 minutes. Logout clears cookie.
+### Tests (fresh local run)
 
-### Tests (fresh run)
-
-- Unit: **403** PASS
+- Unit: **447** PASS
 - Integration: **130** PASS
 - Build: PASS (0 errors)
-- Package: `Nyxveil-ControlPlane-v1.3.4-release.zip` validated
+- Package: `Nyxveil-ControlPlane-v1.3.5-release.zip`
+- Package SHA256: `24C1BB42EB69599B9D8B8B807C27334A99AF6CB5C860578B83718E7988F64F9A`
 - production-gate local: PARTIAL (DB/install skips expected)
-- Operator HTTP smoke: PASS (`OperatorPanelSmokeTests` + expanded admin paths)
+- Browser E2E (headed Playwright): **NOT RUN / BLOCKED**
+- Windows Service LIVE self-update path: **NOT RUN** on this host (no `NyxveilControlPlane` service)
 
-### Deployment
+### Deployment note
 
-- Not executed — no installed `NyxveilControlPlane` service detected on this machine
+`1.3.4 → 1.3.5` initial install still uses `production-deploy.ps1` / `update-windows.ps1`.  
+UI self-update applies only after 1.3.5 is already installed (for later versions).
 
 ## Advisory next action
 
-1. Push/tag `control-plane-v1.3.4` + GitHub Release with the validated ZIP  
-2. Run `update-windows.ps1` / `production-deploy.ps1` on the authorized CP host  
-3. Post-deploy browser smoke (login+MFA, Dashboard, Nodes, Operations)
+1. Publish `control-plane-v1.3.5` GitHub Release with validated ZIP + `.sha256`
+2. Sync branch into `main` via PR (no force)
+3. On authorized CP host: deploy 1.3.5 via existing scripts, then validate self-update UX against a lab 1.3.6 candidate later
 
 This is advisory only.

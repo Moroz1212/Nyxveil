@@ -5,6 +5,7 @@
 @inject NavigationManager Nav
 @inject IConfiguration Configuration
 @inject AuthenticationStateProvider AuthState
+@using QRCoder
 
 <div class="auth-page">
     <div class="auth-card">
@@ -13,7 +14,7 @@
         {
             <div class="alert alert-warn">Для главного администратора двухфакторная аутентификация обязательна.</div>
         }
-        <p class="muted">Добавьте секрет в приложение-аутентификатор (Google Authenticator, Microsoft Authenticator и т.п.), затем подтвердите код.</p>
+        <p class="muted">Отсканируйте QR-код приложением-аутентификатором, затем подтвердите код. QR генерируется локально.</p>
 
         @if (_error is not null)
         {
@@ -33,12 +34,21 @@
         }
         else if (_sharedKey is not null)
         {
-            <label>Общий ключ
-                <input class="mono" type="text" readonly value="@_sharedKey" />
-            </label>
-            <label>URI otpauth
-                <textarea class="mono" rows="3" readonly>@_otpAuthUri</textarea>
-            </label>
+            @if (!string.IsNullOrEmpty(_qrDataUri))
+            {
+                <p><img class="fleet-qr" src="@_qrDataUri" alt="MFA QR code" width="180" height="180" /></p>
+                <p class="muted">Отсканируйте QR-код приложением-аутентификатором</p>
+            }
+
+            <details>
+                <summary>Ручной ввод ключа</summary>
+                <label>Общий ключ
+                    <input class="mono" type="text" readonly value="@_sharedKey" />
+                </label>
+                <label>URI otpauth
+                    <textarea class="mono" rows="3" readonly>@_otpAuthUri</textarea>
+                </label>
+            </details>
 
             <form method="post" action="/account/mfa/setup">
                 <input type="hidden" name="returnUrl" value="@(_returnUrl ?? "/")" />
@@ -47,6 +57,13 @@
                     <input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" required placeholder="123456" />
                 </label>
                 <button class="btn" type="submit">Включить MFA</button>
+            </form>
+
+            <form method="post" action="/account/mfa/setup/regenerate" style="margin-top:1rem"
+                  onsubmit="return confirm('Создать новый секрет? Предыдущий неподтверждённый секрет станет недействителен.');">
+                <input type="hidden" name="returnUrl" value="@(_returnUrl ?? "/account/mfa/setup")" />
+                <input type="hidden" name="required" value="@(_required ? "1" : "0")" />
+                <button class="btn btn-ghost" type="submit">Создать новый секрет</button>
             </form>
         }
         else
@@ -63,6 +80,7 @@
     private string? _error;
     private string? _sharedKey;
     private string? _otpAuthUri;
+    private string? _qrDataUri;
     private string? _returnUrl;
     private string[]? _recoveryCodes;
 
@@ -116,6 +134,13 @@
                 return;
             }
 
+            // Never re-display secret after MFA is already enabled.
+            if (await userManager.GetTwoFactorEnabledAsync(user))
+            {
+                Nav.NavigateTo("/account/mfa");
+                return;
+            }
+
             var key = await userManager.GetAuthenticatorKeyAsync(user);
             if (string.IsNullOrEmpty(key))
             {
@@ -131,6 +156,16 @@
 
             _sharedKey = AuthenticatorKeyFormatter.FormatKey(key);
             _otpAuthUri = AuthenticatorKeyFormatter.BuildOtpAuthUri(issuer, user.Email ?? email, key);
+            _qrDataUri = BuildQrDataUri(_otpAuthUri);
         });
+    }
+
+    private static string BuildQrDataUri(string payload)
+    {
+        using var gen = new QRCodeGenerator();
+        using var data = gen.CreateQrCode(payload, QRCodeGenerator.ECCLevel.Q);
+        var png = new PngByteQRCode(data);
+        var bytes = png.GetGraphic(4);
+        return "data:image/png;base64," + Convert.ToBase64String(bytes);
     }
 }

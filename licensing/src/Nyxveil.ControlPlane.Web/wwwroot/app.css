@@ -350,3 +350,25 @@ details summary { cursor: pointer; margin-bottom: .75rem; }
 .chart-event { stroke-width: 1.5; stroke-dasharray: 3 3; opacity: .85; }
 .mode-recovering { color: #85baff; }
 
+
+.fleet-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: .75rem;
+  margin-bottom: 1rem;
+}
+.fleet-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+.badge.ok { color: var(--ok, #1b7f4a); }
+.badge.warn { color: var(--warn, #a15c00); }
+.badge.err { color: var(--err, #b42318); }
+.badge.muted { color: #666; }
+.fleet-qr {
+  width: 180px;
+  height: 180px;
+  image-rendering: pixelated;
+}

@@ -831,3 +831,65 @@ Push release commit + tag `control-plane-v1.3.4`, publish GitHub Release with ZI
 - Asset: `Nyxveil-ControlPlane-v1.3.4-release.zip` SHA256 `F0F42B196999860F7B6574BCC8107E0F241EEEBC9F06841B5FC8EB39DF05B4A5`
 - DEPLOY: BLOCKED (no local NyxveilControlPlane service)
 
+
+---
+
+## 2026-09-12 — Control Plane 1.3.5 (self-update + Fleet Overview)
+
+### Goal
+
+Ship Control Plane **1.3.5** with safe self-update and Fleet Overview, without Canary and without Server/Core/NVP changes.
+
+### Baseline
+
+- Branch created: `control-plane-1.3.5` from tip `00dbd3c2fbf852743f427700a96b45349841cb2d` (contains release commit `7b954c5`)
+- Initial dirty preserved: `licensing/tests/CoreInterop/verify-signed/go.mod`
+- origin/main at start: `8d83268ad7654cc9431f7fbd7a0eb4c9cdcde638` (stale vs CP history)
+
+### Files / areas changed
+
+- Self-update: Application SelfUpdate models/policy, `ControlPlaneReleaseService`, `ControlPlaneSelfUpdateService`, `FileSelfUpdateTransactionStore`, `Nyxveil.ControlPlane.Updater`, `scripts/self-update-apply.ps1`, `ControlPlaneUpdate.razor`, critical op `ControlPlaneSelfUpdate`
+- Fleet: `FleetOverviewService`, `FleetContracts`, `Fleet.razor`, nav
+- MFA: local QR + regenerate secret endpoint
+- Version pins / gate / pack / CI for 1.3.5; `release-manifest.json`; `docs/RELEASE-1.3.5.md`
+
+### Behavior changed
+
+- Operators can view Fleet overview; SuperAdmin can check/start CP self-update under MFA+step-up
+- External updater handoff; durable ProgramData transactions; zip-slip checks; no UI downgrade
+- Deleted nodes remain excluded from Fleet
+
+### Version metadata
+
+- Control Plane `1.3.4` → `1.3.5`
+- Schema remains `5`
+- Server/Core/NVP unchanged
+
+### Tests actually run
+
+- UnitTests: **447 PASS**
+- IntegrationTests: **130 PASS**
+- `production-gate.ps1 -GateMode local`: PARTIAL
+- Package extract validation: PASS
+- ZIP SHA256: `726362BD313C73EDDAD1AE099548D78E446E14D1B1D8F9BEF17B6B65EC4A7AFD`
+
+### Tests not run
+
+- Headed/browser Playwright E2E
+- Live Windows Service self-update / rollback on production host
+
+### Compatibility
+
+- NVP/1 / Frozen Core unchanged
+- First `1.3.4→1.3.5` install still uses existing deploy scripts; UI self-update starts after 1.3.5 is installed
+
+### Unresolved / deferred
+
+- Canary 25/50/100%
+- Main synchronization (pending PR)
+- LIVE deploy blocked unless explicitly authorized
+
+### Suggested next action
+
+Commit + tag `control-plane-v1.3.5`, publish GitHub Release with validated ZIP, open PR to `main`.
+

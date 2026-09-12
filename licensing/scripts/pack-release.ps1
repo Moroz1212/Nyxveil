@@ -52,6 +52,24 @@ if ($PublishDir -and (Test-Path $PublishDir)) {
     $stagingPublish = (Resolve-Path -LiteralPath $PublishDir).Path
 }
 
+$verPath = Join-Path $licensingRoot 'VERSION'
+$ver = '0.0.0'
+if (Test-Path $verPath) { $ver = (Get-Content $verPath -Raw).Trim() }
+
+# Machine-readable release identity (no secrets).
+$manifestPath = Join-Path $licensingRoot 'release-manifest.json'
+$manifestObj = [ordered]@{
+    product                   = 'Nyxveil.ControlPlane'
+    version                   = $ver
+    tag                       = ("control-plane-v{0}" -f $ver)
+    schema                    = 5
+    package                   = ("Nyxveil-ControlPlane-v{0}-release.zip" -f $ver)
+    updater_version           = $ver
+    minimum_supported_version = '1.3.5'
+    note                      = 'Authoritative package digest is the .sha256 sidecar published with the release.'
+}
+($manifestObj | ConvertTo-Json -Depth 5) + "`n" | Set-Content -LiteralPath $manifestPath -Encoding utf8
+
 Write-Host "Creating $OutputZip from $rootFull ..."
 $fileStream = [System.IO.File]::Open($OutputZip, [System.IO.FileMode]::CreateNew)
 try {
@@ -87,6 +105,15 @@ finally {
     $fileStream.Dispose()
 }
 
+# Authoritative checksum sidecar + on-disk manifest digest (zip keeps identity-only manifest).
+$sha = (Get-FileHash -LiteralPath $OutputZip -Algorithm SHA256).Hash.ToUpperInvariant()
+$manifestWithSha = [ordered]@{}
+foreach ($k in $manifestObj.Keys) { $manifestWithSha[$k] = $manifestObj[$k] }
+$manifestWithSha['package_sha256'] = $sha
+($manifestWithSha | ConvertTo-Json -Depth 5) + "`n" | Set-Content -LiteralPath $manifestPath -Encoding utf8
+$shaFile = "$OutputZip.sha256"
+("{0}  {1}" -f $sha, [IO.Path]::GetFileName($OutputZip)) | Set-Content -LiteralPath $shaFile -Encoding ascii
+
 # Validate: zero backslash entry names + report counts
 $backslashCount = 0
 $entryCount = 0
@@ -108,4 +135,4 @@ if ($backslashCount -ne 0) {
     throw "pack-release validation failed: backslash_count=$backslashCount (expected 0)."
 }
 
-Write-Host "OK: wrote $OutputZip entries=$entryCount backslash_count=0"
+Write-Host "OK: wrote $OutputZip entries=$entryCount backslash_count=0 sha256=$sha"

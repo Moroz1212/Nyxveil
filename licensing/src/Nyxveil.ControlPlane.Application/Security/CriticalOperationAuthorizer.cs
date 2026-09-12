@@ -14,7 +14,8 @@ public enum CriticalOperation
     ReconcileUnknownUpdate = 6,
     SigningKeyMutate = 7,
     SensitiveSettingsMutate = 8,
-    AdminSecurityMutate = 9
+    AdminSecurityMutate = 9,
+    ControlPlaneSelfUpdate = 10
 }
 
 public static class CriticalOperationPolicy
@@ -30,6 +31,7 @@ public static class CriticalOperationPolicy
         CriticalOperation.SigningKeyMutate => true,
         CriticalOperation.SensitiveSettingsMutate => true,
         CriticalOperation.AdminSecurityMutate => true,
+        CriticalOperation.ControlPlaneSelfUpdate => true,
         CriticalOperation.DeleteNode => true,
         CriticalOperation.RestartService => false, // OperatorOrAbove + step-up
         _ => true

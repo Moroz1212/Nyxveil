@@ -163,6 +163,16 @@ builder.Services.AddHealthChecks()
 var app = builder.Build();
 
 await SeedRolesAsync(app.Services).ConfigureAwait(false);
+try
+{
+    using var scope = app.Services.CreateScope();
+    await scope.ServiceProvider.GetRequiredService<IControlPlaneSelfUpdateService>()
+        .ReconcileOnStartupAsync().ConfigureAwait(false);
+}
+catch (Exception ex)
+{
+    app.Logger.LogWarning(ex, "Control Plane self-update reconcile on startup failed");
+}
 
 if (app.Environment.IsDevelopment())
 {
@@ -406,6 +416,31 @@ PreferMinimalApiOverBlazor(
         StepUpGuard.Grant(http);
         return Results.Redirect(
             $"/account/mfa/setup?showCodes={token}&returnUrl={Uri.EscapeDataString(returnUrl)}");
+    }).DisableAntiforgery().RequireAuthorization(AuthPolicies.AnyAdmin).RequireRateLimiting("api-sensitive"));
+
+PreferMinimalApiOverBlazor(
+    app.MapPost("/account/mfa/setup/regenerate", async (
+        HttpContext http,
+        UserManager<ApplicationUser> userManager) =>
+    {
+        var form = await http.Request.ReadFormAsync().ConfigureAwait(false);
+        var returnUrl = form["returnUrl"].ToString();
+        if (string.IsNullOrWhiteSpace(returnUrl) || !returnUrl.StartsWith('/'))
+            returnUrl = "/account/mfa/setup";
+        var required = form["required"].ToString() == "1";
+
+        var user = await userManager.GetUserAsync(http.User).ConfigureAwait(false);
+        if (user is null)
+            return Results.Redirect("/account/login");
+
+        // Only allow regenerating an unconfirmed secret (MFA not yet enabled).
+        if (await userManager.GetTwoFactorEnabledAsync(user).ConfigureAwait(false))
+            return Results.Redirect("/account/mfa");
+
+        await userManager.ResetAuthenticatorKeyAsync(user).ConfigureAwait(false);
+        var target = $"/account/mfa/setup?returnUrl={Uri.EscapeDataString(returnUrl)}";
+        if (required) target += "&required=1";
+        return Results.Redirect(target);
     }).DisableAntiforgery().RequireAuthorization(AuthPolicies.AnyAdmin).RequireRateLimiting("api-sensitive"));
 
 PreferMinimalApiOverBlazor(

@@ -1,4 +1,4 @@
-name: Control Plane CI
+﻿name: Control Plane CI
 
 on:
   push:
@@ -76,16 +76,24 @@ jobs:
           $required = @(
             'VERSION',
             'publish\Nyxveil.ControlPlane.Web.dll',
+            'publish\scripts\self-update-apply.ps1',
             'scripts\production-deploy.ps1',
             'scripts\production-gate.ps1',
             'scripts\Nyxveil.ControlPlane.Deploy.psm1',
+            'scripts\self-update-apply.ps1',
             'database\migrations\005_certificate_operation_states.sql',
             'database\migrations\validate_schema_v5.sql',
-            'docs\RELEASE-1.3.4.md'
+            'docs\RELEASE-1.3.5.md',
+            'release-manifest.json'
           )
           foreach ($rel in $required) {
             $p = Join-Path $extract $rel
             if (-not (Test-Path -LiteralPath $p)) { throw "extracted package missing $rel" }
+          }
+          $updaterDll = Join-Path $extract 'publish\updater\Nyxveil.ControlPlane.Updater.dll'
+          $updaterExe = Join-Path $extract 'publish\updater\Nyxveil.ControlPlane.Updater.exe'
+          if (-not ((Test-Path -LiteralPath $updaterDll) -or (Test-Path -LiteralPath $updaterExe))) {
+            throw 'extracted package missing publish/updater/Nyxveil.ControlPlane.Updater.(dll|exe)'
           }
           if (Test-Path (Join-Path $extract 'ef-baseline.tmp.sql')) { throw 'package must not contain ef-baseline.tmp.sql' }
           if (Get-ChildItem -LiteralPath $extract -Recurse -Filter '*.trx' -ErrorAction SilentlyContinue) {

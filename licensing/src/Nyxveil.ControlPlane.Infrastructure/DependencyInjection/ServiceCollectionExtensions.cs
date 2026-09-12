@@ -112,6 +112,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<INodeCommandService, NodeCommandService>();
         services.AddScoped<IUpdatePreflightService, UpdatePreflightService>();
         services.AddScoped<ILocationRolloutService, LocationRolloutService>();
+        services.AddScoped<IFleetOverviewService, FleetOverviewService>();
         services.AddScoped<IControlPlaneCertificateStatusService, ControlPlaneCertificateStatusService>();
         services.AddScoped<IInfrastructureOverviewService, InfrastructureOverviewService>();
         services.AddScoped<IControlPlaneAcmeWizardService, ControlPlaneAcmeWizardService>();
@@ -119,6 +120,9 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IAdminRealtimeNotifier, NullAdminRealtimeNotifier>();
         // Hosts without HTTP elevation (unit tests) allow critical ops; Web/Worker replace this.
         services.TryAddSingleton<ICriticalOperationAuthorizer, AllowAllCriticalOperationAuthorizer>();
+        services.AddSingleton<ISelfUpdateTransactionStore, SelfUpdate.FileSelfUpdateTransactionStore>();
+        services.AddSingleton<IControlPlaneReleaseService, ControlPlaneReleaseService>();
+        services.AddScoped<IControlPlaneSelfUpdateService, ControlPlaneSelfUpdateService>();
 
         services.Configure<AcmeOptions>(configuration.GetSection(AcmeOptions.SectionName));
         services.Configure<ServerReleasePolicyOptions>(configuration.GetSection(ServerReleasePolicyOptions.SectionName));

@@ -90,7 +90,7 @@ public sealed class MigrationDeployHardeningTests
     public void TestProductionDeployRequiresMigrationRehearsalBeforeStop()
     {
         var deploy = File.ReadAllText(Path.Combine(LicensingRoot, "scripts", "production-deploy.ps1"));
-        Assert.Contains("1.3.4", deploy, StringComparison.Ordinal);
+        Assert.Contains("1.3.5", deploy, StringComparison.Ordinal);
         Assert.Contains("migration_rehearsal", deploy, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("publish_payload_sha256", deploy, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("rollback_complete", deploy, StringComparison.OrdinalIgnoreCase);
