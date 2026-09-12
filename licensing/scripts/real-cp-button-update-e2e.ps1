@@ -208,6 +208,32 @@ $before = (Get-Content -LiteralPath $verPath -Raw).Trim()
 if ($before -ne '1.3.8') { Fail "expected installed VERSION 1.3.8 have=$before" }
 Write-Host "CP_BUTTON_INSTALLED_BEFORE=$before"
 
+# Force-reset admin password via the same CLI/DB the installer used (guards stdin/hash drift).
+Write-Host 'CP_BUTTON_STEP=reset_admin_password'
+$env:NYXVEIL_ADMIN_PASSWORD = $AdminPasswordPlain
+try {
+    $reset = Invoke-NyxveilWebCli -InstallDir $InstallDir `
+        -Arguments @('admin', 'reset-password', '--username', $AdminUser) `
+        -StdinSecure $securePass
+    Write-Host "CP_BUTTON_RESET_EXIT=$($reset.ExitCode)"
+    if ($reset.StdOut) { Write-Host $reset.StdOut }
+    if ($reset.StdErr) { Write-Host $reset.StdErr }
+    if ($reset.ExitCode -ne 0) { Fail "admin reset-password failed exit=$($reset.ExitCode)" }
+} finally {
+    Remove-Item Env:NYXVEIL_ADMIN_PASSWORD -ErrorAction SilentlyContinue
+}
+
+# Prove the web process sees the same AspNetUsers row (Windows auth as LocalSystem vs installer identity).
+Write-Host 'CP_BUTTON_STEP=sql_user_probe'
+try {
+    $userRows = & sqlcmd -S $DatabaseServer -E -d $Database -h -1 -W -Q `
+        "SET NOCOUNT ON; SELECT Email, UserName, NormalizedEmail, CASE WHEN PasswordHash IS NULL THEN 'NULL' ELSE 'SET' END FROM AspNetUsers;" 2>&1 |
+        Out-String
+    Write-Host "CP_BUTTON_SQL_USERS<<EOF`n$userRows`nEOF"
+} catch {
+    Write-Host "CP_BUTTON_SQL_USERS_WARN=$($_.Exception.Message)"
+}
+
 $baseUrl = "https://127.0.0.1:$Port"
 # Trust self-signed for probes
 [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
@@ -216,15 +242,10 @@ Wait-HttpOk "$baseUrl/health/live" 180
 # Prove admin credentials via real HTTP POST before Playwright (fail fast on install/auth mismatch).
 Write-Host 'CP_BUTTON_STEP=verify_login_http'
 $loginProbe = Join-Path $work 'login-probe.txt'
-$curlArgs = @(
-    '-sk', '-o', $loginProbe, '-D', '-',
-    '-X', 'POST', "$baseUrl/account/login",
-    '-H', 'Content-Type: application/x-www-form-urlencoded',
-    '--data-urlencode', "email=$AdminUser",
-    '--data-urlencode', "password=$AdminPasswordPlain",
-    '--data-urlencode', 'returnUrl=/'
-)
-$headers = & curl.exe @curlArgs 2>&1 | Out-String
+$formBody = "email=$([uri]::EscapeDataString($AdminUser))&password=$([uri]::EscapeDataString($AdminPasswordPlain))&returnUrl=%2F"
+$headers = & curl.exe -sk -o $loginProbe -D - -X POST "$baseUrl/account/login" `
+    -H 'Content-Type: application/x-www-form-urlencoded' `
+    --data-binary $formBody 2>&1 | Out-String
 Write-Host "CP_BUTTON_LOGIN_PROBE_HEADERS<<EOF`n$headers`nEOF"
 if ($headers -match '(?im)^Location:\s*.*error=1') {
     Fail "HTTP login probe returned error=1 (credentials rejected). headers=$headers"
