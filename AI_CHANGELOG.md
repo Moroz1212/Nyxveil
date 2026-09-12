@@ -871,7 +871,7 @@ Ship Control Plane **1.3.5** with safe self-update and Fleet Overview, without C
 - IntegrationTests: **130 PASS**
 - `production-gate.ps1 -GateMode local`: PARTIAL
 - Package extract validation: PASS
-- ZIP SHA256: `726362BD313C73EDDAD1AE099548D78E446E14D1B1D8F9BEF17B6B65EC4A7AFD`
+- ZIP SHA256: `24C1BB42EB69599B9D8B8B807C27334A99AF6CB5C860578B83718E7988F64F9A`
 
 ### Tests not run
 
