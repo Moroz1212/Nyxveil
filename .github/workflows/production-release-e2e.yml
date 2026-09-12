@@ -3,6 +3,14 @@ name: Production Release E2E
 on:
   workflow_dispatch:
   workflow_call:
+  push:
+    branches:
+      - real-operator-e2e-gates
+    paths:
+      - '.github/workflows/production-release-e2e.yml'
+      - 'licensing/scripts/**'
+      - 'server/scripts/real-operator-node-e2e.sh'
+      - 'server/scripts/lab-control-plane-start.sh'
 
 permissions:
   contents: read
