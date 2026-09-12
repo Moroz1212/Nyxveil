@@ -405,6 +405,13 @@ EOF
   )
   PEBBLE_PID="$(tr -d '[:space:]' <"${WORK_DIR}/pebble.pid")"
   log "pebble process started pid=${PEBBLE_PID}"
+  # Runtime ValidateLeafForDomain requires system trust; install Pebble minica for lab.
+  if [[ -f "${PEBBLE_SRC_DIR}/test/certs/pebble.minica.pem" ]]; then
+    cp -f "${PEBBLE_SRC_DIR}/test/certs/pebble.minica.pem" \
+      /usr/local/share/ca-certificates/nyxveil-pebble-minica.crt
+    update-ca-certificates >/dev/null 2>&1 || true
+    log "installed Pebble minica into system trust store"
+  fi
   if wait_pebble_directory; then
     return 0
   fi
@@ -775,8 +782,10 @@ if [[ "${DURABLE_RESTART_RESULT}" == "PASS" ]] && { [[ "${ENABLE_PEBBLE}" == "1"
   ACME_PHASE_RAN=1
   log "starting ACME/cert/TLS/QUIC/rollback phase (candidate ${CANDIDATE_VERSION})"
 
-  # Ensure Pebble is reachable on host network for HTTP-01 → :80
-  if [[ -z "${PEBBLE_DIR_URL}" ]] || ! curl -skf "${PEBBLE_DIR_URL}" >/dev/null 2>&1; then
+  # Ensure Pebble is reachable. Process-based lab (PEBBLE_PID) needs no docker recreate.
+  if [[ -n "${PEBBLE_DIR_URL}" ]] && curl -skf "${PEBBLE_DIR_URL}" >/dev/null 2>&1; then
+    log "Pebble directory already reachable at ${PEBBLE_DIR_URL}"
+  elif [[ -z "${PEBBLE_DIR_URL}" ]] || ! curl -skf "${PEBBLE_DIR_URL}" >/dev/null 2>&1; then
     if ! ensure_pebble_host_network; then
       fail_acme_gate acme_pebble "pebble_unavailable"
       fail_acme_gate cert_button "skipped_no_pebble"
@@ -785,11 +794,11 @@ if [[ "${DURABLE_RESTART_RESULT}" == "PASS" ]] && { [[ "${ENABLE_PEBBLE}" == "1"
       fail_acme_gate rollback_recovery "skipped_no_pebble"
       exit 1
     fi
-  else
-    # Recreate with host networking if an older bridge-mapped container is still running.
+  fi
+  if docker inspect nyxveil-lab-pebble >/dev/null 2>&1; then
     net_mode="$(docker inspect -f '{{.HostConfig.NetworkMode}}' nyxveil-lab-pebble 2>/dev/null || true)"
     if [[ "${net_mode}" != "host" ]]; then
-      log "Pebble network mode=${net_mode:-unknown}; recreating with --network host"
+      log "Pebble docker network mode=${net_mode:-unknown}; recreating with --network host"
       if ! ensure_pebble_host_network; then
         fail_acme_gate acme_pebble "pebble_host_network_failed"
         fail_acme_gate cert_button "skipped_no_pebble"
@@ -879,16 +888,38 @@ if [[ "${DURABLE_RESTART_RESULT}" == "PASS" ]] && { [[ "${ENABLE_PEBBLE}" == "1"
 
   # Allow ACME issuance on first start (self-signed → Pebble leaf)
   log "waiting for candidate ACME issuance / healthy listeners"
+  ACME_TLS_OK=false
+  ACME_QUIC_OK=false
   for i in $(seq 1 60); do
-    if status_json="$(nyxveilctl status 2>/dev/null)"; then
-      tls_ok="$(jq -r '.tls_ok // false' <<<"${status_json}" 2>/dev/null || echo false)"
-      quic_ok="$(jq -r '.quic_ok // false' <<<"${status_json}" 2>/dev/null || echo false)"
-      if [[ "${tls_ok}" == "true" && "${quic_ok}" == "true" ]]; then
-        break
+    if systemctl is-active --quiet nyxveil-server; then
+      if status_json="$(nyxveilctl status 2>/dev/null)"; then
+        tls_ok="$(jq -r '.tls_ok // false' <<<"${status_json}" 2>/dev/null || echo false)"
+        quic_ok="$(jq -r '.quic_ok // false' <<<"${status_json}" 2>/dev/null || echo false)"
+        if [[ "${tls_ok}" == "true" && "${quic_ok}" == "true" ]]; then
+          ACME_TLS_OK=true
+          ACME_QUIC_OK=true
+          break
+        fi
       fi
+    else
+      log "nyxveil-server not active during ACME wait (attempt ${i}); journal tail:"
+      journalctl -u nyxveil-server -n 30 --no-pager >&2 || true
+      tail -n 40 "${WORK_DIR}/pebble.log" >&2 || true
     fi
     sleep 5
   done
+  if [[ "${ACME_TLS_OK}" != "true" || "${ACME_QUIC_OK}" != "true" ]]; then
+    journalctl -u nyxveil-server -n 80 --no-pager >&2 || true
+    tail -n 80 "${WORK_DIR}/pebble.log" >&2 || true
+    fail_acme_gate acme_pebble "candidate_acme_listeners_not_healthy" \
+      tls_ok="${ACME_TLS_OK}" quic_ok="${ACME_QUIC_OK}" \
+      pebble_directory="${PEBBLE_DIR_URL}"
+    fail_acme_gate cert_button "skipped_acme_failed"
+    fail_acme_gate tls_served "skipped_acme_failed"
+    fail_acme_gate quic_handshake "skipped_acme_failed"
+    fail_acme_gate rollback_recovery "skipped_acme_failed"
+    exit 1
+  fi
 
   ACME_OWNER_AFTER="$(acme_dir_ownership_summary)"
   log "ACME dir ownership after candidate start: ${ACME_OWNER_AFTER}"
@@ -905,8 +936,14 @@ if [[ "${DURABLE_RESTART_RESULT}" == "PASS" ]] && { [[ "${ENABLE_PEBBLE}" == "1"
 
   # Clear in-memory RenewCertificate rate-limit window from startup ACME.
   systemctl restart nyxveil-server
-  sleep 3
+  for i in $(seq 1 30); do
+    if systemctl is-active --quiet nyxveil-server; then
+      break
+    fi
+    sleep 1
+  done
   systemctl is-active --quiet nyxveil-server || {
+    journalctl -u nyxveil-server -n 80 --no-pager >&2 || true
     fail_acme_gate acme_pebble "restart_after_acme_failed"
     exit 1
   }

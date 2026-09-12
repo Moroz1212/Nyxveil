@@ -55,13 +55,39 @@ function Get-FileSha256Upper([string]$Path) {
 
 function Wait-HttpOk([string]$Url, [int]$TimeoutSec = 180) {
     $deadline = [datetime]::UtcNow.AddSeconds($TimeoutSec)
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     while ([datetime]::UtcNow -lt $deadline) {
+        $svc = Get-Service -Name 'NyxveilControlPlane' -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -ne 'Running') {
+            Write-Host "CP_BUTTON_DIAG=service_status=$($svc.Status); attempting Start-Service"
+            try { Start-Service -Name 'NyxveilControlPlane' -ErrorAction Stop } catch {
+                Write-Host "CP_BUTTON_DIAG=Start-Service failed: $($_.Exception.Message)"
+            }
+            Start-Sleep -Seconds 2
+        }
         try {
-            $r = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5
-            if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500) { return }
-        } catch { }
+            if ($curl) {
+                & curl.exe -skf --max-time 5 $Url | Out-Null
+                if ($LASTEXITCODE -eq 0) { return }
+            } else {
+                # Windows PowerShell may reject self-signed without callback; prefer curl.
+                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+                $r = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5
+                if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500) { return }
+            }
+        } catch {
+            Write-Host "CP_BUTTON_DIAG=probe_error=$($_.Exception.Message)"
+        }
         Start-Sleep -Seconds 3
     }
+    $svc = Get-Service -Name 'NyxveilControlPlane' -ErrorAction SilentlyContinue
+    Write-Host "CP_BUTTON_DIAG=final_service_status=$($svc.Status)"
+    try {
+        Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-10) } -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProviderName -match 'Nyxveil|\.NET|IIS|ASP.NET' -or $_.Message -match 'Nyxveil' } |
+            Select-Object -First 15 |
+            ForEach-Object { Write-Host "CP_BUTTON_EVENT=$($_.TimeCreated) $($_.ProviderName): $($_.Message.Substring(0, [Math]::Min(240, $_.Message.Length)))" }
+    } catch { }
     Fail "HTTP not ready: $Url"
 }
 
@@ -156,16 +182,30 @@ Write-Host 'CP_BUTTON_NOTE=ServiceAccount=LocalSystem + current Deploy.psm1 over
 # Accelerate GitHub discovery cache for the button gate (1.3.8 already defaults to Moroz1212/Nyxveil).
 $appsettings = Join-Path $InstallDir 'appsettings.Production.json'
 if (Test-Path -LiteralPath $appsettings) {
-    $cfg = Get-Content -LiteralPath $appsettings -Raw | ConvertFrom-Json
-    $policy = [ordered]@{
-        CacheMinutes = 1
-        GitHubOwner  = 'Moroz1212'
-        GitHubRepo   = 'Nyxveil'
-    }
-    $cfg | Add-Member -NotePropertyName ServerReleasePolicy -NotePropertyValue ([pscustomobject]$policy) -Force
-    $cfg | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $appsettings -Encoding UTF8
+    # Patch with System.Text.Json-style minimal edit via Node to avoid PowerShell ConvertTo-Json
+    # rewriting/breaking nested ASP.NET configuration on restart.
+    $patchJs = Join-Path $work 'patch-appsettings.js'
+    @'
+const fs = require('fs');
+const p = process.argv[2];
+const cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
+cfg.ServerReleasePolicy = Object.assign({}, cfg.ServerReleasePolicy || {}, {
+  CacheMinutes: 1,
+  GitHubOwner: 'Moroz1212',
+  GitHubRepo: 'Nyxveil'
+});
+fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
+console.log('patched ServerReleasePolicy CacheMinutes=1');
+'@ | Set-Content -LiteralPath $patchJs -Encoding UTF8
+    node $patchJs $appsettings
+    if ($LASTEXITCODE -ne 0) { Fail 'appsettings.Production.json patch failed' }
     Restart-Service -Name NyxveilControlPlane -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 5
+    Start-Sleep -Seconds 3
+    $svc = Get-Service NyxveilControlPlane
+    if ($svc.Status -ne 'Running') {
+        Start-Service NyxveilControlPlane
+        Start-Sleep -Seconds 5
+    }
 }
 
 # Ensure privileged updater from 1.3.8 package exists (1.3.8 CreateService path).

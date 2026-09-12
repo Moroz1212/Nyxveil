@@ -1284,6 +1284,11 @@ func (n *Node) issueACMEWithOptions(ctx context.Context, cfg localconfig.File, f
 	validateLive := n.validateStagedTLS
 	if validateLive == nil {
 		validateLive = configure.ValidateLeafForDomain
+		if os.Getenv("NYXVEIL_ACME_INSECURE_DIRECTORY_TLS") == "1" {
+			validateLive = func(certPath, keyPath, domain string, now time.Time) error {
+				return configure.ValidateLeafForDomainOpts(certPath, keyPath, domain, now, false)
+			}
+		}
 	}
 	if !force && nodetls.Exists(live) && validateLive(certFile, keyFile, domain, time.Now()) == nil {
 		existing, loadErr := nodetls.Load(live)
@@ -1341,6 +1346,13 @@ func (n *Node) issueACMEWithOptions(ctx context.Context, cfg localconfig.File, f
 	validate := n.validateStagedTLS
 	if validate == nil {
 		validate = configure.ValidateLeafForDomain
+		// Lab/Pebble: directory TLS is already opted into via NYXVEIL_ACME_INSECURE_DIRECTORY_TLS.
+		// Skip system-trust leaf gate so a local test CA can complete IssueOrRenew → activate.
+		if os.Getenv("NYXVEIL_ACME_INSECURE_DIRECTORY_TLS") == "1" {
+			validate = func(certPath, keyPath, domain string, now time.Time) error {
+				return configure.ValidateLeafForDomainOpts(certPath, keyPath, domain, now, false)
+			}
+		}
 	}
 	if err = validate(stageCert, stageKey, domain, time.Now()); err != nil {
 		return tls.Certificate{}, prevPin, nil, false, err
