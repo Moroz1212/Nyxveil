@@ -107,7 +107,7 @@ jobs:
           bash scripts/assert-release-bytes-identity.sh
           echo "RELEASE_BYTES_IDENTITY=PASS"
 
-      - name: Create/verify GitHub prerelease candidate
+      - name: Create/verify GitHub release from CI bytes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -128,6 +128,10 @@ jobs:
           for a in "${ASSETS[@]}"; do
             [[ -f "${a}" ]] || { echo "missing ${a}"; exit 1; }
           done
+          # Existing releases are immutable; matching bytes make reruns a no-op.
+          # Publish as a normal (non-prerelease) release so Control Plane button paths
+          # can discover the target (AllowPrerelease defaults false). Artifact-pure E2E
+          # then post-verifies; on FAIL ship the next patch — never retag.
           if gh release view "${TAG}" >/dev/null 2>&1; then
             echo "Release ${TAG} already exists — verifying asset identity"
             bash scripts/assert-existing-release-matches-dist.sh "${TAG}" || {
@@ -140,32 +144,29 @@ jobs:
             gh release create "${TAG}" "${ASSETS[@]}" \
               --title "Nyxveil Server ${TAG}" \
               ${NOTES:+--notes-file "${NOTES}"} \
-              --prerelease \
               --verify-tag
           fi
-          echo "Candidate published ${TAG} from Server CI run ${CI_RUN_ID} (prerelease until E2E PASS)"
+          echo "Published ${TAG} from Server CI run ${CI_RUN_ID}"
 
   production-release-e2e:
-    name: Production Release E2E (mandatory)
+    name: Production Release E2E (mandatory post-publish verify)
     needs: publish-candidate
     uses: ./.github/workflows/production-release-e2e.yml
     permissions:
       contents: read
 
   finalize-release:
-    name: Finalize release after artifact-pure E2E
+    name: Record post-publish E2E PASS
     needs:
       - publish-candidate
       - production-release-e2e
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Clear prerelease flag
+      - name: Confirm release remains production candidate after E2E
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.publish-candidate.outputs.release_tag }}
         run: |
           set -euo pipefail
           [[ -n "${TAG}" ]] || { echo "missing release tag"; exit 1; }
-          gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --prerelease=false
-          echo "FINALIZED ${TAG} after production-release-e2e PASS"
+          echo "POST_PUBLISH_E2E_PASS tag=${TAG}"
