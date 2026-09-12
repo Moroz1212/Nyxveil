@@ -239,8 +239,10 @@ $baseUrl = "https://127.0.0.1:$Port"
 Wait-HttpOk "$baseUrl/health/live" 180
 
 Write-Host 'CP_BUTTON_STEP=browser_click_update'
-$clickJs = Join-Path $scriptRoot 'real-cp-button-browser.cjs'
-if (-not (Test-Path -LiteralPath $clickJs)) { Fail "missing $clickJs" }
+$clickSrc = Join-Path $scriptRoot 'real-cp-button-browser.cjs'
+if (-not (Test-Path -LiteralPath $clickSrc)) { Fail "missing $clickSrc" }
+$clickJs = Join-Path $work 'real-cp-button-browser.cjs'
+Copy-Item -LiteralPath $clickSrc -Destination $clickJs -Force
 
 Push-Location $work
 try {
@@ -254,6 +256,7 @@ try {
     $env:CP_TOTP_SECRET = ''
     $env:CP_TOTP_OUT = Join-Path $work 'totp-secret.txt'
     $env:CP_CLICK_MARKER = Join-Path $work 'click.marker'
+    # Resolve playwright from $work/node_modules (script lives beside package.json).
     node $clickJs
     if ($LASTEXITCODE -ne 0) { Fail 'Playwright button click failed' }
 } finally {
